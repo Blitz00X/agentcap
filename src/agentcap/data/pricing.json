@@ -1,0 +1,383 @@
+{
+  "version": "2026.10.25",
+  "updated": "2026-10-25",
+  "verified": true,
+  "note": "Official Standard-tier prices in USD per 1M tokens, verified 2026-10-25.",
+  "sources": {
+    "openai": "https://platform.openai.com/docs/pricing",
+    "google": "https://ai.google.dev/gemini-api/docs/pricing"
+  },
+  "service_tiers": {
+    "openai": {
+      "default": "1",
+      "auto": "1",
+      "flex": "0.5",
+      "priority": "2",
+      "fast": "2",
+      "ultrafast": "6"
+    }
+  },
+  "models": {
+    "openai/gpt-6-astra": {
+      "input_per_mtok": "10",
+      "cached_input_per_mtok": "1",
+      "output_per_mtok": "50",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25",
+      "long_context": {
+        "threshold_tokens": 272000,
+        "input_per_mtok": "20",
+        "output_per_mtok": "75",
+        "cached_input_per_mtok": "2"
+      },
+      "cache_write_per_mtok": "25"
+    },
+    "openai/gpt-6.1-sol": {
+      "input_per_mtok": "2",
+      "cached_input_per_mtok": "0.10",
+      "output_per_mtok": "10",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25",
+      "long_context": {
+        "threshold_tokens": 272000,
+        "input_per_mtok": "4",
+        "output_per_mtok": "15",
+        "cached_input_per_mtok": "0.20"
+      },
+      "cache_write_per_mtok": "5"
+    },
+    "openai/gpt-6-luna": {
+      "input_per_mtok": "0.10",
+      "cached_input_per_mtok": "0.01",
+      "output_per_mtok": "0.50",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25",
+      "long_context": {
+        "threshold_tokens": 272000,
+        "input_per_mtok": "0.20",
+        "output_per_mtok": "0.75",
+        "cached_input_per_mtok": "0.02"
+      },
+      "cache_write_per_mtok": "0.25"
+    },
+    "openai/gpt-6-sol": {
+      "input_per_mtok": "2",
+      "cached_input_per_mtok": "0.20",
+      "output_per_mtok": "10",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25",
+      "cache_write_per_mtok": "5"
+    },
+    "openai/gpt-5.6-sol": {
+      "input_per_mtok": "4",
+      "cached_input_per_mtok": "0.40",
+      "output_per_mtok": "20",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25",
+      "cache_write_per_mtok": "10"
+    },
+    "openai/gpt-5.6-terra": {
+      "input_per_mtok": "2",
+      "cached_input_per_mtok": "0.20",
+      "output_per_mtok": "12",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25",
+      "cache_write_per_mtok": "5"
+    },
+    "openai/gpt-5.6-luna": {
+      "input_per_mtok": "0.20",
+      "cached_input_per_mtok": "0.02",
+      "output_per_mtok": "1.20",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25",
+      "cache_write_per_mtok": "0.50"
+    },
+    "openai/gpt-5.5": {
+      "input_per_mtok": "5",
+      "cached_input_per_mtok": "0.50",
+      "output_per_mtok": "30",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25",
+      "long_context": {
+        "threshold_tokens": 272000,
+        "input_per_mtok": "10",
+        "output_per_mtok": "45",
+        "cached_input_per_mtok": "1.00"
+      }
+    },
+    "openai/gpt-5.4": {
+      "input_per_mtok": "2.50",
+      "cached_input_per_mtok": "0.25",
+      "output_per_mtok": "15",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25",
+      "long_context": {
+        "threshold_tokens": 272000,
+        "input_per_mtok": "5",
+        "output_per_mtok": "22.50",
+        "cached_input_per_mtok": "0.50"
+      }
+    },
+    "openai/gpt-5.4-mini": {
+      "input_per_mtok": "0.75",
+      "cached_input_per_mtok": "0.075",
+      "output_per_mtok": "4.50",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-5.4-nano": {
+      "input_per_mtok": "0.20",
+      "cached_input_per_mtok": "0.02",
+      "output_per_mtok": "1.25",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-5.3-codex": {
+      "input_per_mtok": "1.75",
+      "cached_input_per_mtok": "0.175",
+      "output_per_mtok": "14",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-5.2": {
+      "input_per_mtok": "1.75",
+      "cached_input_per_mtok": "0.175",
+      "output_per_mtok": "14",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-5.1": {
+      "input_per_mtok": "1.25",
+      "cached_input_per_mtok": "0.125",
+      "output_per_mtok": "10",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-5": {
+      "input_per_mtok": "1.25",
+      "cached_input_per_mtok": "0.125",
+      "output_per_mtok": "10",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-5-mini": {
+      "input_per_mtok": "0.25",
+      "cached_input_per_mtok": "0.025",
+      "output_per_mtok": "2",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-5-nano": {
+      "input_per_mtok": "0.05",
+      "cached_input_per_mtok": "0.005",
+      "output_per_mtok": "0.40",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-4.1": {
+      "input_per_mtok": "2",
+      "cached_input_per_mtok": "0.50",
+      "output_per_mtok": "8",
+      "max_output_tokens": 32768,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-4.1-mini": {
+      "input_per_mtok": "0.40",
+      "cached_input_per_mtok": "0.10",
+      "output_per_mtok": "1.60",
+      "max_output_tokens": 32768,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-4.1-nano": {
+      "input_per_mtok": "0.10",
+      "cached_input_per_mtok": "0.025",
+      "output_per_mtok": "0.40",
+      "max_output_tokens": 32768,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-4o": {
+      "input_per_mtok": "2.50",
+      "cached_input_per_mtok": "1.25",
+      "output_per_mtok": "10",
+      "max_output_tokens": 16384,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/gpt-4o-mini": {
+      "input_per_mtok": "0.15",
+      "cached_input_per_mtok": "0.075",
+      "output_per_mtok": "0.60",
+      "max_output_tokens": 16384,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/o3": {
+      "input_per_mtok": "2",
+      "cached_input_per_mtok": "0.50",
+      "output_per_mtok": "8",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/o4-mini": {
+      "input_per_mtok": "1.10",
+      "cached_input_per_mtok": "0.275",
+      "output_per_mtok": "4.40",
+      "max_output_tokens": 128000,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/text-embedding-3-small": {
+      "input_per_mtok": "0.02",
+      "cached_input_per_mtok": "0",
+      "output_per_mtok": "0",
+      "max_output_tokens": 1,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "openai/text-embedding-3-large": {
+      "input_per_mtok": "0.13",
+      "cached_input_per_mtok": "0",
+      "output_per_mtok": "0",
+      "max_output_tokens": 1,
+      "source": "https://platform.openai.com/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "google/gemini-4-argon": {
+      "input_per_mtok": "2",
+      "cached_input_per_mtok": "0.10",
+      "output_per_mtok": "10",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25",
+      "schedule": [
+        {
+          "effective_from": "2026-12-01",
+          "input_per_mtok": "4",
+          "cached_input_per_mtok": "0.20",
+          "output_per_mtok": "20"
+        }
+      ]
+    },
+    "google/gemini-3.8-flash": {
+      "input_per_mtok": "0.75",
+      "cached_input_per_mtok": "0.075",
+      "output_per_mtok": "3.75",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25",
+      "schedule": [
+        {
+          "effective_from": "2027-01-01",
+          "input_per_mtok": "1.50",
+          "cached_input_per_mtok": "0.15",
+          "output_per_mtok": "7.50"
+        }
+      ]
+    },
+    "google/gemini-3.6-flash": {
+      "input_per_mtok": "0.75",
+      "cached_input_per_mtok": "0.075",
+      "output_per_mtok": "3.75",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25",
+      "schedule": [
+        {
+          "effective_from": "2027-01-01",
+          "input_per_mtok": "1.50",
+          "cached_input_per_mtok": "0.15",
+          "output_per_mtok": "7.50"
+        }
+      ]
+    },
+    "google/gemini-3.5-flash-lite": {
+      "input_per_mtok": "0.30",
+      "cached_input_per_mtok": "0.03",
+      "output_per_mtok": "2.50",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "google/gemini-3.1-flash-lite": {
+      "input_per_mtok": "0.25",
+      "cached_input_per_mtok": "0.025",
+      "output_per_mtok": "1.50",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "google/gemini-3.1-pro-preview": {
+      "input_per_mtok": "2",
+      "cached_input_per_mtok": "0.20",
+      "output_per_mtok": "12",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25",
+      "long_context": {
+        "threshold_tokens": 200000,
+        "input_per_mtok": "4",
+        "output_per_mtok": "18",
+        "cached_input_per_mtok": "0.40"
+      }
+    },
+    "google/gemini-3-flash-preview": {
+      "input_per_mtok": "0.50",
+      "cached_input_per_mtok": "0.05",
+      "output_per_mtok": "3",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "google/gemini-2.5-pro": {
+      "input_per_mtok": "1.25",
+      "cached_input_per_mtok": "0.125",
+      "output_per_mtok": "10",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25",
+      "long_context": {
+        "threshold_tokens": 200000,
+        "input_per_mtok": "2.50",
+        "output_per_mtok": "15",
+        "cached_input_per_mtok": "0.25"
+      }
+    },
+    "google/gemini-2.5-flash": {
+      "input_per_mtok": "0.30",
+      "cached_input_per_mtok": "0.03",
+      "output_per_mtok": "2.50",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25"
+    },
+    "google/gemini-2.5-flash-lite": {
+      "input_per_mtok": "0.10",
+      "cached_input_per_mtok": "0.01",
+      "output_per_mtok": "0.40",
+      "max_output_tokens": 65536,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified": "2026-10-25"
+    }
+  }
+}

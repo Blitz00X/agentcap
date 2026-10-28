@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>AgentCap — the API-key guard for unattended Codex CLI and Gemini CLI runs</title>
+  <meta name="description" content="AgentCap caps spend on unattended Codex CLI and Gemini CLI runs: per-run hard cap, output clamping, and the local process killed at the cap with the reason printed.">
+  <meta property="og:title" content="AgentCap — the API-key guard for unattended Codex CLI and Gemini CLI runs">
+  <meta property="og:description" content="Caps spend on unattended Codex CLI and Gemini CLI runs, kills the local process at the cap and tells you why. Terminal alert in Free; Pro adds webhook/Telegram alerts and a loop breaker. $12 one-time.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="shell header-inner">
+      <!-- COPY:nav START -->
+      <a class="brand" href="#top">
+        <svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4.4"/>
+          <path d="M8 15v-2.5M12 15V8.5M16 15v-3.5"/>
+        </svg>
+        <span class="wordmark">AGENTCAP · LAUNCHBENCH</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="#how">How it works</a>
+        <a href="#install">Install</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#compare">Compare</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <a class="btn-primary btn-small" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
+      <!-- COPY:nav END -->
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- COPY:hero START -->
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="shell">
+        <p class="eyebrow">Local spend cap for unattended API-key runs</p>
+        <h1 id="hero-title">The API-key guard for unattended Codex CLI and Gemini CLI runs.</h1>
+        <p class="lede">
+          AgentCap runs Codex CLI or Gemini CLI behind a local proxy on
+          <code>127.0.0.1</code>, caps spend for the run, clamps the output limit
+          when the budget runs short, and kills the local process at the cap —
+          then prints why.
+        </p>
+        <div class="cta-row">
+          <a class="btn-primary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12 one-time</a>
+          <a class="btn-secondary" href="#install">Install free</a>
+        </div>
+        <p class="micro">No account. No server. Nothing leaves your machine except your own API calls (and, for Pro, a license check about once a week).</p>
+      </div>
+    </section>
+    <!-- COPY:hero END -->
+
+    <!-- COPY:problem START -->
+    <section class="section" id="problem" aria-labelledby="problem-title">
+      <div class="shell">
+        <h2 id="problem-title">An unattended run can spend while you are away</h2>
+        <p>
+          A looping agent or a long unattended Codex CLI / Gemini CLI run can burn
+          money on API keys while you are not watching. Provider budget alerts are
+          delayed and usually do not stop anything — by the time the email arrives,
+          the spend has already happened.
+        </p>
+      </div>
+    </section>
+    <!-- COPY:problem END -->
+
+    <!-- COPY:how START -->
+    <section class="section" id="how" aria-labelledby="how-title">
+      <div class="shell">
+        <h2 id="how-title">How it works</h2>
+        <ol class="steps">
+          <li>
+            <h3>Wrap the command</h3>
+            <pre><code>agentcap run --cap 2 -- codex exec "fix the failing tests"
+agentcap run --cap 2 -- gemini -p "refactor utils.py"
+agentcap run --cap 2 -- python my_agent.py</code></pre>
+            <p class="steps-note">
+              Uses your API key (<code>OPENAI_API_KEY</code> /
+              <code>GEMINI_API_KEY</code>). ChatGPT or Google sign-in
+              (OAuth/subscription) traffic is not metered.
+            </p>
+          </li>
+          <li>
+            <h3>Requests go through the proxy</h3>
+            <p>
+              AgentCap sets <code>OPENAI_BASE_URL</code> and
+              <code>GOOGLE_GEMINI_BASE_URL</code> for the child, so requests go
+              through the local proxy. It meters <code>POST /v1/responses</code>
+              and <code>/v1/chat/completions</code> — Codex CLI uses the Responses
+              API — and Gemini <code>generateContent</code> /
+              <code>streamGenerateContent</code>. Before each request it reserves
+              the worst-case cost and lowers the output limit to what is left.
+            </p>
+          </li>
+          <li>
+            <h3>The cap stops the run</h3>
+            <p>
+              At the cap it blocks the request and kills the child process group
+              (<code>SIGTERM</code>, then <code>SIGKILL</code> after 5 s), then
+              prints the reason in the terminal. The run exits with code 3 — or 4
+              for a detected loop in Pro, which can also send webhook and Telegram
+              alerts.
+            </p>
+          </li>
+        </ol>
+      </div>
+    </section>
+    <!-- COPY:how END -->
+
+    <!-- COPY:install START -->
+    <section class="section" id="install" aria-labelledby="install-title">
+      <div class="shell">
+        <h2 id="install-title">Install</h2>
+        <pre><code>pipx install agentcap-cli</code></pre>
+        <p class="note">(installs the <code>agentcap</code> command)</p>
+        <p>Then put a cap on a run:</p>
+        <pre><code># Codex CLI (API-key mode)
+agentcap run --cap 2 -- codex exec "fix the failing tests"
+
+# Gemini CLI (API-key mode)
+agentcap run --cap 2 -- gemini -p "refactor utils.py"
+
+# your own script, if it honours OPENAI_BASE_URL
+agentcap run --cap 2 -- python my_agent.py</code></pre>
+        <p class="micro">
+          Both CLIs must be in API-key mode — see
+          <a href="#how">How it works</a> for what is metered.
+        </p>
+      </div>
+    </section>
+    <!-- COPY:install END -->
+
+    <!-- COPY:pricing START -->
+    <section class="section" id="pricing" aria-labelledby="pricing-title">
+      <div class="shell">
+        <h2 id="pricing-title">Free vs Pro</h2>
+        <div class="cards">
+          <article class="card" aria-labelledby="free-title">
+            <h3 id="free-title">Free</h3>
+            <p class="price">$0</p>
+            <ul>
+              <li>Per-run hard cap with a worst-case reservation</li>
+              <li>Output clamping so the run keeps going</li>
+              <li>Kills the local process at the cap</li>
+              <li>Terminal alert that tells you why</li>
+              <li>Free forever, no account</li>
+            </ul>
+            <a class="btn-secondary" href="#install">Install free</a>
+          </article>
+          <article class="card card-pro" aria-labelledby="pro-title">
+            <h3 id="pro-title">Pro</h3>
+            <p class="price">$12 <span class="price-note">one-time</span></p>
+            <ul>
+              <li>Loop breaker: stops a stuck agent (exit code 4)</li>
+              <li>Webhook + Telegram alerts</li>
+              <li>Hourly / daily caps, as an extra</li>
+              <li>License for your machines</li>
+            </ul>
+            <a class="btn-primary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
+          </article>
+        </div>
+        <p class="micro">Payments handled by Polar (merchant of record). Not a subscription.</p>
+      </div>
+    </section>
+    <!-- COPY:pricing END -->
+
+    <!-- COPY:compare START -->
+    <section class="section" id="compare" aria-labelledby="compare-title">
+      <div class="shell">
+        <h2 id="compare-title">How it compares</h2>
+        <div class="table-wrap">
+          <table class="compare">
+            <thead>
+              <tr>
+                <th scope="col">Tool</th>
+                <th scope="col">What it does and how it enforces a cap</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">RelayPlane</th>
+                <td>
+                  <a href="https://relayplane.com">relayplane.com</a>: free,
+                  MIT-licensed local proxy with daily/hourly/per-request/per-run
+                  caps, routing and a kill switch. In its source (as of early Oct
+                  2026) we found no inbound OpenAI Responses API
+                  (<code>/v1/responses</code>) route and no Gemini-native
+                  <code>generateContent</code> route, and on budget breach it
+                  blocks or warns at the proxy rather than stopping your agent's
+                  process. A good choice for Anthropic/OpenAI chat traffic and
+                  broader routing.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">LoopGuard</th>
+                <td>
+                  <a href="https://tryloopguard.com">tryloopguard.com</a>: free
+                  MIT CLI that hooks into Claude Code, Codex CLI and Cursor (no
+                  proxy, works with subscriptions) with per-session/daily caps and
+                  a no-progress loop killer; paid tier ($9/month) adds phone/Slack
+                  alerts and remote pause. A good fit if you use subscriptions or
+                  Claude Code.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">LiteLLM budgets</th>
+                <td>
+                  Budgets per key, user or team in the LiteLLM proxy; budgets need
+                  its database. A good fit if you already run a LiteLLM gateway; it
+                  is a server you deploy and configure.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">OpenRouter / provider caps</th>
+                <td>
+                  OpenRouter credit limits, and provider spend caps from OpenAI or
+                  Google, are account- or key-level and typically monthly. Provider
+                  caps are evaluated with a delay (Google has described about 10
+                  minutes for the Gemini API cap), so a fast loop can overshoot.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">AgentCap</th>
+                <td>
+                  Proxy for API-key traffic from Codex CLI, Gemini CLI or your own
+                  script: per-run cap with worst-case reservation and output
+                  clamping, kills the process group at the cap and prints why. Pro:
+                  loop breaker + Telegram/webhook alerts, $12 one-time.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="micro">Pick what matches your setup — these tools can also be combined.</p>
+      </div>
+    </section>
+    <!-- COPY:compare END -->
+
+    <!-- COPY:faq START -->
+    <section class="section" id="faq" aria-labelledby="faq-title">
+      <div class="shell">
+        <h2 id="faq-title">FAQ</h2>
+
+        <details>
+          <summary>Does it see my prompts or keys?</summary>
+          <p>
+            No. Nothing about prompts, responses or keys is stored — just token
+            counts, costs, model names, timestamps and request hashes.
+          </p>
+        </details>
+
+        <details>
+          <summary>Is it a mathematical guarantee?</summary>
+          <p>
+            No. The cap is enforced before each request with a conservative
+            reservation. If a provider bills more input tokens than estimated, final
+            spend can exceed the cap by at most one request's estimation error, and
+            you get an overshoot alert.
+          </p>
+        </details>
+
+        <details>
+          <summary>Does it work with subscription/OAuth logins?</summary>
+          <p>
+            No. API-key traffic through <code>OPENAI_BASE_URL</code> /
+            <code>GOOGLE_GEMINI_BASE_URL</code> is metered, so Codex CLI and Gemini
+            CLI must run in API-key mode. ChatGPT or Google sign-in
+            (OAuth/subscription) traffic is not metered.
+          </p>
+        </details>
+
+        <details>
+          <summary>Which providers does it support?</summary>
+          <p>
+            OpenAI-compatible and Gemini APIs. Prices come from a local table you can
+            override.
+          </p>
+        </details>
+
+        <details>
+          <summary>Is Pro a subscription?</summary>
+          <p>No, it is a one-time $12 purchase.</p>
+        </details>
+
+        <details>
+          <summary>Refunds?</summary>
+          <p>Contact <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>.</p>
+        </details>
+
+        <details>
+          <summary>Does it need an account or a server?</summary>
+          <p>No, it runs locally on your machine.</p>
+        </details>
+      </div>
+    </section>
+    <!-- COPY:faq END -->
+  </main>
+
+  <!-- COPY:footer START -->
+  <footer class="site-footer">
+    <div class="shell footer-inner">
+      <p>AgentCap by Launchbench</p>
+      <p>
+        Contact <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>
+        <!-- GitHub link: add back when public repo exists (GITHUB_URL_PLACEHOLDER) -->
+      </p>
+    </div>
+  </footer>
+  <!-- COPY:footer END -->
+</body>
+</html>

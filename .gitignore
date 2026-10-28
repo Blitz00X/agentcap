@@ -1,0 +1,22 @@
+.venv/
+venv/
+.env
+.env.*
+*.pem
+*.key
+*.log
+.DS_Store
+__pycache__/
+*.py[cod]
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+# local licence cache (default: ~/.config/agentcap/license.json)
+license.json
