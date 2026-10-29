@@ -279,8 +279,11 @@ def test_zero_request_warning_is_yellow_on_a_tty(tmp_path):
     stderr = _TtyStringIO()
     runner, _ = _runner(tmp_path, [sys.executable, "-c", "pass"], err=stderr)
     assert runner.run() == 0
-    assert "\033[33m" in stderr.getvalue()
-    assert stderr.getvalue().rstrip().endswith("\033[0m")
+    output = stderr.getvalue()
+    assert "\033[33m" in output
+    assert "\033[0m" in output
+    # The actionable hint follows the coloured warning, uncoloured.
+    assert output.rstrip().splitlines()[-1].startswith("hint: ")
 
 
 def test_no_zero_request_warning_when_requests_were_metered(tmp_path):
@@ -426,3 +429,121 @@ def test_terminate_kills_grandchild_after_leader_already_exited(tmp_path):
     while time.monotonic() < deadline and _process_alive(grandchild):
         time.sleep(0.02)
     assert not _process_alive(grandchild)
+
+
+# ------------------------------------------------------------ actionable hints
+def _fake_cli(tmp_path: Path, name: str = "codex") -> Path:
+    path = tmp_path / name
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_zero_request_hint_for_supported_cli(tmp_path):
+    runner, stderr = _runner(tmp_path, [str(_fake_cli(tmp_path))])
+    assert runner.run() == 0
+    output = stderr.getvalue()
+    assert "hint: agentcap saw no API requests." in output
+    assert "OPENAI_API_KEY" in output
+    assert "GEMINI_API_KEY" in output
+    assert "README 'Supported'" in output
+    assert "hint: supported: codex, gemini" not in output
+
+
+def test_zero_request_hint_for_unknown_cli_names_supported_tools(tmp_path):
+    runner, stderr = _runner(tmp_path, [sys.executable, "-c", "pass"])
+    assert runner.run() == 0
+    output = stderr.getvalue()
+    assert "hint: agentcap saw no API requests." in output
+    assert "hint: supported: codex, gemini" in output
+    assert "OPENAI_BASE_URL / GOOGLE_GEMINI_BASE_URL" in output
+    assert "agentcap run --cap 1 -- python your_script.py" in output
+    # The no-traffic hint comes first, then the supported-CLI hint.
+    assert output.index("hint: agentcap saw no API requests.") < output.index(
+        "hint: supported:"
+    )
+
+
+def test_unknown_cli_hint_is_not_printed_when_traffic_was_metered(tmp_path):
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import os, httpx\n"
+            "httpx.post(os.environ['OPENAI_BASE_URL'] + '/chat/completions',\n"
+            "           json={'model': 'gpt-4o-mini',\n"
+            "                 'messages': [{'role': 'user', 'content': 'hi'}]},\n"
+            "           timeout=5)\n"
+        ),
+    ]
+    runner, stderr = _runner(tmp_path, child, cap="1")
+    assert runner.run() == 0
+    output = stderr.getvalue()
+    assert "hint: supported:" not in output
+    assert "hint: agentcap saw no API requests." not in output
+
+
+def test_first_request_refusal_hint_suggests_three_times_the_reservation(tmp_path):
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import os, sys, httpx\n"
+            "httpx.post(os.environ['OPENAI_BASE_URL'] + '/chat/completions',\n"
+            "           json={'model': 'gpt-4o-mini',\n"
+            "                 'messages': [{'role': 'user', 'content': 'hi'}],\n"
+            "                 'max_completion_tokens': 100000},\n"
+            "           timeout=5)\n"
+            "sys.exit(0)\n"
+        ),
+    ]
+    runner, stderr = _runner(tmp_path, child, cap="0.01", clamp_output=False)
+    assert runner.run() == 0
+    summary = runner.summary
+    assert summary is not None
+    assert summary.spent_usd == 0
+    assert summary.refused_requests == 1
+    reserved = runner._proxy.last_refused_reserved_usd
+    assert reserved is not None and reserved > 0
+    from agentcap.runner import _hint_usd, _suggested_cap
+
+    output = stderr.getvalue()
+    assert (
+        f"hint: the first request alone needs about {_hint_usd(reserved)}"
+        in output
+    )
+    assert "but the cap is $0.01." in output
+    assert (
+        f"Try --cap {_suggested_cap(reserved):.2f} (about 3x one request)"
+        in output
+    )
+    assert "or lower max output." in output
+
+
+def test_no_first_request_hint_when_requests_were_served(tmp_path):
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import os, httpx\n"
+            "httpx.post(os.environ['OPENAI_BASE_URL'] + '/chat/completions',\n"
+            "           json={'model': 'gpt-4o-mini',\n"
+            "                 'messages': [{'role': 'user', 'content': 'hi'}]},\n"
+            "           timeout=5)\n"
+        ),
+    ]
+    runner, stderr = _runner(tmp_path, child, cap="1")
+    assert runner.run() == 0
+    assert "hint: the first request alone" not in stderr.getvalue()
+
+
+def test_suggested_cap_rounds_up_and_has_a_floor():
+    from agentcap.runner import _hint_usd, _suggested_cap
+
+    assert _suggested_cap(Decimal("0.001")) == Decimal("0.05")
+    assert _suggested_cap(Decimal("0.0123")) == Decimal("0.05")
+    assert _suggested_cap(Decimal("0.02")) == Decimal("0.06")
+    assert _suggested_cap(Decimal("0.06")) == Decimal("0.18")
+    assert _hint_usd(Decimal("0.01")) == "$0.01"
+    assert _hint_usd(Decimal("0.0123")) == "$0.0123"
+    assert _hint_usd(Decimal("0")) == "$0.00"

@@ -18,6 +18,7 @@ from .alerts import dispatcher_from_env
 from .ledger import Caps, Ledger
 from .license import (
     LicenseManager,
+    LicenseNetworkError,
     features,
     status_from_environment,
 )
@@ -42,6 +43,45 @@ PRO_CAP_MESSAGE = (
     "command was not started. Run `agentcap license status`, then "
     '`agentcap license activate "YOUR_LICENSE_KEY"`.'
 )
+PRO_HINT = (
+    "hint: Pro is $12 one-time: https://agentcap.launchbench.studio/#pricing — "
+    'then `agentcap license activate "YOUR_LICENSE_KEY"`.'
+)
+PRO_ALERTS_MESSAGE = (
+    "agentcap: webhook/Telegram alerts require an active Pro license; "
+    "they are disabled for this run."
+)
+DEACTIVATE_NO_LICENSE = (
+    "agentcap: no active license on this machine; nothing to deactivate."
+)
+DEACTIVATE_LEGACY = (
+    "agentcap: local license removed. This activation was created by an older "
+    "version and could not be released on the server; manage activations in "
+    "the Polar customer portal."
+)
+DEACTIVATE_RELEASED = (
+    "agentcap: activation released on the license server and local license "
+    "removed. You can activate on another machine now."
+)
+DEACTIVATE_UNKNOWN = (
+    "agentcap: the license server no longer knows this activation (already "
+    "released?). Local license removed."
+)
+DEACTIVATE_LOCAL_ONLY = (
+    "agentcap: local license removed. The activation remains on the license "
+    "server; manage activations in the Polar customer portal."
+)
+
+
+def _deactivate_failure(reason: str) -> str:
+    return (
+        "agentcap: could not reach the license server to release this "
+        f"activation ({reason}). Local license kept; retry "
+        "`agentcap license deactivate` when online, or use `--local-only` to "
+        "just remove the local file."
+    )
+
+
 LICENSE_USAGE_MESSAGE = (
     'Usage: agentcap license activate "YOUR_LICENSE_KEY" '
     "(copy the key from your Polar purchase / customer portal)"
@@ -76,6 +116,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="status (default), features, activate <KEY>, or deactivate",
     )
     license_parser.add_argument("key", nargs="?", help="license key for 'activate'")
+    license_parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="deactivate: remove the local license without contacting the server",
+    )
 
     run = subparsers.add_parser(
         "run", help="run a command under a spend cap (use -- before the command)"
@@ -188,6 +233,81 @@ def _license_manager() -> LicenseManager:
     return LicenseManager()
 
 
+def _remove_local_license(manager: LicenseManager) -> bool:
+    try:
+        manager.clear()
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        print(
+            "agentcap: could not remove the local license at "
+            f"{manager.path}: {detail}. Fix the file permission and try again.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _license_deactivate(manager: LicenseManager, *, local_only: bool = False) -> int:
+    cached = manager.cached_license()
+
+    if local_only:
+        # Remove whatever local file exists, even a stale or unreadable one.
+        if cached is None and not manager.path.exists():
+            print(DEACTIVATE_NO_LICENSE)
+            return 0
+        if not _remove_local_license(manager):
+            return 1
+        print(DEACTIVATE_LOCAL_ONLY)
+        return 0
+
+    if cached is None:
+        print(DEACTIVATE_NO_LICENSE)
+        return 0
+
+    if not cached.activation_id:
+        if not _remove_local_license(manager):
+            return 1
+        print(DEACTIVATE_LEGACY)
+        return 0
+
+    releaser = getattr(manager.validator, "deactivate", None)
+    if not callable(releaser):
+        print(
+            _deactivate_failure("server-side release is not supported"),
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        status_code = releaser(cached.key, cached.activation_id)
+    except Exception as exc:  # transport failures keep the local licence
+        if isinstance(exc, LicenseNetworkError):
+            reason = str(exc)
+        else:
+            reason = type(exc).__name__
+        # The key is a credential: never echo it, even from an error string.
+        if cached.key:
+            reason = reason.replace(cached.key, "<redacted>")
+        print(_deactivate_failure(reason), file=sys.stderr)
+        return 1
+
+    if status_code == 204:
+        if not _remove_local_license(manager):
+            return 1
+        print(DEACTIVATE_RELEASED)
+        return 0
+
+    if status_code == 404:
+        if not _remove_local_license(manager):
+            return 1
+        print(DEACTIVATE_UNKNOWN)
+        return 0
+
+    detail = "validation error" if status_code == 422 else f"HTTP {status_code}"
+    print(_deactivate_failure(detail), file=sys.stderr)
+    return 1
+
+
 def _license_persist_error(exc: OSError, path) -> str:
     detail = exc.strerror or str(exc)
     return (
@@ -218,13 +338,7 @@ def _license(args: argparse.Namespace) -> int:
         return 0 if status.valid else 1
 
     if args.action == "deactivate":
-        try:
-            manager.clear()
-        except OSError as exc:
-            print(_license_persist_error(exc, manager.path), file=sys.stderr)
-            return 1
-        print("license cache cleared")
-        return 0
+        return _license_deactivate(manager, local_only=bool(args.local_only))
 
     status = status_from_environment()
     if args.action == "features":
@@ -263,6 +377,25 @@ def _upstream_overrides() -> dict[str, str] | None:
     return {override.provider: override.url for override in overrides}
 
 
+def _warn_alerts_need_pro(active_features: set[str]) -> None:
+    """Explain why configured alert channels will stay silent on Free."""
+
+    webhook = bool(os.environ.get("AGENTCAP_WEBHOOK_URL", "").strip())
+    telegram = bool(
+        os.environ.get("AGENTCAP_TELEGRAM_BOT_TOKEN", "").strip()
+        and os.environ.get("AGENTCAP_TELEGRAM_CHAT_ID", "").strip()
+    )
+    if not (webhook or telegram):
+        return
+    gated = ("webhook_alerts" not in active_features) or (
+        "telegram_alerts" not in active_features
+    )
+    if not gated:
+        return
+    print(PRO_ALERTS_MESSAGE, file=sys.stderr)
+    print(PRO_HINT, file=sys.stderr)
+
+
 def _run(args: argparse.Namespace) -> int:
     if _windows_unsupported():
         print(WINDOWS_UNSUPPORTED, file=sys.stderr)
@@ -297,7 +430,9 @@ def _run(args: argparse.Namespace) -> int:
         or (day_cap is not None and "day_cap" not in active_features)
     ):
         print(PRO_CAP_MESSAGE, file=sys.stderr)
+        print(PRO_HINT, file=sys.stderr)
         return 2
+    _warn_alerts_need_pro(active_features)
 
     try:
         runner = Runner(
@@ -341,6 +476,7 @@ def _serve(args: argparse.Namespace) -> int:
         return 2
 
     active_features = set(features(status_from_environment().tier))
+    _warn_alerts_need_pro(active_features)
     run_id = f"serve-{int(time.time())}"
     alerts = dispatcher_from_env(features=active_features)
     config = ProxyConfig(

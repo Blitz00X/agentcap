@@ -16,6 +16,7 @@ import pytest
 from agentcap import __version__
 from agentcap.license import (
     ACTIVATE_PATH,
+    DEACTIVATE_PATH,
     NOT_CONFIGURED_REASON,
     NOT_FOUND_REASON,
     POLAR_API_BASE,
@@ -76,10 +77,11 @@ def _offline_guard(monkeypatch):
 class PolarStub:
     """Routes customer-portal calls to queued mocked responses."""
 
-    def __init__(self, *, validate=None, activate=None) -> None:
+    def __init__(self, *, validate=None, activate=None, deactivate=None) -> None:
         self.requests: list[dict[str, object]] = []
         self._validate = validate
         self._activate = activate
+        self._deactivate = deactivate
         self.transport = httpx.MockTransport(self._handle)
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
@@ -92,7 +94,11 @@ class PolarStub:
             }
         )
         name = request.url.path.rsplit("/", 1)[-1]
-        responder = self._validate if name == "validate" else self._activate
+        responder = {
+            "validate": self._validate,
+            "activate": self._activate,
+            "deactivate": self._deactivate,
+        }.get(name)
         if responder is None:
             raise AssertionError(f"unexpected request to {request.url.path}")
         if callable(responder):
@@ -583,6 +589,64 @@ def test_activate_rejection_keeps_cache_for_a_different_key(tmp_path):
     assert status.valid is False
     assert path.exists()
     assert manager.check().valid is True
+
+
+# -------------------------------------------------------------- deactivation
+def test_deactivate_releases_activation_with_key_and_org():
+    clock = FakeClock()
+    stub = PolarStub(deactivate=httpx.Response(204))
+    validator = make_validator(stub, clock)
+
+    assert validator.deactivate(KEY, "act_123") == 204
+    assert stub.paths == [DEACTIVATE_PATH]
+    assert DEACTIVATE_PATH == "/v1/customer-portal/license-keys/deactivate"
+    assert stub.payloads == [
+        {"key": KEY, "organization_id": ORG, "activation_id": "act_123"}
+    ]
+
+
+def test_deactivate_unknown_activation_returns_404():
+    clock = FakeClock()
+    stub = PolarStub(deactivate=httpx.Response(404, json={"detail": "Not found"}))
+    assert make_validator(stub, clock).deactivate(KEY, "act_gone") == 404
+    assert stub.paths == [DEACTIVATE_PATH]
+
+
+def test_deactivate_validation_error_returns_422():
+    clock = FakeClock()
+    stub = PolarStub(
+        deactivate=httpx.Response(422, json={"detail": "activation_id is required"})
+    )
+    assert make_validator(stub, clock).deactivate(KEY, "act_bad") == 422
+
+
+def test_deactivate_network_error_raises_without_echoing_key():
+    clock = FakeClock()
+    stub = PolarStub(deactivate=raise_connect)
+    with pytest.raises(LicenseNetworkError) as excinfo:
+        make_validator(stub, clock).deactivate(KEY, "act_123")
+    assert KEY not in str(excinfo.value)
+
+
+def test_deactivate_5xx_raises_network_error():
+    clock = FakeClock()
+    stub = PolarStub(deactivate=httpx.Response(503, json={"detail": "unavailable"}))
+    with pytest.raises(LicenseNetworkError):
+        make_validator(stub, clock).deactivate(KEY, "act_123")
+    assert stub.paths == [DEACTIVATE_PATH]
+
+
+def test_deactivate_without_org_makes_no_request(monkeypatch):
+    monkeypatch.setenv("AGENTCAP_POLAR_ORG_ID", "POLAR_ORG_ID_PLACEHOLDER")
+    stub = PolarStub()  # any request would raise
+    validator = PolarLicenseValidator(
+        base_url=BASE,
+        client=httpx.Client(transport=stub.transport),
+        clock=FakeClock(),
+    )
+    with pytest.raises(LicenseNetworkError):
+        validator.deactivate(KEY, "act_123")
+    assert stub.requests == []
 
 
 # --------------------------------------------------------------------- cache

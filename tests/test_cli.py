@@ -87,6 +87,41 @@ def test_free_tier_refuses_each_pro_cap_individually(fake_runner, capsys, flag):
     assert "require an active Pro license" in capsys.readouterr().err
 
 
+def test_free_tier_pro_refusal_includes_the_upgrade_hint(fake_runner, capsys):
+    assert cli.main(["run", "--hour-cap", "1", "--", "true"]) == 2
+    err = capsys.readouterr().err
+    assert (
+        "hint: Pro is $12 one-time: "
+        "https://agentcap.launchbench.studio/#pricing — then "
+        '`agentcap license activate "YOUR_LICENSE_KEY"`.'
+    ) in err
+
+
+def test_free_tier_alerts_are_gated_with_an_upgrade_hint(
+    fake_runner, monkeypatch, capsys
+):
+    monkeypatch.setenv("AGENTCAP_WEBHOOK_URL", "https://example.invalid/hook")
+
+    assert cli.main(["run", "--", "true"]) == 0
+    # The run still starts; only the Pro delivery channel is disabled.
+    assert len(fake_runner.instances) == 1
+    err = capsys.readouterr().err
+    assert "webhook/Telegram alerts require an active Pro license" in err
+    assert "hint: Pro is $12 one-time" in err
+
+
+def test_pro_alerts_do_not_print_the_upgrade_hint(
+    fake_runner, monkeypatch, tmp_path, capsys
+):
+    write_pro_cache(tmp_path / "license.json")
+    monkeypatch.setenv("AGENTCAP_WEBHOOK_URL", "https://example.invalid/hook")
+
+    assert cli.main(["run", "--", "true"]) == 0
+    err = capsys.readouterr().err
+    assert "require an active Pro license" not in err
+    assert "hint: Pro is $12 one-time" not in err
+
+
 def test_pro_license_enables_hour_and_day_caps(fake_runner, tmp_path, capsys):
     write_pro_cache(tmp_path / "license.json")
     assert cli.main(
@@ -226,15 +261,20 @@ def test_license_status_reads_cached_polar_license(monkeypatch, tmp_path, capsys
 
 def test_license_deactivate_clears_local_cache(monkeypatch, tmp_path, capsys):
     path = tmp_path / "license.json"
-    write_pro_cache(path)
+    write_pro_cache(path)  # older cache entry: no activation_id
     monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(path))
 
     assert cli.main(["license", "deactivate"]) == 0
     assert not path.exists()
-    assert capsys.readouterr().out.strip() == "license cache cleared"
+    out = capsys.readouterr().out.strip()
+    assert "local license removed" in out
+    assert "older version" in out
+    assert "Polar customer portal" in out
+    assert "polar-key" not in out
 
     # Idempotent: no cache is not an error.
     assert cli.main(["license", "deactivate"]) == 0
+    assert "nothing to deactivate" in capsys.readouterr().out
 
 
 def test_license_activate_without_key_fails(monkeypatch, tmp_path, capsys):
@@ -319,6 +359,7 @@ def test_license_deactivate_clear_error_is_reported_without_traceback(
     monkeypatch, tmp_path, capsys
 ):
     path = tmp_path / "license.json"
+    write_pro_cache(path)  # legacy entry: removal is local-only
     monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(path))
 
     def fail_clear(self):
@@ -328,10 +369,234 @@ def test_license_deactivate_clear_error_is_reported_without_traceback(
 
     assert cli.main(["license", "deactivate"]) == 1
     captured = capsys.readouterr()
-    assert "license validated, but could not save activation" in captured.err
+    assert "could not remove the local license" in captured.err
     assert str(path) in captured.err
     assert "Permission denied" in captured.err
     assert "Traceback" not in captured.err
+
+
+@pytest.fixture()
+def deactivation(monkeypatch, tmp_path):
+    """A fake Polar validator for `license deactivate` + the cache path."""
+
+    state: dict = {"status": 204, "error": None, "calls": []}
+
+    class StubPolar:
+        persist = True
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def validate(self, key, activation_id=None):
+            raise AssertionError("deactivate must not re-validate the key")
+
+        def activate(self, key):
+            raise AssertionError("deactivate must not activate")
+
+        def deactivate(self, key, activation_id):
+            state["calls"].append((key, activation_id))
+            if state["error"] is not None:
+                raise state["error"]
+            return state["status"]
+
+    monkeypatch.setattr(license_module, "PolarLicenseValidator", StubPolar)
+    path = tmp_path / "license.json"
+    monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(path))
+    return state, path
+
+
+def _write_cache_with_activation(path, activation_id="act_cached", key="polar-key"):
+    path.write_text(
+        json.dumps(
+            {
+                "key": key,
+                "tier": "pro",
+                "valid": True,
+                "reason": "license valid",
+                "checked_at": time.time(),
+                "source": "polar",
+                "activation_id": activation_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_license_deactivate_without_local_license_is_a_noop(deactivation, capsys):
+    state, path = deactivation
+    assert cli.main(["license", "deactivate"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == (
+        "agentcap: no active license on this machine; nothing to deactivate."
+    )
+    assert state["calls"] == []
+    assert not path.exists()
+
+
+def test_license_deactivate_legacy_cache_removes_without_server_call(
+    deactivation, capsys
+):
+    state, path = deactivation
+    _write_cache_with_activation(path, activation_id=None)
+
+    assert cli.main(["license", "deactivate"]) == 0
+    captured = capsys.readouterr()
+    assert not path.exists()
+    assert state["calls"] == []
+    assert captured.out.strip() == (
+        "agentcap: local license removed. This activation was created by an "
+        "older version and could not be released on the server; manage "
+        "activations in the Polar customer portal."
+    )
+    assert "polar-key" not in captured.out + captured.err
+
+
+def test_license_deactivate_released_on_server_removes_local_file(
+    deactivation, capsys
+):
+    state, path = deactivation
+    _write_cache_with_activation(path, activation_id="act_cached")
+
+    assert cli.main(["license", "deactivate"]) == 0
+    captured = capsys.readouterr()
+    assert not path.exists()
+    assert state["calls"] == [("polar-key", "act_cached")]
+    assert captured.out.strip() == (
+        "agentcap: activation released on the license server and local license "
+        "removed. You can activate on another machine now."
+    )
+    assert "polar-key" not in captured.out + captured.err
+
+
+def test_license_deactivate_unknown_activation_still_removes_local_file(
+    deactivation, capsys
+):
+    state, path = deactivation
+    state["status"] = 404
+    _write_cache_with_activation(path, activation_id="act_gone")
+
+    assert cli.main(["license", "deactivate"]) == 0
+    captured = capsys.readouterr()
+    assert not path.exists()
+    assert state["calls"] == [("polar-key", "act_gone")]
+    assert captured.out.strip() == (
+        "agentcap: the license server no longer knows this activation "
+        "(already released?). Local license removed."
+    )
+    assert "polar-key" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [(422, "validation error"), (429, "HTTP 429"), (400, "HTTP 400")],
+)
+def test_license_deactivate_rejected_keeps_local_license(
+    deactivation, capsys, status, reason
+):
+    state, path = deactivation
+    state["status"] = status
+    _write_cache_with_activation(path, activation_id="act_cached")
+
+    assert cli.main(["license", "deactivate"]) == 1
+    captured = capsys.readouterr()
+    assert path.exists()
+    assert state["calls"] == [("polar-key", "act_cached")]
+    assert captured.err.startswith("agentcap: could not reach the license server")
+    assert f"({reason})" in captured.err
+    assert "Local license kept" in captured.err
+    assert "`agentcap license deactivate`" in captured.err
+    assert "`--local-only`" in captured.err
+    assert "polar-key" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LicenseNetworkError("license server unreachable (ConnectError)"),
+        LicenseNetworkError("license server error (HTTP 503)"),
+        LicenseNetworkError("license server request timed out"),
+    ],
+)
+def test_license_deactivate_network_failure_keeps_local_license(
+    deactivation, capsys, error
+):
+    state, path = deactivation
+    state["error"] = error
+    _write_cache_with_activation(path, activation_id="act_cached")
+
+    assert cli.main(["license", "deactivate"]) == 1
+    captured = capsys.readouterr()
+    assert path.exists()
+    assert f"({error})" in captured.err
+    assert "could not reach the license server to release this activation" in (
+        captured.err
+    )
+    assert "polar-key" not in captured.out + captured.err
+
+
+def test_license_deactivate_unexpected_validator_error_is_reported(
+    deactivation, capsys
+):
+    state, path = deactivation
+    state["error"] = RuntimeError("boom")
+    _write_cache_with_activation(path, activation_id="act_cached")
+
+    assert cli.main(["license", "deactivate"]) == 1
+    captured = capsys.readouterr()
+    assert path.exists()
+    assert "(RuntimeError)" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_license_deactivate_local_only_skips_server(deactivation, capsys):
+    state, path = deactivation
+    _write_cache_with_activation(path, activation_id="act_cached")
+
+    assert cli.main(["license", "deactivate", "--local-only"]) == 0
+    captured = capsys.readouterr()
+    assert not path.exists()
+    assert state["calls"] == []
+    assert "local license removed" in captured.out
+    assert "remains on the license server" in captured.out
+    assert "polar-key" not in captured.out + captured.err
+
+
+def test_license_deactivate_local_only_removes_legacy_cache_without_warning(
+    deactivation, capsys
+):
+    state, path = deactivation
+    _write_cache_with_activation(path, activation_id=None)
+
+    assert cli.main(["license", "deactivate", "--local-only"]) == 0
+    captured = capsys.readouterr()
+    assert not path.exists()
+    assert state["calls"] == []
+    assert "remains on the license server" in captured.out
+
+
+def test_license_deactivate_local_only_without_a_file_is_a_noop(deactivation, capsys):
+    state, path = deactivation
+
+    assert cli.main(["license", "deactivate", "--local-only"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == (
+        "agentcap: no active license on this machine; nothing to deactivate."
+    )
+    assert state["calls"] == []
+
+
+def test_license_deactivate_local_only_removes_an_unreadable_cache(
+    deactivation, capsys
+):
+    state, path = deactivation
+    path.write_text("{not json", encoding="utf-8")
+
+    assert cli.main(["license", "deactivate", "--local-only"]) == 0
+    captured = capsys.readouterr()
+    assert not path.exists()
+    assert state["calls"] == []
+    assert "remains on the license server" in captured.out
 
 
 @pytest.mark.parametrize("platform_name", ["nt"])

@@ -20,13 +20,18 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from typing import Any, Callable, Iterable, Mapping, Sequence, TextIO
 
 import httpx
 import uvicorn
 
-from .adapters import AdapterConflict, ensure_codex_routing_is_safe, prepare_child
+from .adapters import (
+    AdapterConflict,
+    detect_agent,
+    ensure_codex_routing_is_safe,
+    prepare_child,
+)
 from .alerts import AlertDispatcher, dispatcher_from_env
 from .ledger import Caps, Ledger
 from .license import features as license_features
@@ -55,8 +60,41 @@ ZERO_REQUEST_WARNING = (
     "Your agent may be calling the API directly "
     "(see README: Supported CLIs)."
 )
+ZERO_REQUEST_HINT = (
+    "hint: agentcap saw no API requests. The wrapped CLI may be using a "
+    "subscription/OAuth login (not metered) or a base URL agentcap does not "
+    "set. For Codex use an API key (OPENAI_API_KEY); for Gemini use "
+    "GEMINI_API_KEY. See README 'Supported'."
+)
+UNSUPPORTED_CLI_HINT = (
+    "hint: supported: codex, gemini, or any SDK script that honours "
+    "OPENAI_BASE_URL / GOOGLE_GEMINI_BASE_URL. Run `agentcap run --cap 1 -- "
+    "python your_script.py`."
+)
+FIRST_REQUEST_HINT = (
+    "hint: the first request alone needs about {reserved} (estimated, worst "
+    "case) but the cap is {cap}. Try --cap {suggested} (about 3x one request) "
+    "or lower max output."
+)
 YELLOW = "\033[33m"
 RESET = "\033[0m"
+
+
+def _hint_usd(value: Decimal) -> str:
+    """Short USD amount for hint lines: ``$0.01``, ``$0.0123``."""
+
+    text = f"{value:.4f}".rstrip("0")
+    whole, _, fraction = text.partition(".")
+    if len(fraction) < 2:
+        fraction = fraction.ljust(2, "0")
+    return f"${whole}.{fraction}"
+
+
+def _suggested_cap(reserved: Decimal) -> Decimal:
+    """About 3x one request, rounded up to cents, never below $0.05."""
+
+    tripled = (reserved * 3).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+    return max(Decimal("0.05"), tripled)
 
 
 @dataclass
@@ -492,6 +530,8 @@ class Runner:
             self._print_summary(self.summary)
             if self.child is not None and self.summary.requests == 0:
                 self._warn_no_requests()
+                self._hint_no_requests()
+            self._hint_first_request_refused(self.summary)
         return exit_code
 
     def _build_summary(self, reason: str, exit_code: int) -> RunSummary:
@@ -535,6 +575,45 @@ class Runner:
             pass
         try:
             print(message, file=self.stderr, flush=True)
+        except Exception:
+            pass
+
+    def _hint_no_requests(self) -> None:
+        """Actionable follow-up to the zero-request warning."""
+
+        self._print_hint(ZERO_REQUEST_HINT)
+        # An unknown CLI is the common cause: say what is supported as well.
+        if detect_agent(self.argv) is None:
+            self._print_hint(UNSUPPORTED_CLI_HINT)
+
+    def _hint_first_request_refused(self, summary: RunSummary) -> None:
+        """Explain an oversize first request and suggest a feasible cap."""
+
+        if summary.refused_requests < 1 or summary.spent_usd != 0:
+            return
+        proxy = self._proxy
+        reserved = (
+            getattr(proxy, "last_refused_reserved_usd", None)
+            if proxy is not None
+            else None
+        )
+        if reserved is None:
+            return
+        reserved = Decimal(str(reserved))
+        if reserved <= 0:
+            return
+        cap = "none" if summary.cap_usd is None else _hint_usd(summary.cap_usd)
+        self._print_hint(
+            FIRST_REQUEST_HINT.format(
+                reserved=_hint_usd(reserved),
+                cap=cap,
+                suggested=f"{_suggested_cap(reserved):.2f}",
+            )
+        )
+
+    def _print_hint(self, hint: str) -> None:
+        try:
+            print(hint, file=self.stderr, flush=True)
         except Exception:
             pass
 

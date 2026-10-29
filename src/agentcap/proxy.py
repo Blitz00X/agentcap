@@ -264,6 +264,9 @@ class _Proxy:
         self.observed_requests = 0
         #: Model requests refused before they reached the upstream.
         self.refused_requests = 0
+        #: Worst-case cost of the most recently refused request, so the runner
+        #: can suggest a cap when the very first request did not fit.
+        self.last_refused_reserved_usd: Decimal | None = None
         self.clamped_requests = 0
         self.killed = False
         self._thresholds_emitted: set[int] = set()
@@ -363,6 +366,9 @@ class _Proxy:
             "blocked_count": self.blocked_count,
             "observed_requests": self.observed_requests,
             "refused_requests": self.refused_requests,
+            "last_refused_reserved_usd": _optional_money(
+                self.last_refused_reserved_usd
+            ),
             "clamped_requests": self.clamped_requests,
             "killed": self.killed,
         }
@@ -540,6 +546,7 @@ class _Proxy:
         """Budget truly exhausted: reject and kill (at most once per run)."""
 
         self._count_blocked()
+        self.last_refused_reserved_usd = needed
         payload = {
             "scope": budget.scope,
             "cap_usd": str(budget.cap),
@@ -578,6 +585,7 @@ class _Proxy:
         """
 
         self._count_blocked()
+        self.last_refused_reserved_usd = needed
         payload = {
             "scope": budget.scope,
             "cap_usd": str(budget.cap),

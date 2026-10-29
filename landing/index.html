@@ -230,8 +230,9 @@ agentcap run summary
         </div>
         <p class="note">
           Tested with a real Gemini API key on Gemini CLI 0.66 (spend metered from Google&rsquo;s
-          usageMetadata, output clamped to the cap); Gemini CLI 0.58 and Codex CLI 0.163 are
-          tested end-to-end against a local fake API only, not yet with real paid keys.
+          usageMetadata, output clamped to the cap). Codex CLI 0.165 verified against a real
+          OpenAI-compatible upstream (Ollama Cloud, gpt-oss:20b, cap stop with exit 3); not against
+          OpenAI billing. Gemini CLI 0.58 and Codex CLI 0.163 are tested end-to-end against a local fake API only.
         </p>
         <p><strong>Platforms:</strong> Linux and macOS. Windows: not yet (use WSL2).</p>
         <p class="micro">
@@ -467,6 +468,48 @@ agentcap run summary
         <details>
           <summary>Does it need an account or a server?</summary>
           <p>No, it runs locally on your machine.</p>
+        </details>
+
+        <details>
+          <summary>Does clamping output hurt quality?</summary>
+          <p>
+            Yes, it can: when the budget is tight AgentCap lowers max output
+            tokens so the call fits; answers can be shorter or cut off. Use
+            <code>--no-clamp</code> to refuse instead.
+          </p>
+        </details>
+
+        <details>
+          <summary>Does stopping roll back what the agent did?</summary>
+          <p>
+            No. At the cap AgentCap sends SIGTERM then SIGKILL; files or remote
+            changes already made stay. Use git / small steps.
+          </p>
+        </details>
+
+        <details>
+          <summary>Is the ledger my provider bill?</summary>
+          <p>
+            No. It is a local estimate from published prices and reported usage;
+            when usage is missing it charges the full reservation (conservative).
+            Your provider invoice is authoritative.
+          </p>
+        </details>
+
+        <details>
+          <summary>Is the day cap shared across machines?</summary>
+          <p>
+            No. Hour/day caps are per machine (local SQLite ledger). A license
+            covers 3 machines, each with its own budget.
+          </p>
+        </details>
+
+        <details>
+          <summary>What does one-time purchase include?</summary>
+          <p>
+            $12 once, all 0.x updates; not a promise of future major versions.
+            14-day refund window per purchase terms.
+          </p>
         </details>
       </div>
     </section>

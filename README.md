@@ -156,8 +156,9 @@ test suite uses `httpx.MockTransport` and never calls the network.
 | Your own script | Any | Uses the OpenAI or Gemini SDK with base-URL environment variables. | No code changes: AgentCap sets `OPENAI_BASE_URL` and `GOOGLE_GEMINI_BASE_URL`. |
 
 Tested with a real Gemini API key on Gemini CLI 0.66 (spend metered from Google's
-usageMetadata, output clamped to the cap); Gemini CLI 0.58 and Codex CLI 0.163 are
-tested end-to-end against a local fake API only, not yet with real paid keys.
+usageMetadata, output clamped to the cap). Codex CLI 0.165 verified against a real
+OpenAI-compatible upstream (Ollama Cloud, gpt-oss:20b, cap stop with exit 3); not against
+OpenAI billing. Gemini CLI 0.58 and Codex CLI 0.163 are tested end-to-end against a local fake API only.
 
 **Platforms:** Linux and macOS. Windows: not yet (use WSL2).
 
@@ -303,8 +304,13 @@ the 0.x line.
 - The Free tier (per-run cap) needs no key and makes no network calls.
 
 After purchase you receive a licence key by email (via Polar). Activate it with
-`agentcap license activate <KEY>`; `agentcap license deactivate` removes it from
-this machine.
+`agentcap license activate <KEY>`. `agentcap license deactivate` asks the
+license server to release this activation (freeing the slot for another
+machine) and then removes the local license; if the server cannot be reached the
+local license is kept and the command exits 1 so you can retry. Use
+`agentcap license deactivate --local-only` to remove just the local file — the
+activation then still counts toward your 3 machines until you release it in the
+Polar customer portal.
 
 ## How it compares
 
@@ -317,6 +323,26 @@ this machine.
 | AgentCap | Local proxy for API-key traffic from Codex CLI, Gemini CLI or your own script: local spend cap per run with conservative reservation and output clamping, kills the process group at the cap and prints why. Pro: repeated-request breaker + Telegram/webhook alerts, $12 one-time. |
 
 Pick what matches your setup — these tools can also be combined.
+
+## FAQ
+
+**Does clamping output hurt quality?** Yes, it can: when the budget is tight
+AgentCap lowers max output tokens so the call fits; answers can be shorter or
+cut off. Use `--no-clamp` to refuse instead.
+
+**Does stopping roll back what the agent did?** No. At the cap AgentCap sends
+SIGTERM then SIGKILL; files or remote changes already made stay. Use git / small
+steps.
+
+**Is the ledger my provider bill?** No. It is a local estimate from published
+prices and reported usage; when usage is missing it charges the full reservation
+(conservative). Your provider invoice is authoritative.
+
+**Is the day cap shared across machines?** No. Hour/day caps are per machine
+(local SQLite ledger). A license covers 3 machines, each with its own budget.
+
+**What does one-time purchase include?** $12 once, all 0.x updates; not a
+promise of future major versions. 14-day refund window per purchase terms.
 
 ## License
 

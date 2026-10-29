@@ -48,6 +48,7 @@ _UNCONFIGURED_ORG_IDS = frozenset({"", "POLAR_ORG_ID_PLACEHOLDER"})
 
 VALIDATE_PATH = "/v1/customer-portal/license-keys/validate"
 ACTIVATE_PATH = "/v1/customer-portal/license-keys/activate"
+DEACTIVATE_PATH = "/v1/customer-portal/license-keys/deactivate"
 
 NOT_CONFIGURED_REASON = "license server not configured (AGENTCAP_POLAR_ORG_ID)"
 NOT_FOUND_REASON = "license key not found, revoked, disabled, or expired"
@@ -387,6 +388,28 @@ class PolarLicenseValidator:
             return self._reject(code, data, key), None
         raise LicenseNetworkError(f"license server returned HTTP {code}")
 
+    def deactivate(self, key: str, activation_id: str) -> int:
+        """Release one activation slot on the licence server.
+
+        Returns the HTTP status code: ``204`` means the activation was
+        released, ``404`` means the key/activation is unknown (already
+        released, or not belonging to this key), ``422`` is a validation
+        error.  Transport failures and 5xx responses raise
+        :class:`LicenseNetworkError` so the caller can keep the local licence.
+        """
+
+        org = self._configured_organization_id()
+        if org is None:
+            raise LicenseNetworkError(NOT_CONFIGURED_REASON)
+
+        payload: dict[str, object] = {
+            "key": key,
+            "organization_id": org,
+            "activation_id": activation_id,
+        }
+        response = self._post(DEACTIVATE_PATH, payload)
+        return response.status_code
+
 
 def status_from_environment() -> LicenseStatus:
     """Resolve the licence the way the CLI and runner do.
@@ -675,6 +698,14 @@ class LicenseManager:
         if cached is None:
             return None
         return cached.status
+
+    def cached_license(self) -> CachedLicense | None:
+        """The cached licence entry (key included) or ``None``.
+
+        Callers must never print the key: it is a credential.
+        """
+
+        return self._read()
 
     def clear(self) -> None:
         try:
