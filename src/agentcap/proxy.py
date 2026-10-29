@@ -254,6 +254,10 @@ class _Proxy:
                 threshold=config.loop_threshold, window_s=config.loop_window_s
             )
         self.blocked_count = 0
+        #: Model requests the proxy actually saw (forwarded or refused).
+        self.observed_requests = 0
+        #: Model requests refused before they reached the upstream.
+        self.refused_requests = 0
         self.clamped_requests = 0
         self.killed = False
         self._thresholds_emitted: set[int] = set()
@@ -327,6 +331,17 @@ class _Proxy:
             return
         self._trip_kill(callback, payload)
 
+    def _observe(self) -> None:
+        """Record one model request that reached the proxy."""
+
+        self.observed_requests += 1
+
+    def _count_blocked(self) -> None:
+        """Count a request that is refused before it reaches the upstream."""
+
+        self.blocked_count += 1
+        self.refused_requests += 1
+
     # ---------------------------------------------------------------- status
     async def _status(self, request: Request) -> JSONResponse:
         summary = self.ledger.summary(self.config.run_id)
@@ -340,6 +355,8 @@ class _Proxy:
                 "day_usd": _optional_money(self.config.caps.day_usd),
             },
             "blocked_count": self.blocked_count,
+            "observed_requests": self.observed_requests,
+            "refused_requests": self.refused_requests,
             "clamped_requests": self.clamped_requests,
             "killed": self.killed,
         }
@@ -354,12 +371,30 @@ class _Proxy:
 
     async def _handle(self, request: Request, provider: str) -> Response:
         path = request.path_params["path"]
+        # Codex can fall back to a websocket transport.  The proxy cannot meter
+        # a websocket upgrade, so reject it explicitly instead of forwarding it
+        # unmetered (POST /v1/responses keeps working over HTTP).
+        if (
+            provider == "openai"
+            and request.method == "GET"
+            and path.strip("/") == "v1/responses"
+            and "websocket" in request.headers.get("upgrade", "").lower()
+        ):
+            return Response(
+                "agentcap: websocket upgrades are not supported; "
+                "configure the Responses API over HTTP.\n",
+                status_code=405,
+                headers={"Allow": "POST"},
+                media_type="text/plain",
+            )
         body = await request.body()
         decision = self._classify(provider, path, request.method)
         if decision == "blocked":
-            self.blocked_count += 1
+            self._observe()
+            self._count_blocked()
             return _agentcap_error(403, _UNMETERED_MESSAGE, "agentcap_blocked")
         if decision == "allowed_unmetered":
+            self._observe()
             self._emit(
                 {
                     "type": "unmetered",
@@ -410,9 +445,7 @@ class _Proxy:
             day_usd=self.config.caps.day_usd if self.config.has("day_cap") else None,
         )
 
-    def _budget_state(self, caps: Caps) -> _Budget | None:
-        """Remaining room in the tightest active scope (spent + reserved)."""
-
+    def _budget_states(self, caps: Caps) -> list[tuple[str, Decimal, Decimal]]:
         states: list[tuple[str, Decimal, Decimal]] = []
         if caps.run_usd is not None:
             states.append(
@@ -426,11 +459,69 @@ class _Proxy:
             states.append(
                 ("day", caps.day_usd, self.ledger.window_spent(86400.0))
             )
+        return states
+
+    def _budget_state(self, caps: Caps) -> _Budget | None:
+        """Remaining room in the tightest active scope (spent + reserved)."""
+
+        states = self._budget_states(caps)
         if not states:
             return None
         scope, cap, committed = min(states, key=lambda item: item[1] - item[2])
         return _Budget(
             remaining=cap - committed, scope=scope, cap=cap, committed=committed
+        )
+
+    def _exceeded_budget(self) -> _Budget | None:
+        """The first active scope whose settled spend has reached its cap."""
+
+        states = self._budget_states(self._effective_caps())
+        for scope, cap, committed in states:
+            # A $0 cap with no spend has not been "reached": a child that never
+            # made a request must not be reported as cap_exceeded.
+            if committed >= cap and (cap > 0 or committed > 0):
+                return _Budget(
+                    remaining=cap - committed,
+                    scope=scope,
+                    cap=cap,
+                    committed=committed,
+                )
+        return None
+
+    def cap_reached(self) -> bool:
+        """True when any active cap has been reached (used to finalise a run)."""
+
+        try:
+            return self._exceeded_budget() is not None
+        except Exception:
+            return False
+
+    def _trip_if_cap_reached(self, model: str, provider: str) -> None:
+        """Kill immediately when settlement pushes spend to/over an active cap.
+
+        Reserving the worst case is not enough: providers can settle above the
+        reservation (thinking tokens, estimation error).  Once real spend
+        reaches the cap the agent must stop now, not on its next request.
+        """
+
+        try:
+            budget = self._exceeded_budget()
+        except Exception:
+            return
+        if budget is None:
+            return
+        payload = {
+            "scope": budget.scope,
+            "cap_usd": str(budget.cap),
+            "spent_usd": str(budget.committed),
+            "model": model,
+            "provider": provider,
+        }
+        if not self.killed:
+            self._emit({"type": "cap_exceeded", **payload})
+        self._kill_once(
+            self.config.on_cap_exceeded,
+            {"type": "cap_exceeded", "reason": "cap_exceeded", **payload},
         )
 
     def _reject_cap_exceeded(
@@ -442,7 +533,7 @@ class _Proxy:
     ) -> Response:
         """Budget truly exhausted: reject and kill (at most once per run)."""
 
-        self.blocked_count += 1
+        self._count_blocked()
         payload = {
             "scope": budget.scope,
             "cap_usd": str(budget.cap),
@@ -480,7 +571,7 @@ class _Proxy:
         requests, so no kill callback fires.
         """
 
-        self.blocked_count += 1
+        self._count_blocked()
         payload = {
             "scope": budget.scope,
             "cap_usd": str(budget.cap),
@@ -519,26 +610,27 @@ class _Proxy:
         model: str,
         action: str,
     ) -> Response:
+        self._observe()
         try:
             parsed = json.loads(body)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-            self.blocked_count += 1
+            self._count_blocked()
             return _agentcap_error(400, _INVALID_BODY_MESSAGE, "agentcap_invalid_body")
         if not isinstance(parsed, dict):
-            self.blocked_count += 1
+            self._count_blocked()
             return _agentcap_error(400, _INVALID_BODY_MESSAGE, "agentcap_invalid_body")
 
         if provider == "openai":
             raw_model = parsed.get("model")
             model = raw_model.strip() if isinstance(raw_model, str) else ""
         if not model:
-            self.blocked_count += 1
+            self._count_blocked()
             return _unknown_model_error("")
 
         try:
             price = self._lookup_price(provider, model)
         except UnknownModelError:
-            self.blocked_count += 1
+            self._count_blocked()
             return _unknown_model_error(model)
 
         # Service tiers (OpenAI only).  An unknown tier is fail-closed unless
@@ -549,7 +641,7 @@ class _Proxy:
             raw_tier = parsed.get("service_tier")
             if not isinstance(raw_tier, str) or not raw_tier.strip():
                 if not self.config.allow_unmetered:
-                    self.blocked_count += 1
+                    self._count_blocked()
                     return _unknown_service_tier_error(str(raw_tier))
                 raw_tier = None
             requested_tier = raw_tier.strip() if isinstance(raw_tier, str) else None
@@ -562,7 +654,7 @@ class _Proxy:
                     )
                 except UnknownServiceTierError:
                     if not self.config.allow_unmetered:
-                        self.blocked_count += 1
+                        self._count_blocked()
                         return _unknown_service_tier_error(requested_tier)
                     tier_multiplier = Decimal("1")
 
@@ -572,7 +664,7 @@ class _Proxy:
         # Loop detection happens before money is reserved.
         if self.loop is not None:
             if self.loop.record_request(parsed):
-                self.blocked_count += 1
+                self._count_blocked()
                 # ``on_loop_detected`` is the specific hook; a generic kill
                 # callback supplied as ``on_cap_exceeded`` also stops the run.
                 kill_callback = (
@@ -669,7 +761,9 @@ class _Proxy:
                 return self._reject_cap_exceeded(
                     budget, max(reserved, fit.reservation), model, provider
                 )
-            apply_output_clamp(provider, path, parsed, fit.allowed_output)
+            apply_output_clamp(
+                provider, path, parsed, fit.allowed_output, model_price=price
+            )
             clamped_output = fit.allowed_output
             reserved = fit.reservation
 
@@ -682,7 +776,7 @@ class _Proxy:
                 caps,
             )
         except CapExceeded as exc:
-            self.blocked_count += 1
+            self._count_blocked()
             self._emit(
                 {
                     "type": "cap_exceeded",
@@ -1072,7 +1166,14 @@ class _Proxy:
                     "reserved_usd": str(reserved),
                 }
             )
-        self._check_thresholds()
+        # The cap check must never be skipped just because an alert hook failed:
+        # a reservation that under-estimated the request is exactly the case
+        # where the next request would otherwise run past the cap.
+        try:
+            self._check_thresholds()
+        except Exception:
+            pass
+        self._trip_if_cap_reached(model, provider)
 
     def _settle_missing(
         self,
@@ -1104,7 +1205,11 @@ class _Proxy:
                 "usage": None,
             }
         )
-        self._check_thresholds()
+        try:
+            self._check_thresholds()
+        except Exception:
+            pass
+        self._trip_if_cap_reached(model, provider)
 
     def _check_thresholds(self) -> None:
         cap = self.config.caps.run_usd

@@ -266,6 +266,25 @@ def test_get_and_count_tokens_are_free_passthroughs(tmp_path):
     assert ledger.summary("run-1")["reservations"] == 0
 
 
+def test_websocket_upgrade_on_responses_returns_405_with_allow_post(tmp_path):
+    upstream = Upstream(httpx.Response(200, json={"data": []}))
+    app, ledger, _ = build(tmp_path, upstream)
+
+    async def scenario():
+        async with proxy_client(app) as client:
+            return await client.get(
+                "/openai/v1/responses",
+                headers={"connection": "Upgrade", "upgrade": "websocket"},
+            )
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 405
+    assert response.headers["allow"] == "POST"
+    # A websocket upgrade is never forwarded to the upstream unmetered.
+    assert upstream.calls == 0
+    assert ledger.summary("run-1")["reservations"] == 0
+
+
 def test_upstream_error_releases_reservation(tmp_path):
     upstream = Upstream(
         httpx.Response(500, json={"error": {"message": "boom"}})

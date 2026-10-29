@@ -4,14 +4,54 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import date, datetime
 from decimal import Decimal, ROUND_CEILING
 from typing import Any, Mapping
 
 from .pricing import MICRO_USD, ModelPrice, effective_rates
 
-_TEXT_FIELDS = ("messages", "input", "contents", "system", "tools")
+#: Every request field that can carry prompt text, tooling or other billed
+#: input.  Missing one of these is the expensive failure mode: the reservation
+#: is then *smaller* than the real prompt, so a single request can settle above
+#: its reservation and blow through the cap before the next check.
+#:
+#: ``systemInstruction``/``system_instruction`` are the Gemini system prompt
+#: (Gemini CLI sends its large agent prompt there, not in ``contents``) and
+#: ``instructions`` is the OpenAI Responses system prompt (Codex sends its long
+#: agent prompt there, not in ``input``).  ``toolConfig``/``tool_config``,
+#: ``cachedContent`` and ``prediction`` are additional Gemini prompt-bearing
+#: fields.  ``tools`` carries JSON schemas whose descriptions and parameter
+#: objects are counted too (see :func:`_relevant_text_chars`).
+_TEXT_FIELDS = (
+    "messages",
+    "input",
+    "contents",
+    "system",
+    "instructions",
+    "systemInstruction",
+    "system_instruction",
+    "tools",
+    "toolConfig",
+    "tool_config",
+    "cachedContent",
+    "cached_content",
+    "prediction",
+)
+_TEXT_FIELD_SET = frozenset(_TEXT_FIELDS)
 _MEDIA_TOKENS = 2000
+
+#: Gemini thinking is billed as output but is not covered by ``maxOutputTokens``.
+#: When a thinking-capable model does not send a budget we still have to reserve
+#: a plausible worst case; this matches Gemini's documented default reasoning
+#: window for the models in the bundled price list.
+DEFAULT_GEMINI_THINKING_BUDGET = 8192
+
+#: The lowest thinking budget that is accepted by every thinking-capable Gemini
+#: model (2.5 Pro cannot disable thinking completely).
+MIN_GEMINI_THINKING_BUDGET = 128
+
+_GEMINI_VERSION_RE = re.compile(r"gemini[-_/]?(\d+)(?:[.\-](\d+))?", re.IGNORECASE)
 
 _OPENAI_MEDIA_TYPES = {"image_url", "input_image", "file", "input_file"}
 _GEMINI_MEDIA_KEYS = ("inline_data", "inlineData", "file_data", "fileData")
@@ -48,13 +88,43 @@ def count_media_parts(body: Mapping[str, Any]) -> int:
 
 
 def _relevant_text_chars(body: Mapping[str, Any]) -> int:
+    """Serialized characters of every prompt-bearing field in the body.
+
+    Values are counted as whole JSON documents (``sort_keys`` keeps the result
+    stable) so that tool/function schemas, their descriptions and their
+    parameter objects are measured, not just bare string leaves.  A field found
+    at any depth is counted once: nested prompt fields are skipped when their
+    parent field was already counted, and an object shared between two fields
+    is only measured the first time, so nothing is double counted.
+    """
+
+    counted: set[int] = set()
     chars = 0
-    for field in _TEXT_FIELDS:
-        if field in body and body[field] is not None:
-            serialized = json.dumps(
-                body[field], ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            )
-            chars += len(serialized)
+
+    def count(value: Any) -> None:
+        nonlocal chars
+        marker = id(value)
+        if marker in counted:
+            return
+        counted.add(marker)
+        chars += len(
+            json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                if not isinstance(key, str) or child is None:
+                    continue
+                if key in _TEXT_FIELD_SET:
+                    count(child)
+                else:
+                    walk(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                walk(child)
+
+    walk(body)
     return chars
 
 
@@ -155,17 +225,115 @@ def _openai_max_tokens(body: Mapping[str, Any]) -> int | None:
     return None
 
 
-def _gemini_max_tokens(body: Mapping[str, Any]) -> int | None:
-    candidates: list[Mapping[str, Any]] = []
+def _gemini_generation_config(body: Mapping[str, Any]) -> Mapping[str, Any]:
     for config_key in ("generationConfig", "generation_config"):
         value = body.get(config_key)
         if isinstance(value, Mapping):
-            candidates.append(value)
-    for config in candidates:
-        for field in ("maxOutputTokens", "max_output_tokens"):
-            value = _positive_int(config.get(field))
+            return value
+    return {}
+
+
+def _gemini_max_tokens(body: Mapping[str, Any]) -> int | None:
+    config = _gemini_generation_config(body)
+    for field in ("maxOutputTokens", "max_output_tokens"):
+        value = _positive_int(config.get(field))
+        if value is not None:
+            return value
+    return None
+
+
+def _int_value(value: Any) -> int | None:
+    """Parse an integer, preserving zero and negative sentinels."""
+
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.fullmatch(r"-?\d+", stripped):
+            return int(stripped)
+    return None
+
+
+def _gemini_thinking_config(body: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    config = _gemini_generation_config(body)
+    for key in ("thinkingConfig", "thinking_config"):
+        value = config.get(key)
+        if isinstance(value, Mapping):
+            return value
+    return None
+
+
+def gemini_thinking_capable(
+    body: Mapping[str, Any], model_price: ModelPrice | None = None
+) -> bool:
+    """Whether this Gemini request can produce separately billed thinking tokens.
+
+    An explicit ``thinkingConfig`` is authoritative.  Otherwise the model id is
+    used: Gemini 2.5 and newer reason by default (``gemini-2.5-flash-lite`` is
+    the one exception, but reserving thinking for it is merely conservative).
+    """
+
+    if _gemini_thinking_config(body) is not None:
+        return True
+    if model_price is None:
+        return False
+    text = f"{model_price.model} {model_price.key}".lower()
+    if "thinking" in text:
+        return True
+    match = _GEMINI_VERSION_RE.search(text)
+    if match is None:
+        return False
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return major > 2 or (major == 2 and minor >= 5)
+
+
+def gemini_thinking_budget(
+    body: Mapping[str, Any], model_price: ModelPrice | None = None
+) -> int:
+    """Worst-case thinking tokens for a Gemini request.
+
+    ``thinkingBudget`` can be ``0`` (disabled), ``-1`` (dynamic/unbounded) or a
+    positive token count.  A missing budget on a thinking-capable model gets a
+    conservative default.  Dynamic thinking is reserved at the model's full
+    output capacity; clamping may lower both later so the request still fits.
+    """
+
+    config = _gemini_thinking_config(body)
+    explicit: int | None = None
+    if config is not None:
+        for field in ("thinkingBudget", "thinking_budget"):
+            value = _int_value(config.get(field))
             if value is not None:
-                return value
+                explicit = value
+                break
+    if explicit is not None:
+        if explicit < 0:
+            # -1 means "let the model decide"; the worst case is its cap.
+            return model_price.max_output_tokens if model_price is not None else 0
+        return explicit
+    if not gemini_thinking_capable(body, model_price):
+        return 0
+    default = DEFAULT_GEMINI_THINKING_BUDGET
+    if model_price is not None:
+        default = min(default, model_price.max_output_tokens)
+    return max(default, 0)
+
+
+def explicit_thinking_budget(body: Mapping[str, Any]) -> int | None:
+    """The thinking budget the client itself set, if any (``None`` when absent)."""
+
+    config = _gemini_thinking_config(body)
+    if config is None:
+        return None
+    for field in ("thinkingBudget", "thinking_budget"):
+        value = _int_value(config.get(field))
+        if value is not None:
+            return value
     return None
 
 
@@ -185,13 +353,30 @@ def _gemini_candidates(body: Mapping[str, Any]) -> int:
     return 1
 
 
-def explicit_output_tokens(provider: str, body: Mapping[str, Any]) -> int | None:
-    """The output limit the client itself asked for, if any."""
+def explicit_output_tokens(
+    provider: str,
+    body: Mapping[str, Any],
+    model_price: ModelPrice | None = None,
+) -> int | None:
+    """The output limit the client itself asked for, if any.
+
+    For Gemini the total is ``maxOutputTokens + thinkingBudget`` because both
+    are billed as output.  When ``model_price`` is supplied, a missing thinking
+    budget on a thinking-capable model counts as its conservative default; the
+    caller is asking "what is the worst case this body permits?".
+    """
 
     body = _as_mapping(body)
     if _normalise_provider(provider) == "openai":
         return _openai_max_tokens(body)
-    return _gemini_max_tokens(body)
+    requested = _gemini_max_tokens(body)
+    if model_price is not None:
+        thinking = gemini_thinking_budget(body, model_price)
+    else:
+        thinking = explicit_thinking_budget(body) or 0
+    if requested is None and thinking == 0:
+        return None
+    return (requested or 0) + max(thinking, 0)
 
 
 def candidate_count(provider: str, body: Mapping[str, Any]) -> int:
@@ -214,11 +399,18 @@ def max_output_tokens(
     if normalised == "openai":
         requested = _openai_max_tokens(body)
         candidates = _openai_candidates(body)
+        per_candidate = (
+            requested if requested is not None else model_price.max_output_tokens
+        )
     else:
         requested = _gemini_max_tokens(body)
         candidates = _gemini_candidates(body)
-
-    per_candidate = requested if requested is not None else model_price.max_output_tokens
+        # Thinking tokens are billed as output but are not covered by
+        # ``maxOutputTokens``.  Reserve both, even when the client omitted a
+        # thinking budget (dynamic thinking is on by default for 2.5+ models).
+        per_candidate = (
+            requested if requested is not None else model_price.max_output_tokens
+        ) + gemini_thinking_budget(body, model_price)
     return per_candidate * candidates
 
 

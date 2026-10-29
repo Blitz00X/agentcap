@@ -23,7 +23,9 @@ Prompt usage is realistic rather than fixed: ``max(1, ceil(text characters /
 4))`` where the text characters are the concatenated ``content``, ``input``,
 ``prompt``, ``text``, ``system`` and tool-description strings in the request.
 Output usage is ``min(requested output limit, 2000)`` tokens, so a clamped
-request visibly produces a different bill.  Every response carries
+request visibly produces a different bill.  For Gemini, ``thinkingBudget`` is
+honoured too: ``thoughtsTokenCount`` is ``min(thinkingBudget, 2000)`` and is
+billed as output, exactly like the real API.  Every response carries
 ``x-fake-output-limit`` with the limit that was actually received (``none``
 when the request had no output limit).
 
@@ -128,6 +130,25 @@ def _gemini_limit(payload: Mapping[str, Any]) -> int | None:
     )
 
 
+def _gemini_thinking_budget(payload: Mapping[str, Any]) -> int | None:
+    config = _mapping(payload.get("generationConfig"))
+    if not config:
+        config = _mapping(payload.get("generation_config"))
+    thinking = _mapping(config.get("thinkingConfig"))
+    if not thinking:
+        thinking = _mapping(config.get("thinking_config"))
+    value = thinking.get("thinkingBudget", thinking.get("thinking_budget"))
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
 def _completion_tokens(limit: int | None) -> int:
     return min(limit, MAX_OUTPUT_TOKENS) if limit else MAX_OUTPUT_TOKENS
 
@@ -145,13 +166,24 @@ def _usage(limit: int | None, prompt_tokens: int) -> dict[str, int]:
     }
 
 
-def _gemini_usage(limit: int | None, prompt_tokens: int) -> dict[str, int]:
+def _gemini_usage(
+    limit: int | None, prompt_tokens: int, thinking: int | None = None
+) -> dict[str, int]:
     output = _completion_tokens(limit)
-    return {
+    thoughts = (
+        min(thinking, MAX_OUTPUT_TOKENS)
+        if thinking is not None and thinking > 0
+        else 0
+    )
+    usage = {
         "promptTokenCount": prompt_tokens,
         "candidatesTokenCount": output,
-        "totalTokenCount": prompt_tokens + output,
+        "totalTokenCount": prompt_tokens + output + thoughts,
     }
+    if thoughts:
+        # Gemini bills thinking as output; a real response carries both counts.
+        usage["thoughtsTokenCount"] = thoughts
+    return usage
 
 
 async def _json_body(request: Request) -> Mapping[str, Any] | None:
@@ -289,7 +321,9 @@ async def openai_responses(request: Request) -> Response:
 
 
 # ------------------------------------------------------------------- Gemini
-def _gemini_chunks(limit: int | None, prompt_tokens: int) -> list[dict[str, Any]]:
+def _gemini_chunks(
+    limit: int | None, prompt_tokens: int, thinking: int | None = None
+) -> list[dict[str, Any]]:
     return [
         {
             "candidates": [
@@ -311,7 +345,7 @@ def _gemini_chunks(limit: int | None, prompt_tokens: int) -> list[dict[str, Any]
                     "finishReason": "STOP",
                 }
             ],
-            "usageMetadata": _gemini_usage(limit, prompt_tokens),
+            "usageMetadata": _gemini_usage(limit, prompt_tokens, thinking),
         },
     ]
 
@@ -323,11 +357,12 @@ async def gemini_model(request: Request) -> Response:
     if payload is None:
         return _invalid_body()
     limit = _gemini_limit(payload)
+    thinking = _gemini_thinking_budget(payload)
     headers = _limit_header(limit)
     prompt_tokens = _prompt_tokens(payload)
 
     if action == "generateContent":
-        chunks = _gemini_chunks(limit, prompt_tokens)
+        chunks = _gemini_chunks(limit, prompt_tokens, thinking)
         final = chunks[-1]
         return JSONResponse(
             {
@@ -338,7 +373,7 @@ async def gemini_model(request: Request) -> Response:
         )
 
     if action == "streamGenerateContent":
-        chunks = _gemini_chunks(limit, prompt_tokens)
+        chunks = _gemini_chunks(limit, prompt_tokens, thinking)
         if request.query_params.get("alt") == "sse":
 
             async def events() -> AsyncIterator[bytes]:

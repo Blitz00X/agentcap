@@ -26,6 +26,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, TextIO
 import httpx
 import uvicorn
 
+from .adapters import AdapterConflict, ensure_codex_routing_is_safe, prepare_child
 from .alerts import AlertDispatcher, dispatcher_from_env
 from .ledger import Caps, Ledger
 from .license import features as license_features
@@ -49,6 +50,14 @@ EXIT_REASONS = {
 CAP_ENV = "AGENTCAP_CAP"
 DEFAULT_CAP = Decimal("5")
 
+ZERO_REQUEST_WARNING = (
+    "agentcap: WARNING: no model requests observed — protection not verified. "
+    "Your agent may be calling the API directly "
+    "(see README: Supported CLIs)."
+)
+YELLOW = "\033[33m"
+RESET = "\033[0m"
+
 
 @dataclass
 class RunSummary:
@@ -62,6 +71,7 @@ class RunSummary:
     reason: str
     exit_code: int
     clamped_requests: int = 0
+    refused_requests: int = 0
 
     def lines(self) -> list[str]:
         cap = "none" if self.cap_usd is None else f"${self.cap_usd:.2f}"
@@ -69,6 +79,7 @@ class RunSummary:
             "agentcap run summary",
             f"  run id: {self.run_id}",
             f"  requests: {self.requests}",
+            f"  refused requests: {self.refused_requests}",
             f"  spent: ${self.spent_usd:.4f}",
             f"  cap: {cap}",
             f"  reserved-but-unsettled: ${self.reserved_usd:.4f}",
@@ -131,6 +142,7 @@ class Runner:
         quiet: bool = False,
         openai_upstream: str | None = None,
         gemini_upstream: str | None = None,
+        trust_workspace: bool = False,
     ) -> None:
         if not argv:
             raise ValueError("argv must contain the command to run")
@@ -168,11 +180,14 @@ class Runner:
         self.quiet = quiet
         self.openai_upstream = openai_upstream
         self.gemini_upstream = gemini_upstream
+        self.trust_workspace = bool(trust_workspace)
 
         self.port: int | None = None
         self.server: uvicorn.Server | None = None
         self._server_thread: threading.Thread | None = None
         self._socket: socket.socket | None = None
+        self._proxy = None
+        self._adapter_cleanup = None
         self.kill_event = threading.Event()
         self.kill_reason: str | None = None
         self._kill_lock = threading.Lock()
@@ -269,6 +284,7 @@ class Runner:
             upstream_transport=self.transport,
             events=self._emit_event,
         )
+        self._proxy = getattr(app.state, "proxy", None)
         server = uvicorn.Server(
             uvicorn.Config(
                 app,
@@ -342,8 +358,13 @@ class Runner:
         )
         return env
 
-    def _spawn(self) -> subprocess.Popen:
-        return self.popen_factory(self.argv, self.child_env())
+    def _spawn(
+        self, argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
+    ) -> subprocess.Popen:
+        return self.popen_factory(
+            self.argv if argv is None else argv,
+            self.child_env() if env is None else env,
+        )
 
     def _signal_group(self, sig: int) -> None:
         child = self.child
@@ -395,11 +416,26 @@ class Runner:
 
     # -------------------------------------------------------------------- run
     def run(self) -> int:
+        # Refuse a conflicting Codex configuration before the proxy or child is
+        # started: the user's override would bypass AgentCap entirely.
+        try:
+            ensure_codex_routing_is_safe(self.argv)
+        except AdapterConflict as exc:
+            print(f"agentcap: {exc}", file=self.stderr, flush=True)
+            return 2
+
         self._start_proxy()
         reason = "child_exit"
         exit_code = 1
         try:
-            self.child = self._spawn()
+            prepared = prepare_child(
+                self.argv,
+                port=self.port or 0,
+                env=self.child_env(),
+                trust_workspace=self.trust_workspace,
+            )
+            self._adapter_cleanup = prepared.cleanup
+            self.child = self._spawn(prepared.argv, prepared.env)
             try:
                 exit_code = self._monitor()
             except KeyboardInterrupt:
@@ -419,8 +455,26 @@ class Runner:
                 reason = "child_exit"
         finally:
             self._stop_proxy()
+            cleanup = self._adapter_cleanup
+            self._adapter_cleanup = None
+            if cleanup is not None:
+                try:
+                    cleanup()
+                except Exception:
+                    pass
+            # A streaming request can settle after the child has already exited
+            # 0 (and after ``_monitor`` returned).  Re-check here so a cap hit
+            # during the run is always the final reason and exit code.
+            if self.kill_event.is_set():
+                reason = self.kill_reason or reason
+                exit_code = EXIT_REASONS.get(reason, exit_code)
+            elif self._proxy is not None and self._proxy.cap_reached():
+                reason = "cap_exceeded"
+                exit_code = EXIT_CAP_EXCEEDED
             self.summary = self._build_summary(reason, exit_code)
             self._print_summary(self.summary)
+            if self.child is not None and self.summary.requests == 0:
+                self._warn_no_requests()
         return exit_code
 
     def _build_summary(self, reason: str, exit_code: int) -> RunSummary:
@@ -428,21 +482,42 @@ class Runner:
             stats = self.ledger.summary(self.run_id)
         except Exception:
             stats = {}
+        reservations = int(stats.get("reservations", 0) or 0)
+        refused_requests = 0
+        requests = reservations
+        if self._proxy is not None:
+            refused_requests = int(getattr(self._proxy, "refused_requests", 0) or 0)
+            requests = int(getattr(self._proxy, "observed_requests", 0) or 0)
         return RunSummary(
             run_id=self.run_id,
-            requests=int(stats.get("reservations", 0) or 0),
+            requests=requests,
             spent_usd=Decimal(str(stats.get("actual_usd", "0"))),
             cap_usd=self.cap,
             reserved_usd=Decimal(str(stats.get("reserved_usd", "0"))),
             reason=reason,
             exit_code=exit_code,
             clamped_requests=self.clamped_requests,
+            refused_requests=refused_requests,
         )
 
     def _print_summary(self, summary: RunSummary) -> None:
         try:
             for line in summary.lines():
                 print(line, file=self.stderr, flush=True)
+        except Exception:
+            pass
+
+    def _warn_no_requests(self) -> None:
+        """Warn when the proxy saw no traffic: the cap was never exercised."""
+
+        message = ZERO_REQUEST_WARNING
+        try:
+            if self.stderr.isatty():
+                message = f"{YELLOW}{message}{RESET}"
+        except Exception:
+            pass
+        try:
+            print(message, file=self.stderr, flush=True)
         except Exception:
             pass
 

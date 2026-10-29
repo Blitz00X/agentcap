@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentcap-cli"
-version = "0.1.0"
+version = "0.1.1"
 description = "API-key spend guard for unattended Codex CLI and Gemini CLI runs: hard per-run cap, kills the process at the limit."
 readme = "README.md"
 requires-python = ">=3.11"

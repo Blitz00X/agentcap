@@ -305,6 +305,22 @@ def test_fake_upstream_gemini_prompt_tokens_and_output_limit():
     assert usage["candidatesTokenCount"] == 100
 
 
+def test_fake_upstream_gemini_respects_thinking_budget():
+    response = _fake_post(
+        "/v1beta/models/gemini-test:generateContent",
+        {
+            "contents": [{"parts": [{"text": "hi"}]}],
+            "generationConfig": {
+                "maxOutputTokens": 100,
+                "thinkingConfig": {"thinkingBudget": 50},
+            },
+        },
+    )
+    usage = response.json()["usageMetadata"]
+    assert usage["candidatesTokenCount"] == 100
+    assert usage["thoughtsTokenCount"] == 50
+
+
 def test_fake_upstream_prompt_tokens_never_below_one():
     response = _fake_post(
         "/v1/chat/completions",

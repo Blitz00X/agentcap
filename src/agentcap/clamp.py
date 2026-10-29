@@ -17,7 +17,13 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Mapping
 
-from .estimate import candidate_count, explicit_output_tokens
+from .estimate import (
+    MIN_GEMINI_THINKING_BUDGET,
+    candidate_count,
+    explicit_output_tokens,
+    gemini_thinking_budget,
+    gemini_thinking_capable,
+)
 from .pricing import MICRO_USD, ONE_MILLION, ModelPrice, effective_rates
 
 #: Clamping below this many tokens is pointless: treat the budget as exhausted.
@@ -94,7 +100,7 @@ def fit_output(
     if allowed < 0:
         allowed = 0
 
-    existing = explicit_output_tokens(provider, body)
+    existing = explicit_output_tokens(provider, body, model_price)
     if existing is not None:
         # Never raise a limit the client already set (math should prevent it).
         allowed = min(allowed, existing)
@@ -120,13 +126,17 @@ def apply_output_clamp(
     path: str,
     body: dict[str, Any],
     allowed_output: int,
+    *,
+    model_price: ModelPrice | None = None,
 ) -> None:
     """Lower the request's output limit to ``allowed_output`` in place.
 
     * OpenAI chat: ``max_completion_tokens`` (or the legacy ``max_tokens`` when
       the body already used it; never both).
     * OpenAI responses: ``max_output_tokens``.
-    * Gemini: ``generationConfig.maxOutputTokens`` (created when missing).
+    * Gemini: ``generationConfig.maxOutputTokens`` and, for thinking models,
+      ``generationConfig.thinkingConfig.thinkingBudget``.  Both are billed as
+      output, so the two limits together are kept within ``allowed_output``.
     """
 
     allowed = _positive_int(allowed_output)
@@ -134,13 +144,7 @@ def apply_output_clamp(
         return
 
     if provider == "gemini":
-        config = body.get("generationConfig")
-        config = dict(config) if isinstance(config, Mapping) else {}
-        current = _positive_int(
-            config.get("maxOutputTokens", config.get("max_output_tokens"))
-        )
-        config["maxOutputTokens"] = min(allowed, current) if current else allowed
-        body["generationConfig"] = config
+        _apply_gemini_clamp(body, allowed, model_price)
         return
 
     normalised = path.strip("/")
@@ -164,6 +168,73 @@ def apply_output_clamp(
             body["max_completion_tokens"] = min(allowed, modern)
         return
     body["max_completion_tokens"] = min(allowed, modern) if modern else allowed
+
+
+def _generation_config_key(body: Mapping[str, Any]) -> str:
+    if isinstance(body.get("generationConfig"), Mapping):
+        return "generationConfig"
+    if isinstance(body.get("generation_config"), Mapping):
+        return "generation_config"
+    return "generationConfig"
+
+
+def _thinking_config_key(config: Mapping[str, Any]) -> str:
+    if isinstance(config.get("thinkingConfig"), Mapping):
+        return "thinkingConfig"
+    if isinstance(config.get("thinking_config"), Mapping):
+        return "thinking_config"
+    return "thinkingConfig"
+
+
+def _apply_gemini_clamp(
+    body: dict[str, Any], allowed: int, model_price: ModelPrice | None
+) -> None:
+    config_key = _generation_config_key(body)
+    config = dict(body.get(config_key) or {})
+
+    current_max = _positive_int(
+        config.get("maxOutputTokens", config.get("max_output_tokens"))
+    )
+    capable = gemini_thinking_capable(body, model_price)
+    effective_thinking = gemini_thinking_budget(body, model_price) if capable else 0
+
+    if effective_thinking <= 0:
+        # Thinking is explicitly disabled (or the model does not think): only
+        # the visible output limit has to fit.
+        config["maxOutputTokens"] = (
+            min(allowed, current_max) if current_max else allowed
+        )
+        body[config_key] = config
+        return
+
+    # Keep as much of the requested visible output as fits, then spend the
+    # remainder on thinking.  If the remainder cannot hold a budget that every
+    # thinking model accepts, take the minimum thinking budget out of the text
+    # allowance instead of disabling thinking (2.5 Pro cannot disable it).
+    text_limit = min(current_max, allowed) if current_max else allowed
+    available = max(allowed - text_limit, 0)
+    if available < effective_thinking:
+        # Never raise a budget the client already set: the floor is capped by
+        # the effective budget as well as by what still fits.
+        floor = min(
+            MIN_GEMINI_THINKING_BUDGET, effective_thinking, max(allowed - 1, 0)
+        )
+        thinking = max(available, floor)
+        thinking = min(thinking, effective_thinking, max(allowed - 1, 0))
+        text_limit = min(text_limit, allowed - thinking)
+    else:
+        thinking = effective_thinking
+
+    if text_limit <= 0:
+        text_limit = max(allowed - thinking, 1)
+        thinking = max(allowed - text_limit, 0)
+
+    config["maxOutputTokens"] = text_limit
+    thinking_key = _thinking_config_key(config)
+    thinking_config = dict(config.get(thinking_key) or {})
+    thinking_config["thinkingBudget"] = thinking
+    config[thinking_key] = thinking_config
+    body[config_key] = config
 
 
 __all__ = [

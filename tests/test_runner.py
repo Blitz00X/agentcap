@@ -51,6 +51,7 @@ def _runner(
     **kwargs,
 ) -> tuple[Runner, io.StringIO]:
     stderr = err or io.StringIO()
+    poll_interval = kwargs.pop("poll_interval", 0.01)
     runner = Runner(
         argv,
         cap=cap,
@@ -59,7 +60,7 @@ def _runner(
         stderr=stderr,
         alerts=_alerts(stderr, feature_set),
         features=feature_set,
-        poll_interval=0.01,
+        poll_interval=poll_interval,
         term_timeout=2.0,
         **kwargs,
     )
@@ -256,6 +257,112 @@ def test_runner_refuses_non_loopback_binding(tmp_path):
             host="0.0.0.0",
             ledger=Ledger(tmp_path / "x.db"),
         )
+
+
+class _TtyStringIO(io.StringIO):
+    def isatty(self) -> bool:  # pragma: no cover - trivial
+        return True
+
+
+def test_zero_request_warning_when_proxy_saw_no_traffic(tmp_path):
+    runner, stderr = _runner(tmp_path, [sys.executable, "-c", "pass"])
+    assert runner.run() == 0
+    assert runner.summary.requests == 0
+    output = stderr.getvalue()
+    assert "WARNING: no model requests observed" in output
+    assert "README: Supported CLIs" in output
+    assert "\033[33m" not in output
+
+
+def test_zero_request_warning_is_yellow_on_a_tty(tmp_path):
+    stderr = _TtyStringIO()
+    runner, _ = _runner(tmp_path, [sys.executable, "-c", "pass"], err=stderr)
+    assert runner.run() == 0
+    assert "\033[33m" in stderr.getvalue()
+    assert stderr.getvalue().rstrip().endswith("\033[0m")
+
+
+def test_no_zero_request_warning_when_requests_were_metered(tmp_path):
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import os, httpx\n"
+            "httpx.post(os.environ['OPENAI_BASE_URL'] + '/chat/completions',\n"
+            "           json={'model': 'gpt-4o-mini',\n"
+            "                 'messages': [{'role': 'user', 'content': 'hi'}]},\n"
+            "           timeout=5)\n"
+        ),
+    ]
+    runner, stderr = _runner(tmp_path, child, cap="1")
+    assert runner.run() == 0
+    assert runner.summary.requests == 1
+    assert "no model requests observed" not in stderr.getvalue()
+
+
+def test_refused_request_counts_as_observed_and_suppresses_warning(tmp_path):
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import os, sys, httpx\n"
+            "httpx.post(os.environ['OPENAI_BASE_URL'] + '/chat/completions',\n"
+            "           json={'model': 'gpt-4o-mini',\n"
+            "                 'messages': [{'role': 'user', 'content': 'hi'}],\n"
+            "                 'max_completion_tokens': 100},\n"
+            "           timeout=5)\n"
+            "sys.exit(0)\n"
+        ),
+    ]
+    runner, stderr = _runner(tmp_path, child, cap="0")
+    assert runner.run() == EXIT_CAP_EXCEEDED
+    assert runner.summary is not None
+    # The proxy refused the request, but it still reached us: this is not a
+    # "no model requests observed" run.
+    assert runner.summary.requests >= 1
+    assert runner.summary.refused_requests >= 1
+    output = stderr.getvalue()
+    assert "refused requests:" in output
+    assert "no model requests observed" not in output
+
+
+def test_settlement_over_cap_exits_3_even_when_child_exits_zero(tmp_path):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 5000},
+            },
+        )
+
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import os, sys, httpx\n"
+            "httpx.post(os.environ['OPENAI_BASE_URL'] + '/chat/completions',\n"
+            "           json={'model': 'gpt-4o-mini',\n"
+            "                 'messages': [{'role': 'user', 'content': 'hi'}],\n"
+            "                 'max_completion_tokens': 100},\n"
+            "           timeout=5)\n"
+            "sys.exit(0)\n"
+        ),
+    ]
+    # A slow monitor poll lets the child finish with exit code 0 before the
+    # kill event is observed; the final reason must still be cap_exceeded.
+    runner, stderr = _runner(
+        tmp_path,
+        child,
+        cap="0.001",
+        transport=httpx.MockTransport(handler),
+        poll_interval=0.3,
+    )
+    assert runner.run() == EXIT_CAP_EXCEEDED
+    assert runner.summary is not None
+    assert runner.summary.reason == "cap_exceeded"
+    assert runner.summary.spent_usd > Decimal("0.001")
+    assert "reason: cap_exceeded" in stderr.getvalue()
 
 
 def test_cap_from_env(monkeypatch):

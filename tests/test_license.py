@@ -18,7 +18,6 @@ from agentcap.license import (
     ACTIVATE_PATH,
     NOT_CONFIGURED_REASON,
     NOT_FOUND_REASON,
-    OFFLINE_GRACE_S,
     POLAR_API_BASE,
     POLAR_ORG_ID,
     REVALIDATE_AFTER_S,
@@ -613,7 +612,7 @@ def test_cache_revalidates_after_seven_days(tmp_path):
     assert stat.S_IMODE((tmp_path / "license.json").stat().st_mode) == 0o600
 
 
-def test_network_failure_after_seven_days_uses_offline_grace(tmp_path):
+def test_network_failure_after_seven_days_keeps_pro(tmp_path):
     clock = FakeClock()
     stub = PolarStub(activate=activated(), validate=raise_connect)
     manager = make_manager(stub, tmp_path, clock)
@@ -627,7 +626,43 @@ def test_network_failure_after_seven_days_uses_offline_grace(tmp_path):
     assert manager.tier() == "pro"
 
 
-def test_force_refresh_offline_uses_grace_within_seven_days(tmp_path):
+def test_network_failure_never_downgrades_after_a_year_offline(tmp_path):
+    clock = FakeClock()
+    stub = PolarStub(activate=activated(), validate=raise_connect)
+    manager = make_manager(stub, tmp_path, clock)
+    manager.activate(KEY)
+
+    for _ in range(12):
+        clock.advance(30 * 24 * 60 * 60)
+        status = manager.check()
+        assert status.valid is True
+        assert status.tier == "pro"
+    assert manager.tier() == "pro"
+
+
+def test_failed_revalidation_is_retried_after_seven_days(tmp_path):
+    clock = FakeClock()
+    stub = PolarStub(activate=activated(), validate=raise_connect)
+    manager = make_manager(stub, tmp_path, clock)
+    manager.activate(KEY)
+    assert len(stub.requests) == 1
+
+    clock.advance(REVALIDATE_AFTER_S + 1)
+    assert manager.check().tier == "pro"
+    assert len(stub.requests) == 2
+
+    # A failed attempt is not retried on every command...
+    clock.advance(24 * 60 * 60)
+    assert manager.check().tier == "pro"
+    assert len(stub.requests) == 2
+
+    # ...but again once the retry window has elapsed.
+    clock.advance(REVALIDATE_AFTER_S)
+    assert manager.check().tier == "pro"
+    assert len(stub.requests) == 3
+
+
+def test_force_refresh_offline_keeps_pro(tmp_path):
     clock = FakeClock()
     stub = PolarStub(activate=activated(), validate=raise_connect)
     manager = make_manager(stub, tmp_path, clock)
@@ -635,24 +670,22 @@ def test_force_refresh_offline_uses_grace_within_seven_days(tmp_path):
 
     status = manager.check(force_refresh=True)
     assert status.valid is True
+    assert status.tier == "pro"
     assert status.reason.startswith("offline:")
 
 
-def test_offline_grace_expires_after_fourteen_days(tmp_path):
+def test_network_failure_without_cached_license_stays_free(tmp_path):
     clock = FakeClock()
-    stub = PolarStub(activate=activated(), validate=raise_connect)
+    stub = PolarStub(validate=raise_connect)
     manager = make_manager(stub, tmp_path, clock)
-    manager.activate(KEY)
 
-    clock.advance(OFFLINE_GRACE_S + 1)
-    status = manager.check()
+    status = manager.check(KEY)
     assert status.valid is False
     assert status.tier == "free"
-    assert "offline:" not in status.reason
-    assert manager.tier() == "free"
+    assert "no validated license is cached" in status.reason
 
 
-def test_tier_uses_offline_grace_without_network(tmp_path):
+def test_tier_never_downgrades_cached_pro_without_network(tmp_path):
     clock = FakeClock()
     stub = PolarStub(activate=activated())
     manager = make_manager(stub, tmp_path, clock)
@@ -661,8 +694,8 @@ def test_tier_uses_offline_grace_without_network(tmp_path):
     clock.advance(10 * 24 * 60 * 60)
     assert manager.tier() == "pro"
 
-    clock.advance(5 * 24 * 60 * 60)
-    assert manager.tier() == "free"
+    clock.advance(400 * 24 * 60 * 60)
+    assert manager.tier() == "pro"
     assert len(stub.requests) == 1
 
 
@@ -698,14 +731,14 @@ def test_negative_age_is_treated_as_stale(tmp_path):
     assert stub.paths[-1] == VALIDATE_PATH
 
 
-def test_negative_age_tier_is_free(tmp_path):
+def test_negative_age_does_not_downgrade_tier(tmp_path):
     clock = FakeClock()
     stub = PolarStub(activate=activated())
     manager = make_manager(stub, tmp_path, clock)
     manager.activate(KEY)
 
     clock.now -= 60
-    assert manager.tier() == "free"
+    assert manager.tier() == "pro"
 
 
 def test_old_cache_without_source_is_ignored(tmp_path):

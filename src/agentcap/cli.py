@@ -78,6 +78,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="never lower a request's output limit to fit the remaining budget",
     )
     run.add_argument("--port", type=int, default=0, help="proxy port (default: random free)")
+    run.add_argument(
+        "--trust-workspace",
+        action="store_true",
+        help="for Gemini CLI: trust the current workspace in headless runs",
+    )
     run.add_argument("--quiet", action="store_true", help="suppress non-essential output")
     run.add_argument("argv", nargs=argparse.REMAINDER, help="command after --")
 
@@ -100,6 +105,10 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("--port", type=int, default=DEFAULT_SERVE_PORT)
     status.add_argument(
         "--db", action="store_true", help="read the local ledger file instead of a proxy"
+    )
+
+    subparsers.add_parser(
+        "demo", help="run a simulated spend-cap demo against a fake local API"
     )
     return parser
 
@@ -261,6 +270,7 @@ def _run(args: argparse.Namespace) -> int:
             quiet=args.quiet,
             openai_upstream=overrides.get("openai"),
             gemini_upstream=overrides.get("gemini"),
+            trust_workspace=args.trust_workspace,
         )
         return runner.run()
     except OSError as exc:
@@ -315,6 +325,13 @@ def _serve(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------ demo
+def _demo(_args: argparse.Namespace) -> int:
+    from .demo import run_demo
+
+    return run_demo()
+
+
 # ---------------------------------------------------------------------- status
 def _status(args: argparse.Namespace) -> int:
     if args.db:
@@ -365,6 +382,8 @@ def main(argv: list[str] | None = None) -> int:
         return _serve(args)
     if args.subcommand == "status":
         return _status(args)
+    if args.subcommand == "demo":
+        return _demo(args)
     parser.print_help()
     return 0
 

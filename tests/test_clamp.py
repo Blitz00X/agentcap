@@ -274,6 +274,63 @@ def test_gemini_existing_max_output_tokens_is_lowered(tmp_path):
     assert [e["type"] for e in events].count("output_clamped") == 1
 
 
+def test_gemini_clamp_lowers_max_output_and_thinking_budget(tmp_path):
+    upstream = Upstream(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "candidates": [],
+                "usageMetadata": gemini_usage_payload(prompt=10, candidates=5),
+            },
+        )
+    )
+    app, _, events = build(tmp_path, upstream, caps=Caps(run_usd=D("0.02")))
+    body = {
+        "contents": [{"parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "maxOutputTokens": 10_000,
+            "thinkingConfig": {"thinkingBudget": 8_000},
+        },
+    }
+
+    response = _post(app, url=GEMINI_URL, body=body)
+
+    assert response.status_code == 200
+    config = json.loads(upstream.requests[0].content)["generationConfig"]
+    assert config["maxOutputTokens"] < 10_000
+    assert config["thinkingConfig"]["thinkingBudget"] < 8_000
+    # Both limits are billed as output, so their sum must fit the clamp.
+    assert (
+        config["maxOutputTokens"] + config["thinkingConfig"]["thinkingBudget"] <= 8_000
+    )
+    assert [e["type"] for e in events].count("output_clamped") == 1
+
+
+def test_gemini_clamp_adds_thinking_budget_when_missing(tmp_path):
+    upstream = Upstream(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "candidates": [],
+                "usageMetadata": gemini_usage_payload(prompt=10, candidates=5),
+            },
+        )
+    )
+    app, _, events = build(tmp_path, upstream, caps=Caps(run_usd=D("0.02")))
+    body = {"contents": [{"parts": [{"text": "hi"}]}]}
+
+    response = _post(app, url=GEMINI_URL, body=body)
+
+    assert response.status_code == 200
+    config = json.loads(upstream.requests[0].content)["generationConfig"]
+    assert config["maxOutputTokens"] < 65_536
+    # A thinking-capable model without a budget gets a bounded one so dynamic
+    # thinking cannot settle above the reservation.
+    assert config["thinkingConfig"]["thinkingBudget"] > 0
+    assert config["thinkingConfig"]["thinkingBudget"] <= 128
+    assert [e["type"] for e in events].count("output_clamped") == 1
+
+
 def test_legacy_completions_lowers_max_tokens(tmp_path):
     upstream = Upstream(
         lambda _: httpx.Response(

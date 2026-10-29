@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -19,7 +20,14 @@ from agentcap.ledger import Caps, Ledger
 from agentcap.pricing import load_pricing
 from agentcap.proxy import ProxyConfig
 
-from proxy_support import Upstream, build, openai_chat_body, openai_chat_response, proxy_client
+from proxy_support import (
+    Upstream,
+    build,
+    gemini_usage_payload,
+    openai_chat_body,
+    openai_chat_response,
+    proxy_client,
+)
 
 CHAT_URL = "/openai/v1/chat/completions"
 GEMINI_URL = "/gemini/v1beta/models/gemini-4-argon:generateContent"
@@ -274,3 +282,81 @@ def test_overshoot_settlement_fires_kill_on_next_request(tmp_path):
     assert len(kills) == 1
     assert kills[0]["reason"] == "cap_exceeded"
     assert [e["type"] for e in events].count("overshoot") == 1
+
+
+def test_settlement_above_reservation_trips_cap_immediately(tmp_path):
+    cap = Decimal("0.001")
+    kills: list[dict] = []
+    upstream = Upstream(
+        lambda _: openai_chat_response(prompt_tokens=100, completion_tokens=2000)
+    )
+    app, ledger, events = build(
+        tmp_path,
+        upstream,
+        caps=Caps(run_usd=cap),
+        on_cap_exceeded=lambda payload: kills.append(payload),
+    )
+    body = openai_chat_body(model="gpt-4o-mini", max_completion_tokens=100)
+
+    async def scenario():
+        async with proxy_client(app) as client:
+            response = await client.post(CHAT_URL, json=body)
+            return response, client
+
+    asyncio.run(scenario())
+
+    # The request settled above its reservation and over the cap; the kill must
+    # not wait for the client's next request.
+    assert ledger.spent("run-1") > cap
+    assert len(kills) == 1
+    assert kills[0]["reason"] == "cap_exceeded"
+    types = [e["type"] for e in events]
+    assert types.count("overshoot") == 1
+    assert types.count("cap_exceeded") == 1
+    assert types.index("overshoot") < types.index("cap_exceeded")
+
+
+def test_gemini_system_instruction_is_inside_the_reservation(tmp_path):
+    """Regression for the real-CLI overshoot: Gemini's system prompt is input.
+
+    Gemini CLI puts its large agent prompt in ``systemInstruction``.  When that
+    field was ignored the reservation covered only the tiny ``contents`` turn,
+    so a single request settled above its own reservation and past the cap.
+    """
+
+    system_prompt = "You are Gemini CLI. " * 2000
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": "run the tests"}]}],
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "generationConfig": {
+            "maxOutputTokens": 64,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    # The upstream bills the whole prompt, at the conservative 3 chars/token.
+    billed_prompt = math.ceil(len(system_prompt) / 3)
+    upstream = Upstream(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+                "usageMetadata": gemini_usage_payload(
+                    prompt=billed_prompt, candidates=64
+                ),
+            },
+        )
+    )
+    app, _, events = build(tmp_path, upstream, caps=Caps(run_usd=Decimal("1")))
+
+    async def scenario():
+        async with proxy_client(app) as client:
+            return await client.post(GEMINI_URL, json=body)
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 200
+
+    settled = [e for e in events if e["type"] == "request_settled"]
+    assert len(settled) == 1
+    assert Decimal(settled[0]["reserved_usd"]) >= Decimal(settled[0]["cost_usd"])
+    assert "overshoot" not in [e["type"] for e in events]
+

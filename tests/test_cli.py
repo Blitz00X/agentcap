@@ -112,6 +112,27 @@ def test_no_clamp_flag_is_parsed(fake_runner):
     assert fake_runner.instances[1].kwargs["clamp_output"] is False
 
 
+def test_trust_workspace_flag_is_passed_only_when_given(fake_runner):
+    assert cli.main(["run", "--", "gemini", "-p", "hi"]) == 0
+    assert fake_runner.instances[0].kwargs["trust_workspace"] is False
+
+    assert cli.main(["run", "--trust-workspace", "--", "gemini", "-p", "hi"]) == 0
+    assert fake_runner.instances[1].kwargs["trust_workspace"] is True
+
+
+def test_demo_runs_a_simulated_capped_run(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("AGENTCAP_DB", str(tmp_path / "demo.db"))
+    assert cli.main(["demo"]) == 3
+
+    captured = capsys.readouterr()
+    assert "SIMULATED DEMO" in captured.out
+    assert "no real provider" in captured.out
+    assert "no real money" in captured.out
+    assert captured.out.rstrip().endswith("(simulated)")
+    assert "agentcap run summary" in captured.err
+    assert "reason: cap_exceeded" in captured.err
+
+
 def test_license_activate_goes_through_polar_and_caches(monkeypatch, tmp_path, capsys):
     path = tmp_path / "license.json"
     monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(path))

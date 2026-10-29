@@ -11,6 +11,7 @@ from agentcap.estimate import (
     estimate_request,
     reservation_usd,
 )
+from agentcap.ledger import Caps
 from agentcap.pricing import load_pricing
 from agentcap.proxy import ProxyConfig
 
@@ -296,3 +297,48 @@ def test_stream_chunks_are_forwarded_before_settlement(tmp_path):
     chunks = asyncio.run(scenario())
     assert b"".join(chunks)
     assert ledger.summary("run-1")["settled"] == 1
+
+
+def test_gemini_stream_settlement_over_cap_trips_cap_exceeded(tmp_path):
+    kills: list[dict] = []
+    chunks = [
+        sse(
+            {
+                "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
+                "usageMetadata": gemini_usage_payload(
+                    prompt=1000, candidates=5000, thoughts=5000
+                ),
+            }
+        )
+    ]
+    upstream = Upstream(_stream_response(chunks))
+    app, ledger, events = build(
+        tmp_path,
+        upstream,
+        caps=Caps(run_usd=D("0.001")),
+        on_cap_exceeded=kills.append,
+    )
+    body = {
+        "contents": [{"parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "maxOutputTokens": 100,
+            "thinkingConfig": {"thinkingBudget": 128},
+        },
+    }
+
+    async def scenario():
+        async with proxy_client(app) as client:
+            return await client.post(
+                "/gemini/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+                json=body,
+            )
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 200
+    assert response.content == b"".join(chunks)
+    # Settlement happens in the stream's finally block: reaching the cap there
+    # must fire the kill immediately, not wait for another request.
+    assert ledger.spent("run-1") > D("0.001")
+    assert len(kills) == 1
+    assert kills[0]["reason"] == "cap_exceeded"
+    assert [event["type"] for event in events].count("cap_exceeded") == 1

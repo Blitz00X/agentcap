@@ -239,6 +239,10 @@ h1 {
   font-size: 0.84rem;
 }
 
+.cta-note {
+  align-self: center;
+}
+
 /* --------------------------------------------------------------- sections */
 
 .section {
@@ -422,6 +426,23 @@ pre code {
 .card .btn-primary,
 .card .btn-secondary {
   margin-top: auto;
+}
+
+/* ----------------------------------------------------------------- terms */
+
+.terms-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--ink-soft);
+  font-size: 0.96rem;
+}
+
+.terms-list li + li {
+  margin-top: 0.55rem;
+}
+
+.terms-list strong {
+  color: var(--ink);
 }
 
 /* --------------------------------------------------------------- compare */
