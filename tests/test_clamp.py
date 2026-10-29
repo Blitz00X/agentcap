@@ -451,3 +451,130 @@ def test_runner_e2e_small_cap_gemini_request_is_clamped(tmp_path):
     assert 256 <= seen[0]["generationConfig"]["maxOutputTokens"] < 65536
     assert "budget low, limiting output" in stderr.getvalue()
     assert stderr.getvalue().count("budget low, limiting output") == 1
+
+
+def test_gemini_clamp_replaces_thinking_level_with_budget(tmp_path):
+    upstream = Upstream(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "candidates": [],
+                "usageMetadata": gemini_usage_payload(prompt=10, candidates=5),
+            },
+        )
+    )
+    app, _, events = build(tmp_path, upstream, caps=Caps(run_usd=D("0.02")))
+    body = {
+        "contents": [{"parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "thinkingConfig": {"includeThoughts": True, "thinkingLevel": "HIGH"}
+        },
+    }
+
+    response = _post(app, url=GEMINI_URL, body=body)
+
+    assert response.status_code == 200
+    thinking = json.loads(upstream.requests[0].content)["generationConfig"][
+        "thinkingConfig"
+    ]
+    # Gemini 3 rejects a request carrying both limits; the level is replaced.
+    assert "thinkingLevel" not in thinking
+    assert "thinking_level" not in thinking
+    assert thinking["thinkingBudget"] > 0
+    assert thinking["includeThoughts"] is True
+    assert [e["type"] for e in events].count("output_clamped") == 1
+
+
+def test_gemini_clamp_replaces_snake_case_thinking_level(tmp_path):
+    upstream = Upstream(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "candidates": [],
+                "usageMetadata": gemini_usage_payload(prompt=10, candidates=5),
+            },
+        )
+    )
+    app, _, events = build(tmp_path, upstream, caps=Caps(run_usd=D("0.02")))
+    body = {
+        "contents": [{"parts": [{"text": "hi"}]}],
+        "generation_config": {
+            "thinking_config": {
+                "include_thoughts": True,
+                "thinking_level": "HIGH",
+            }
+        },
+    }
+
+    response = _post(app, url=GEMINI_URL, body=body)
+
+    assert response.status_code == 200
+    thinking = json.loads(upstream.requests[0].content)["generation_config"][
+        "thinking_config"
+    ]
+    assert "thinking_level" not in thinking
+    assert "thinkingLevel" not in thinking
+    assert thinking["thinkingBudget"] > 0
+    assert thinking["include_thoughts"] is True
+    assert [e["type"] for e in events].count("output_clamped") == 1
+
+
+def test_gemini_clamp_keeps_budget_only_thinking_config(tmp_path):
+    upstream = Upstream(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "candidates": [],
+                "usageMetadata": gemini_usage_payload(prompt=10, candidates=5),
+            },
+        )
+    )
+    app, _, _ = build(tmp_path, upstream, caps=Caps(run_usd=D("0.02")))
+    body = {
+        "contents": [{"parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "thinkingConfig": {"thinkingBudget": 8_000, "includeThoughts": True}
+        },
+    }
+
+    response = _post(app, url=GEMINI_URL, body=body)
+
+    assert response.status_code == 200
+    thinking = json.loads(upstream.requests[0].content)["generationConfig"][
+        "thinkingConfig"
+    ]
+    assert thinking["thinkingBudget"] < 8_000
+    assert "thinkingLevel" not in thinking
+    assert "thinking_level" not in thinking
+    assert thinking["includeThoughts"] is True
+
+
+def test_gemini_unclamped_thinking_level_body_is_untouched(tmp_path):
+    upstream = Upstream(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "candidates": [],
+                "usageMetadata": gemini_usage_payload(prompt=10, candidates=5),
+            },
+        )
+    )
+    app, _, events = build(tmp_path, upstream, caps=Caps(run_usd=D("5")))
+    body = {
+        "contents": [{"parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "thinkingConfig": {"includeThoughts": True, "thinkingLevel": "HIGH"}
+        },
+    }
+    raw = json.dumps(body).encode()
+
+    async def scenario():
+        async with proxy_client(app) as client:
+            return await client.post(GEMINI_URL, content=raw)
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert upstream.requests[0].content == raw
+    assert "output_clamped" not in [event["type"] for event in events]
+

@@ -96,12 +96,13 @@ sign-in (OAuth/subscription) traffic is not metered.
   already sets `model_provider`, `model_providers.*` or `openai_base_url` with
   `-c`/`--config`, AgentCap refuses to start (exit code 2) rather than let
   traffic bypass the proxy.
-- **Gemini CLI 0.58–0.66** needs an auth type in headless mode, so AgentCap
-  writes a temporary settings file (merged over
-  `$GEMINI_CLI_SYSTEM_SETTINGS_PATH` when set) that selects API-key auth, points
-  Gemini at `GEMINI_CLI_SYSTEM_SETTINGS_PATH` for the run, and removes it
-  afterwards; `~/.gemini` is never modified. `--trust-workspace` adds
-  `GEMINI_CLI_TRUST_WORKSPACE=true` for Gemini.
+- **Gemini CLI 0.58–0.66** needs an auth type in headless mode, and from 0.60 it
+  also refuses system settings files that are not root-owned. AgentCap therefore
+  runs Gemini with a temporary `GEMINI_CLI_HOME`: its `.gemini` directory links
+  your real entries (history, `trustedFolders.json`, credentials) and holds a
+  copied `settings.json` with the auth type forced to `gemini-api-key`. The
+  overlay is removed afterwards; nothing in your real `~/.gemini` is modified.
+  `--trust-workspace` adds `GEMINI_CLI_TRUST_WORKSPACE=true` for Gemini.
 - `npx @openai/codex ...` and `npx @google/gemini-cli ...` are recognised too.
 
 Add `--trust-workspace` for Gemini CLI runs in folders you have not trusted yet;
@@ -149,11 +150,12 @@ test suite uses `httpx.MockTransport` and never calls the network.
 | Tool | Verified version | Command and auth | Routing |
 | --- | --- | --- | --- |
 | Codex CLI | 0.163 | `codex exec "…"` with `OPENAI_API_KEY`; ChatGPT sign-in is not metered. | Automatically, via an injected custom provider (`-c model_provider=agentcap …`). |
-| Gemini CLI | 0.58–0.66 | `gemini -p "…"` with `GEMINI_API_KEY`; Google sign-in is not metered. | Automatically, via a temporary `GEMINI_CLI_SYSTEM_SETTINGS_PATH` overlay (api-key auth). Add `--trust-workspace` to `agentcap run` for untrusted folders. |
+| Gemini CLI | 0.58–0.66 | `gemini -p "…"` with `GEMINI_API_KEY`; Google sign-in is not metered. | Automatically, via a temporary `GEMINI_CLI_HOME` overlay (your `~/.gemini` is linked, its `settings.json` is copied with the auth type forced to `gemini-api-key`; nothing in `~/.gemini` is modified). Add `--trust-workspace` to `agentcap run` for untrusted folders. |
 | Your own script | Any | Uses the OpenAI or Gemini SDK with base-URL environment variables. | No code changes: AgentCap sets `OPENAI_BASE_URL` and `GOOGLE_GEMINI_BASE_URL`. |
 
-Tested end-to-end against a local fake API with the real Codex and Gemini CLIs;
-not yet verified against live billing with a real key.
+Tested with a real Gemini API key on Gemini CLI 0.66 (spend metered from Google's
+usageMetadata, output clamped to the cap); Gemini CLI 0.58 and Codex CLI 0.163 are
+tested end-to-end against a local fake API only, not yet with real paid keys.
 
 ## How it works
 

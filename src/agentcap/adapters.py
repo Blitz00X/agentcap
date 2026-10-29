@@ -6,13 +6,19 @@ Some agent CLIs do not honour a plain base-URL environment variable:
   transport.  It has to be pointed at the proxy with ``-c`` configuration
   overrides (``model_provider`` plus a custom provider that uses the Responses
   API over plain HTTP).
-* Gemini CLI reads a settings file for its authentication type when it runs
-  headless; a gateway base URL alone makes it pick an auth type that headless
-  mode rejects.  A temporary settings file selects ``gemini-api-key`` and is
-  removed after the run.
+* Gemini CLI reads settings for its authentication type when it runs headless;
+  a gateway base URL alone makes it pick an auth type that headless mode
+  rejects.  Gemini CLI >= 0.60 also refuses system settings files whose parent
+  directory is not owned by root, so the old
+  ``GEMINI_CLI_SYSTEM_SETTINGS_PATH`` overlay is silently skipped.  Instead a
+  temporary ``GEMINI_CLI_HOME`` is used: its ``.gemini`` directory links every
+  real user entry (history, ``trustedFolders.json``, OAuth credentials, ...)
+  and carries a real ``settings.json`` that selects ``gemini-api-key``.  The
+  overlay is removed after the run and nothing in the real ``~/.gemini`` is
+  modified.
 
-Everything here is pure (apart from creating the temporary Gemini settings
-directory) so it can be unit-tested without spawning a process.
+Everything here is pure (apart from creating the temporary Gemini home) so it
+can be unit-tested without spawning a process.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -180,17 +187,128 @@ def ensure_codex_routing_is_safe(argv: Sequence[str]) -> None:
 
 
 # -------------------------------------------------------------------- Gemini
-def _read_settings(path: str | None) -> dict[str, object]:
-    """Read the existing settings JSON; unreadable/invalid files are ignored."""
+GEMINI_SETTINGS_FILENAME = "settings.json"
 
-    if not path:
-        return {}
+_GEMINI_SETTINGS_WARNING = (
+    "agentcap: could not parse ~/.gemini/settings.json; "
+    "using defaults for this run"
+)
+
+
+def gemini_home(env: Mapping[str, str]) -> Path:
+    """The home directory Gemini would use without AgentCap's overlay."""
+
+    for name in ("GEMINI_CLI_HOME", "HOME"):
+        value = env.get(name)
+        if value and value.strip():
+            return Path(value)
+    return Path(os.path.expanduser("~"))
+
+
+def _strip_jsonc(text: str) -> str:
+    """Drop ``//`` and ``/* */`` comments plus trailing commas outside strings."""
+
+    without_comments: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if in_string:
+            without_comments.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            without_comments.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < length:
+            following = text[index + 1]
+            if following == "/":
+                index += 2
+                while index < length and text[index] not in "\r\n":
+                    index += 1
+                continue
+            if following == "*":
+                index += 2
+                while index + 1 < length and not (
+                    text[index] == "*" and text[index + 1] == "/"
+                ):
+                    index += 1
+                index += 2
+                continue
+        without_comments.append(char)
+        index += 1
+
+    text = "".join(without_comments)
+
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if in_string:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+            continue
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < length and text[lookahead] in " \t\r\n":
+                lookahead += 1
+            if lookahead < length and text[lookahead] in "}]":
+                index += 1
+                continue
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def _parse_settings_text(text: str) -> dict[str, object] | None:
+    for candidate in (text, _strip_jsonc(text)):
+        try:
+            payload = json.loads(candidate)
+        except ValueError:
+            continue
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _read_user_settings(path: Path) -> dict[str, object]:
+    """Read the user's Gemini settings; missing files simply mean defaults."""
+
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return {}
-    return payload if isinstance(payload, dict) else {}
+    except OSError:
+        print(_GEMINI_SETTINGS_WARNING, file=sys.stderr)
+        return {}
+    payload = _parse_settings_text(text)
+    if payload is None:
+        print(_GEMINI_SETTINGS_WARNING, file=sys.stderr)
+        return {}
+    return payload
 
 
 def _deep_merge(
@@ -213,13 +331,40 @@ def gemini_settings_payload(existing: Mapping[str, object] | None) -> dict[str, 
     return _deep_merge(existing or {}, GEMINI_SETTINGS)
 
 
-def _write_gemini_settings(source: str | None, directory: Path) -> Path:
-    payload = gemini_settings_payload(_read_settings(source))
-    path = directory / "settings.json"
-    with open(path, "w", encoding="utf-8") as handle:
+def _write_gemini_settings(existing: Mapping[str, object] | None, path: Path) -> Path:
+    payload = gemini_settings_payload(existing)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, sort_keys=True)
         handle.write("\n")
+    os.chmod(path, 0o600)
     return path
+
+
+def _build_gemini_home(real_gemini: Path, root: Path) -> Path:
+    """Create ``<root>/.gemini`` linking the real entries and forcing auth."""
+
+    overlay = root / ".gemini"
+    overlay.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(overlay, 0o700)
+    if real_gemini.is_dir():
+        for entry in sorted(real_gemini.iterdir()):
+            if entry.name == GEMINI_SETTINGS_FILENAME:
+                continue
+            try:
+                os.symlink(
+                    os.path.abspath(str(entry)),
+                    overlay / entry.name,
+                    target_is_directory=entry.is_dir(),
+                )
+            except OSError:
+                # Unsupported entry (or a race); the overlay still works.
+                continue
+    _write_gemini_settings(
+        _read_user_settings(real_gemini / GEMINI_SETTINGS_FILENAME),
+        overlay / GEMINI_SETTINGS_FILENAME,
+    )
+    return overlay
 
 
 # --------------------------------------------------------------------- entry
@@ -234,7 +379,7 @@ def prepare_child(
     """Apply the routing adapter for the detected CLI, if any.
 
     The returned ``env`` is a copy: the caller's environment is never changed,
-    and the temporary Gemini settings directory is removed by ``cleanup``.
+    and the temporary Gemini home is removed by ``cleanup``.
     """
 
     prepared_argv = list(argv)
@@ -249,20 +394,21 @@ def prepare_child(
         prepared_argv[index:index] = codex_config_arguments(port)
         return PreparedChild(prepared_argv, prepared_env)
 
-    source = prepared_env.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH")
-    directory = tempdir_factory(prefix="agentcap-gemini-")
-    path = Path(directory)
+    real_gemini = gemini_home(prepared_env) / ".gemini"
+    root = Path(tempdir_factory(prefix="agentcap-gemini-"))
     try:
-        settings_path = _write_gemini_settings(source, path)
+        os.chmod(root, 0o700)
+        _build_gemini_home(real_gemini, root)
     except BaseException:
-        shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
         raise
-    prepared_env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(settings_path)
+    prepared_env["GEMINI_CLI_HOME"] = str(root)
     if trust_workspace:
         prepared_env["GEMINI_CLI_TRUST_WORKSPACE"] = "true"
 
     def cleanup() -> None:
-        shutil.rmtree(path, ignore_errors=True)
+        # rmtree unlinks the entry symlinks instead of descending into them.
+        shutil.rmtree(root, ignore_errors=True)
 
     return PreparedChild(prepared_argv, prepared_env, cleanup)
 
@@ -271,11 +417,13 @@ __all__ = [
     "AdapterConflict",
     "CODEX_CONFLICT_MESSAGE",
     "GEMINI_SETTINGS",
+    "GEMINI_SETTINGS_FILENAME",
     "PreparedChild",
     "codex_config_arguments",
     "codex_conflicts",
     "detect_agent",
     "ensure_codex_routing_is_safe",
+    "gemini_home",
     "gemini_settings_payload",
     "prepare_child",
 ]

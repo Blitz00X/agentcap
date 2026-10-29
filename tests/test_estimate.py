@@ -7,10 +7,13 @@ from decimal import Decimal
 import pytest
 
 from agentcap.estimate import (
+    DEFAULT_GEMINI_THINKING_BUDGET,
     apply_input_safety_factor,
     count_media_parts,
     estimate_input_tokens,
     estimate_request,
+    explicit_output_tokens,
+    gemini_thinking_budget,
     max_output_tokens,
     reservation_usd,
 )
@@ -348,6 +351,40 @@ def test_max_output_gemini_zero_thinking_budget_disables_default(store):
         },
     }
     assert max_output_tokens("google", body, price) == 500
+
+
+def test_max_output_gemini_thinking_level_reserves_default_budget(store):
+    price = store.get("google/gemini-2.5-flash")
+    # Gemini 3 clients send only a level (no budget); it is still thinking.
+    body = {
+        "contents": [],
+        "generationConfig": {
+            "maxOutputTokens": 1000,
+            "thinkingConfig": {"includeThoughts": True, "thinkingLevel": "HIGH"},
+        },
+    }
+    assert gemini_thinking_budget(body, price) == DEFAULT_GEMINI_THINKING_BUDGET
+    assert max_output_tokens("google", body, price) == 1000 + (
+        DEFAULT_GEMINI_THINKING_BUDGET
+    )
+    assert explicit_output_tokens("google", body, price) == 1000 + (
+        DEFAULT_GEMINI_THINKING_BUDGET
+    )
+
+
+def test_max_output_gemini_snake_case_thinking_level_reserves_default_budget(store):
+    price = store.get("google/gemini-2.5-flash")
+    body = {
+        "contents": [],
+        "generation_config": {
+            "max_output_tokens": 500,
+            "thinking_config": {"thinking_level": "HIGH"},
+        },
+    }
+    assert max_output_tokens("google", body, price) == 500 + (
+        DEFAULT_GEMINI_THINKING_BUDGET
+    )
+
 
 
 def test_max_output_falls_back_to_model_default(store):

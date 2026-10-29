@@ -137,6 +137,8 @@ def apply_output_clamp(
     * Gemini: ``generationConfig.maxOutputTokens`` and, for thinking models,
       ``generationConfig.thinkingConfig.thinkingBudget``.  Both are billed as
       output, so the two limits together are kept within ``allowed_output``.
+      A client-supplied ``thinkingLevel`` is replaced by the budget: Gemini 3
+      rejects a request that sets both.
     """
 
     allowed = _positive_int(allowed_output)
@@ -232,6 +234,12 @@ def _apply_gemini_clamp(
     config["maxOutputTokens"] = text_limit
     thinking_key = _thinking_config_key(config)
     thinking_config = dict(config.get(thinking_key) or {})
+    # Gemini 3 rejects a thinking config that carries both limits ("You can
+    # only set only one of thinking budget and thinking level").  A requested
+    # level is therefore replaced by the explicit budget; every other key
+    # (``includeThoughts`` in particular) is preserved.
+    thinking_config.pop("thinkingLevel", None)
+    thinking_config.pop("thinking_level", None)
     thinking_config["thinkingBudget"] = thinking
     config[thinking_key] = thinking_config
     body[config_key] = config

@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -15,6 +16,8 @@ import pytest
 
 import agentcap.cli as cli
 from agentcap.devtools.fake_upstream import create_app as create_fake_app
+from agentcap.ledger import Caps, Ledger
+from agentcap.proxy import ProxyConfig, create_app
 from agentcap.upstreams import (
     GEMINI_UPSTREAM_ENV,
     OPENAI_UPSTREAM_ENV,
@@ -327,3 +330,78 @@ def test_fake_upstream_prompt_tokens_never_below_one():
         {"model": "fake-model", "messages": []},
     )
     assert response.json()["usage"]["prompt_tokens"] == 1
+
+
+@pytest.mark.parametrize(
+    ("generation_key", "thinking_key", "budget_key", "level_key"),
+    [
+        ("generationConfig", "thinkingConfig", "thinkingBudget", "thinkingLevel"),
+        ("generation_config", "thinking_config", "thinking_budget", "thinking_level"),
+    ],
+)
+def test_fake_upstream_rejects_both_thinking_budget_and_level(
+    generation_key, thinking_key, budget_key, level_key
+):
+    response = _fake_post(
+        "/v1beta/models/gemini-test:generateContent",
+        {
+            "contents": [{"parts": [{"text": "hi"}]}],
+            generation_key: {thinking_key: {budget_key: 50, level_key: "HIGH"}},
+        },
+    )
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == 400
+    assert error["status"] == "INVALID_ARGUMENT"
+    assert (
+        error["message"]
+        == "You can only set only one of thinking budget and thinking level."
+    )
+
+
+def test_fake_upstream_accepts_thinking_level_alone():
+    response = _fake_post(
+        "/v1beta/models/gemini-test:generateContent",
+        {
+            "contents": [{"parts": [{"text": "hi"}]}],
+            "generationConfig": {
+                "maxOutputTokens": 100,
+                "thinkingConfig": {"includeThoughts": True, "thinkingLevel": "HIGH"},
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["usageMetadata"]["candidatesTokenCount"] == 100
+
+
+def test_e2e_clamped_gemini_thinking_level_is_accepted_by_fake_upstream(tmp_path):
+    fake = httpx.ASGITransport(app=create_fake_app())
+    app = create_app(
+        ProxyConfig(run_id="run-1", caps=Caps(run_usd=Decimal("0.02"))),
+        Ledger(tmp_path / "e2e.db"),
+        upstream_transport=fake,
+    )
+    body = {
+        "contents": [{"parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "thinkingConfig": {"includeThoughts": True, "thinkingLevel": "HIGH"}
+        },
+    }
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy"
+        ) as client:
+            try:
+                return await client.post(
+                    "/gemini/v1beta/models/gemini-3.5-flash-lite:generateContent",
+                    json=body,
+                )
+            finally:
+                await app.state.http_client.aclose()
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200, response.text
+    assert response.json()["usageMetadata"]["thoughtsTokenCount"] > 0
+

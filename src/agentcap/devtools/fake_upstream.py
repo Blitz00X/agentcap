@@ -25,7 +25,10 @@ Prompt usage is realistic rather than fixed: ``max(1, ceil(text characters /
 Output usage is ``min(requested output limit, 2000)`` tokens, so a clamped
 request visibly produces a different bill.  For Gemini, ``thinkingBudget`` is
 honoured too: ``thoughtsTokenCount`` is ``min(thinkingBudget, 2000)`` and is
-billed as output, exactly like the real API.  Every response carries
+billed as output, exactly like the real API.  A thinking config that sets both
+``thinkingBudget`` and ``thinkingLevel`` is rejected with the real Gemini 3
+400 error ("You can only set only one of thinking budget and thinking level"),
+so a clamp regression fails loudly.  Every response carries
 ``x-fake-output-limit`` with the limit that was actually received (``none``
 when the request had no output limit).
 
@@ -130,13 +133,33 @@ def _gemini_limit(payload: Mapping[str, Any]) -> int | None:
     )
 
 
-def _gemini_thinking_budget(payload: Mapping[str, Any]) -> int | None:
+def _gemini_thinking_config(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     config = _mapping(payload.get("generationConfig"))
     if not config:
         config = _mapping(payload.get("generation_config"))
     thinking = _mapping(config.get("thinkingConfig"))
     if not thinking:
         thinking = _mapping(config.get("thinking_config"))
+    return thinking
+
+
+def _gemini_thinking_limits_conflict(payload: Mapping[str, Any]) -> bool:
+    """Whether a thinking config sets both a budget and a level.
+
+    The real Gemini 3 API rejects that combination with a 400, so the fake
+    upstream must too (it catches clamp regressions end to end).
+    """
+
+    thinking = _gemini_thinking_config(payload)
+    has_budget = any(
+        key in thinking for key in ("thinkingBudget", "thinking_budget")
+    )
+    has_level = any(key in thinking for key in ("thinkingLevel", "thinking_level"))
+    return has_budget and has_level
+
+
+def _gemini_thinking_budget(payload: Mapping[str, Any]) -> int | None:
+    thinking = _gemini_thinking_config(payload)
     value = thinking.get("thinkingBudget", thinking.get("thinking_budget"))
     if isinstance(value, bool) or value is None:
         return None
@@ -205,6 +228,21 @@ def _not_found(what: str) -> JSONResponse:
     return JSONResponse(
         {"error": {"message": f"fake upstream: unsupported {what}"}},
         status_code=404,
+    )
+
+
+def _gemini_thinking_conflict() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": {
+                "code": 400,
+                "message": (
+                    "You can only set only one of thinking budget and thinking level."
+                ),
+                "status": "INVALID_ARGUMENT",
+            }
+        },
+        status_code=400,
     )
 
 
@@ -356,6 +394,8 @@ async def gemini_model(request: Request) -> Response:
     payload = await _json_body(request)
     if payload is None:
         return _invalid_body()
+    if _gemini_thinking_limits_conflict(payload):
+        return _gemini_thinking_conflict()
     limit = _gemini_limit(payload)
     thinking = _gemini_thinking_budget(payload)
     headers = _limit_header(limit)
