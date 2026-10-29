@@ -28,6 +28,10 @@ mathematical guarantee: with conservative reservation it reserves worst-case
 cost before each request, so overshoot is rare but possible when providers count
 more tokens than estimated.
 
+![agentcap demo (simulated: fake local API, no real money)](https://raw.githubusercontent.com/Blitz00X/agentcap/main/docs/demo.gif)
+
+*Simulated demo — fake local API, no key, no money.*
+
 ## Install
 
 The package is published on PyPI as `agentcap-cli` (the name `agentcap` is
