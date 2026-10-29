@@ -160,9 +160,13 @@ test suite uses `httpx.MockTransport` and never calls the network.
 | Your own script | Any | Uses the OpenAI or Gemini SDK with base-URL environment variables. | No code changes: AgentCap sets `OPENAI_BASE_URL` and `GOOGLE_GEMINI_BASE_URL`. |
 
 Tested with a real Gemini API key on Gemini CLI 0.66 (spend metered from Google's
-usageMetadata, output clamped to the cap). Codex CLI 0.165 verified against a real
-OpenAI-compatible upstream (Ollama Cloud, gpt-oss:20b, cap stop with exit 3); not against
-OpenAI billing. Gemini CLI 0.58 and Codex CLI 0.163 are tested end-to-end against a local fake API only.
+usageMetadata, output clamped to the cap). Codex CLI 0.165 verified against real
+OpenAI-compatible upstreams: Ollama Cloud (gpt-oss:20b) and OpenRouter (free model
+poolside/laguna-s-2.1:free via the Responses API) — real responses, ledger token counts
+matched OpenRouter's reported usage exactly, cap stop with exit 3; not against OpenAI
+billing. Gemini CLI 0.58 and Codex CLI 0.163 are tested end-to-end against a local fake API only.
+
+Models without a bundled price (for example OpenRouter or Ollama ids) are blocked until you add a price via `AGENTCAP_PRICING_FILE`.
 
 **Platforms:** Linux and macOS. Windows: not yet (use WSL2).
 

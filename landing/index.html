@@ -234,9 +234,11 @@ agentcap run summary
         </div>
         <p class="note">
           Tested with a real Gemini API key on Gemini CLI 0.66 (spend metered from Google&rsquo;s
-          usageMetadata, output clamped to the cap). Codex CLI 0.165 verified against a real
-          OpenAI-compatible upstream (Ollama Cloud, gpt-oss:20b, cap stop with exit 3); not against
-          OpenAI billing. Gemini CLI 0.58 and Codex CLI 0.163 are tested end-to-end against a local fake API only.
+          usageMetadata, output clamped to the cap). Codex CLI 0.165 verified against real
+          OpenAI-compatible upstreams: Ollama Cloud (gpt-oss:20b) and OpenRouter (free model
+          poolside/laguna-s-2.1:free via the Responses API) — real responses, ledger token counts
+          matched OpenRouter&rsquo;s reported usage exactly, cap stop with exit 3; not against OpenAI
+          billing. Gemini CLI 0.58 and Codex CLI 0.163 are tested end-to-end against a local fake API only.
         </p>
         <p><strong>Platforms:</strong> Linux and macOS. Windows: not yet (use WSL2).</p>
         <p class="micro">
