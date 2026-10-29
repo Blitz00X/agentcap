@@ -33,11 +33,33 @@ from .upstreams import UpstreamConfigError, resolve_upstreams
 
 DEFAULT_SERVE_PORT = 8787
 
+WINDOWS_UNSUPPORTED = (
+    "agentcap: Windows is not supported yet (process-group stop is POSIX-only). "
+    "Use WSL2, macOS or Linux."
+)
+PRO_CAP_MESSAGE = (
+    "agentcap: --hour-cap/--day-cap require an active Pro license; "
+    "command was not started. Run `agentcap license status`, then "
+    '`agentcap license activate "YOUR_LICENSE_KEY"`.'
+)
+LICENSE_USAGE_MESSAGE = (
+    'Usage: agentcap license activate "YOUR_LICENSE_KEY" '
+    "(copy the key from your Polar purchase / customer portal)"
+)
+LICENSE_INVALID_MESSAGE = (
+    "License key not found or no longer valid. Check the copied key; "
+    "if it still fails, email kutaykarahan6@gmail.com."
+)
+
+
+def _windows_unsupported() -> bool:
+    return os.name == "nt" or sys.platform.startswith("win")
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agentcap",
-        description="Local, hard USD cap for AI agent runs.",
+        description="Local USD spend cap for AI agent runs.",
     )
     parser.add_argument("--version", action="version", version=f"agentcap {__version__}")
     subparsers = parser.add_subparsers(dest="subcommand")
@@ -166,19 +188,41 @@ def _license_manager() -> LicenseManager:
     return LicenseManager()
 
 
+def _license_persist_error(exc: OSError, path) -> str:
+    detail = exc.strerror or str(exc)
+    return (
+        "agentcap: license validated, but could not save activation to "
+        f"{path}: {detail}. Check write permission and free disk space."
+    )
+
+
 def _license(args: argparse.Namespace) -> int:
+    manager = _license_manager()
     if args.action == "activate":
         if not args.key:
-            print("agentcap: license activate requires a key", file=sys.stderr)
+            print(LICENSE_USAGE_MESSAGE, file=sys.stderr)
             return 2
-        status = _license_manager().activate(args.key)
+        try:
+            status = manager.activate(args.key)
+        except OSError as exc:
+            print(_license_persist_error(exc, manager.path), file=sys.stderr)
+            return 1
         print(f"tier: {status.tier}")
         print(f"valid: {status.valid}")
         print(f"reason: {status.reason}")
+        if (
+            not status.valid
+            and "could not reach the license server" not in status.reason
+        ):
+            print(LICENSE_INVALID_MESSAGE, file=sys.stderr)
         return 0 if status.valid else 1
 
     if args.action == "deactivate":
-        _license_manager().clear()
+        try:
+            manager.clear()
+        except OSError as exc:
+            print(_license_persist_error(exc, manager.path), file=sys.stderr)
+            return 1
         print("license cache cleared")
         return 0
 
@@ -189,6 +233,7 @@ def _license(args: argparse.Namespace) -> int:
         print(f"tier: {status.tier}")
         print(f"valid: {status.valid}")
         print(f"reason: {status.reason}")
+        print(f"cache path: {manager.path}")
     return 0
 
 
@@ -219,6 +264,9 @@ def _upstream_overrides() -> dict[str, str] | None:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if _windows_unsupported():
+        print(WINDOWS_UNSUPPORTED, file=sys.stderr)
+        return 2
     argv = list(args.argv)
     if argv and argv[0] == "--":
         argv = argv[1:]
@@ -244,18 +292,12 @@ def _run(args: argparse.Namespace) -> int:
         return 2
 
     active_features = set(features(status_from_environment().tier))
-    if hour_cap is not None and "hour_cap" not in active_features:
-        print(
-            "agentcap: --hour-cap requires AgentCap Pro; ignoring it on the free tier.",
-            file=sys.stderr,
-        )
-        hour_cap = None
-    if day_cap is not None and "day_cap" not in active_features:
-        print(
-            "agentcap: --day-cap requires AgentCap Pro; ignoring it on the free tier.",
-            file=sys.stderr,
-        )
-        day_cap = None
+    if (
+        (hour_cap is not None and "hour_cap" not in active_features)
+        or (day_cap is not None and "day_cap" not in active_features)
+    ):
+        print(PRO_CAP_MESSAGE, file=sys.stderr)
+        return 2
 
     try:
         runner = Runner(
@@ -327,6 +369,9 @@ def _serve(args: argparse.Namespace) -> int:
 
 # ------------------------------------------------------------------------ demo
 def _demo(_args: argparse.Namespace) -> int:
+    if _windows_unsupported():
+        print(WINDOWS_UNSUPPORTED, file=sys.stderr)
+        return 2
     from .demo import run_demo
 
     return run_demo()

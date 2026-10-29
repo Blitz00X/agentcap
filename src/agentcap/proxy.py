@@ -8,8 +8,10 @@ Design rules that this module enforces:
   the request (HTTP 403/400) instead of forwarding it unmetered.
 * Credentials (``Authorization``, ``x-goog-api-key``, ``?key=``) are forwarded
   untouched but never parsed, logged, stored or emitted in events.
-* Failures to meter (client disconnect, missing usage block) settle the whole
-  reservation: over-charging a run is safe, under-charging is not.
+* Failures to meter settle the reservation conservatively: a mid-stream
+  disconnect or a missing usage block charges the whole reservation, while a
+  disconnect before upstream headers charges only the estimated input (output
+  was never delivered).
 
 Endpoint contract::
 
@@ -112,6 +114,10 @@ class _Settlement:
     requested_tier: str | None = None
     multiplier: Decimal = Decimal("1")
     now: datetime | None = None
+    #: Padded input-token estimate used to reserve this request.  If the client
+    #: disconnects before the upstream answers, this is the part the provider
+    #: may already have billed.
+    input_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -851,6 +857,7 @@ class _Proxy:
             requested_tier=requested_tier,
             multiplier=tier_multiplier,
             now=now,
+            input_tokens=input_tokens,
         )
 
         if streaming:
@@ -966,9 +973,18 @@ class _Proxy:
                 "agentcap: upstream request failed; reservation released.",
                 "agentcap_upstream_error",
             )
+        except BaseException:
+            # The client went away (or the handler was cancelled) while waiting
+            # for the upstream: charge only the input the provider may already
+            # have billed, then let the cancellation propagate.
+            await self._abort_response(response)
+            self._settle_client_disconnect(
+                reservation_id, reserved, settlement, model, provider
+            )
+            raise
         finally:
             if response is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(BaseException):
                     await response.aclose()
 
         assert response is not None
@@ -1006,6 +1022,7 @@ class _Proxy:
         kind: str,
         provider: str,
     ) -> Response:
+        response: httpx.Response | None = None
         try:
             response = await self._client.send(upstream, stream=True)
         except httpx.HTTPError:
@@ -1015,6 +1032,14 @@ class _Proxy:
                 "agentcap: upstream request failed; reservation released.",
                 "agentcap_upstream_error",
             )
+        except BaseException:
+            # Cancelled (or the client disconnected) before the upstream
+            # produced headers.  Abort and charge the estimated input only.
+            await self._abort_response(response)
+            self._settle_client_disconnect(
+                reservation_id, reserved, settlement, model, provider
+            )
+            raise
 
         if response.status_code >= 400:
             # Errors are not streams; drain, release, and replay as a response.
@@ -1027,8 +1052,14 @@ class _Proxy:
                     "agentcap: upstream request failed; reservation released.",
                     "agentcap_upstream_error",
                 )
+            except BaseException:
+                await self._abort_response(response)
+                self._settle_client_disconnect(
+                    reservation_id, reserved, settlement, model, provider
+                )
+                raise
             finally:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(BaseException):
                     await response.aclose()
             self._release_quietly(reservation_id)
             return Response(
@@ -1104,6 +1135,71 @@ class _Proxy:
             self.ledger.release(reservation_id)
         except Exception:
             pass
+
+    @staticmethod
+    async def _abort_response(response: httpx.Response | None) -> None:
+        """Close an in-flight upstream response without hiding cancellation."""
+
+        if response is None:
+            return
+        with contextlib.suppress(BaseException):
+            await response.aclose()
+
+    def _input_only_cost(self, settlement: _Settlement) -> Decimal | None:
+        """Cost of the prompt alone: provider may have billed it before close."""
+
+        try:
+            charged = pricing_cost(
+                settlement.price,
+                settlement.input_tokens,
+                0,
+                0,
+                now=settlement.now,
+                cache_write=settlement.cache_write,
+            )
+            if settlement.multiplier != 1:
+                charged = (charged * settlement.multiplier).quantize(
+                    MICRO_USD, rounding=ROUND_CEILING
+                )
+            return charged
+        except Exception:
+            return None
+
+    def _settle_client_disconnect(
+        self,
+        reservation_id: str,
+        reserved: Decimal,
+        settlement: _Settlement,
+        model: str,
+        provider: str,
+    ) -> None:
+        """Settle a reservation after a client disconnect / cancellation.
+
+        Output is assumed to be zero because the connection was closed; the
+        provider may still have billed the input.  The reservation must never
+        be left open, so a fallback charge (the full reservation) is used if
+        the input cost cannot be computed, and a failed settle is released.
+        """
+
+        charged = self._input_only_cost(settlement)
+        if charged is None:
+            charged = reserved
+        try:
+            self.ledger.settle(reservation_id, charged)
+        except Exception:
+            self._release_quietly(reservation_id)
+        self._emit(
+            {
+                "type": "client_disconnect",
+                "reserved_usd": str(reserved),
+                "charged_usd": str(charged),
+            }
+        )
+        try:
+            self._check_thresholds()
+        except Exception:
+            pass
+        self._trip_if_cap_reached(model, provider)
 
     def _settle_actual(
         self,

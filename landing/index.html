@@ -99,7 +99,10 @@ agentcap run --cap 2 -- python my_agent.py</code></pre>
             <p>
               AgentCap routes supported CLIs automatically: it injects a Codex
               provider override for Codex CLI and a temporary
-              <code>GEMINI_CLI_SYSTEM_SETTINGS_PATH</code> overlay for Gemini CLI.
+              <code>GEMINI_CLI_HOME</code> overlay for Gemini CLI (your
+              <code>~/.gemini</code> is linked, <code>settings.json</code> is
+              copied with api-key auth; nothing in <code>~/.gemini</code> is
+              modified).
               For your own script it sets <code>OPENAI_BASE_URL</code> and
               <code>GOOGLE_GEMINI_BASE_URL</code> for the child. It meters
               <code>POST /v1/responses</code> and <code>/v1/chat/completions</code>
@@ -136,11 +139,14 @@ agentcap run --cap 2 -- python my_agent.py</code></pre>
         <h2 id="install-title">Install</h2>
         <pre><code>pipx install agentcap-cli</code></pre>
         <p class="note">(installs the <code>agentcap</code> command)</p>
+        <p class="micro">
+          No pipx? macOS: <code>brew install pipx &amp;&amp; pipx ensurepath</code>; Linux: <code>python3 -m pip install --user pipx &amp;&amp; python3 -m pipx ensurepath</code>.
+        </p>
         <p>Then put a cap on a run:</p>
         <pre><code># Codex CLI (API-key mode) — routed through AgentCap automatically
 agentcap run --cap 2 -- codex exec "fix the failing tests"
 
-# Gemini CLI (API-key mode) — routed via a temporary settings overlay
+# Gemini CLI (API-key mode) — routed via a temporary GEMINI_CLI_HOME overlay
 agentcap run --cap 2 -- gemini -p "refactor utils.py"
 
 # Gemini CLI in a folder you have not trusted yet
@@ -211,7 +217,7 @@ agentcap run summary
                 <th scope="row">Gemini CLI</th>
                 <td>0.58–0.66</td>
                 <td><code>gemini -p "…"</code> with <code>GEMINI_API_KEY</code>; Google sign-in is not metered.</td>
-                <td>Automatically, via a temporary <code>GEMINI_CLI_SYSTEM_SETTINGS_PATH</code> overlay (api-key auth). Add <code>--trust-workspace</code> to <code>agentcap run</code> for untrusted folders.</td>
+                <td>Automatically, via a temporary <code>GEMINI_CLI_HOME</code> overlay (your <code>~/.gemini</code> is linked, <code>settings.json</code> is copied with api-key auth; nothing in <code>~/.gemini</code> is modified). Add <code>--trust-workspace</code> to <code>agentcap run</code> for untrusted folders.</td>
               </tr>
               <tr>
                 <th scope="row">Your own script</th>
@@ -227,6 +233,7 @@ agentcap run summary
           usageMetadata, output clamped to the cap); Gemini CLI 0.58 and Codex CLI 0.163 are
           tested end-to-end against a local fake API only, not yet with real paid keys.
         </p>
+        <p><strong>Platforms:</strong> Linux and macOS. Windows: not yet (use WSL2).</p>
         <p class="micro">
           At the end of a run AgentCap warns
           “no model requests observed — protection not verified” if the proxy saw
@@ -266,6 +273,9 @@ agentcap run summary
             <a class="btn-primary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
           </article>
         </div>
+        <p class="micro">
+          After purchase, copy your license key from your Polar order (purchase email / Polar customer portal), then run <code>agentcap license activate "YOUR_LICENSE_KEY"</code> and check with <code>agentcap license status</code> (expect <code>tier: pro</code>).
+        </p>
         <p class="micro">
           Payments handled by Polar (merchant of record). Not a subscription.
           <a href="#terms">Purchase terms</a>.

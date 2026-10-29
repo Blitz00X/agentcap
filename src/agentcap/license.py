@@ -569,16 +569,23 @@ class LicenseManager:
 
         if status.valid:
             if self.persists:
-                self._write(
-                    effective_key,
-                    status,
-                    now,
-                    activation_id,
-                    last_attempt_at=now,
-                )
+                try:
+                    self._write(
+                        effective_key,
+                        status,
+                        now,
+                        activation_id,
+                        last_attempt_at=now,
+                    )
+                except OSError:
+                    # A read-only cache must not break a validated run.
+                    pass
         elif same_key is not None and self.persists:
             # Definitive rejection: make sure a stale Pro cache cannot survive.
-            self.clear()
+            try:
+                self.clear()
+            except OSError:
+                pass
         return status
 
     def _offline(

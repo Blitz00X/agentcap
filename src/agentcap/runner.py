@@ -192,6 +192,9 @@ class Runner:
         self.kill_reason: str | None = None
         self._kill_lock = threading.Lock()
         self.child: subprocess.Popen | None = None
+        #: Process-group id captured at spawn, so the group can still be
+        #: signalled after the leader has exited (orphaned grandchildren).
+        self._pgid: int | None = None
         self.summary: RunSummary | None = None
 
         self.alerts = alerts or dispatcher_from_env(
@@ -361,28 +364,41 @@ class Runner:
     def _spawn(
         self, argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     ) -> subprocess.Popen:
-        return self.popen_factory(
+        child = self.popen_factory(
             self.argv if argv is None else argv,
             self.child_env() if env is None else env,
         )
+        # Capture the group now: once the leader exits, os.getpgid(pid) fails
+        # even though the group (and its children) may still be alive.
+        try:
+            self._pgid = os.getpgid(child.pid)
+        except (ProcessLookupError, OSError):
+            self._pgid = None
+        return child
 
     def _signal_group(self, sig: int) -> None:
         child = self.child
-        if child is None or child.poll() is not None:
-            return
-        try:
-            pgid = os.getpgid(child.pid)
-        except (ProcessLookupError, OSError):
-            pgid = None
-        try:
-            if pgid is not None and pgid != os.getpgrp():
+        pgid = self._pgid
+        if pgid is None and child is not None and child.poll() is None:
+            try:
+                pgid = os.getpgid(child.pid)
+            except (ProcessLookupError, OSError):
+                pgid = None
+
+        if pgid is not None and pgid != os.getpgrp():
+            try:
                 os.killpg(pgid, sig)
-            else:
-                # A custom popen factory may not have created a new session;
-                # never signal our own process group.
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+        # A custom popen factory may not have created a new session; never
+        # signal our own process group, and only signal a live leader.
+        if child is not None and child.poll() is None:
+            try:
                 child.send_signal(sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
     def _terminate(self) -> None:
         self._signal_group(signal.SIGTERM)
@@ -391,9 +407,10 @@ class Runner:
             return
         try:
             child.wait(timeout=self.term_timeout)
-            return
         except subprocess.TimeoutExpired:
             pass
+        # Even if the leader exited within the grace period, grandchildren may
+        # still be running in its process group: SIGKILL the saved group too.
         self._signal_group(signal.SIGKILL)
         try:
             child.wait(timeout=5.0)

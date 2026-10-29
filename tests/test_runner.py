@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import time
 from decimal import Decimal
@@ -372,3 +373,56 @@ def test_cap_from_env(monkeypatch):
     assert cap_from_env() == Decimal("0.25")
     monkeypatch.setenv("AGENTCAP_CAP", "not-money")
     assert cap_from_env() == Decimal("5")
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # A zombie is already dead for our purposes; the important thing is that
+    # it no longer runs (and will be reaped by init/subreaper).
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    return stat.split()[2] != "Z"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX-only")
+def test_terminate_kills_grandchild_after_leader_already_exited(tmp_path):
+    """The saved PGID must still kill descendants when the leader is gone."""
+
+    pidfile = tmp_path / "grandchild.pid"
+    leader = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([\n"
+        "    sys.executable, '-c',\n"
+        "    'import signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)',\n"
+        "])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(0.3)\n"
+        "sys.exit(0)\n"
+    )
+    runner, _ = _runner(tmp_path, [sys.executable, "-c", "pass"])
+    runner.child = runner._spawn([sys.executable, "-c", leader], env=dict(os.environ))
+
+    runner.child.wait(timeout=5)
+    assert runner.child.poll() is not None
+    assert runner._pgid is not None
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not pidfile.exists():
+        time.sleep(0.02)
+    grandchild = int(pidfile.read_text())
+    assert _process_alive(grandchild)
+
+    runner._terminate()
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and _process_alive(grandchild):
+        time.sleep(0.02)
+    assert not _process_alive(grandchild)

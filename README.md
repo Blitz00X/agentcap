@@ -41,6 +41,8 @@ pipx install agentcap-cli
 pip install agentcap-cli
 ```
 
+No pipx? macOS: `brew install pipx && pipx ensurepath`; Linux: `python3 -m pip install --user pipx && python3 -m pipx ensurepath`.
+
 From a checkout:
 
 ```bash
@@ -156,6 +158,8 @@ test suite uses `httpx.MockTransport` and never calls the network.
 Tested with a real Gemini API key on Gemini CLI 0.66 (spend metered from Google's
 usageMetadata, output clamped to the cap); Gemini CLI 0.58 and Codex CLI 0.163 are
 tested end-to-end against a local fake API only, not yet with real paid keys.
+
+**Platforms:** Linux and macOS. Windows: not yet (use WSL2).
 
 ## How it works
 
@@ -317,6 +321,8 @@ Pick what matches your setup — these tools can also be combined.
 ## License
 
 MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Kutay Karahan.
+
+After purchase, copy your license key from your Polar order (purchase email / Polar customer portal), then run `agentcap license activate "YOUR_LICENSE_KEY"` and check with `agentcap license status` (expect `tier: pro`).
 
 The Pro licence key is separate from the source licence. How it is checked:
 

@@ -810,6 +810,45 @@ def test_clear_removes_license(tmp_path):
     assert manager.tier() == "free"
 
 
+def test_activate_propagates_oserror_when_activation_cannot_be_saved(
+    tmp_path, monkeypatch
+):
+    class PersistingValidator:
+        persist = True
+
+        def activate(self, key):
+            return LicenseStatus(True, "pro", "static license accepted"), None
+
+        def validate(self, key, activation_id=None):
+            return LicenseStatus(True, "pro", "static license accepted")
+
+    manager = LicenseManager(
+        PersistingValidator(),
+        tmp_path / "license.json",
+        clock=FakeClock(),
+    )
+
+    def fail_write(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(manager, "_write", fail_write)
+    with pytest.raises(OSError) as excinfo:
+        manager.activate("secret-key")
+    assert excinfo.value.strerror == "No space left on device"
+
+
+def test_clear_propagates_oserror(tmp_path):
+    # A directory cannot be unlinked with Path.unlink(), which raises OSError
+    # (IsADirectoryError/PermissionError depending on platform).
+    manager = LicenseManager(
+        StaticValidator(LicenseStatus(True, "pro", "static license accepted")),
+        tmp_path,
+        clock=FakeClock(),
+    )
+    with pytest.raises(OSError):
+        manager.clear()
+
+
 def test_key_never_appears_in_reasons():
     clock = FakeClock()
     scenarios = [

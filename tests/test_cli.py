@@ -69,16 +69,22 @@ def test_run_cap_comes_from_env(fake_runner, monkeypatch):
     assert fake_runner.instances[1].kwargs["cap"] == Decimal("0.25")
 
 
-def test_free_tier_ignores_hour_and_day_caps_with_one_line_notice(fake_runner, capsys):
+def test_free_tier_refuses_hour_and_day_caps_without_starting(fake_runner, capsys):
     assert cli.main(
         ["run", "--hour-cap", "1", "--day-cap", "2", "--", "true"]
-    ) == 0
-    runner = fake_runner.instances[0]
-    assert runner.kwargs["hour_cap"] is None
-    assert runner.kwargs["day_cap"] is None
+    ) == 2
+    assert fake_runner.instances == []
     err = capsys.readouterr().err
-    assert "--hour-cap requires AgentCap Pro" in err
-    assert "--day-cap requires AgentCap Pro" in err
+    assert "--hour-cap/--day-cap require an active Pro license" in err
+    assert "command was not started" in err
+    assert 'agentcap license activate "YOUR_LICENSE_KEY"' in err
+
+
+@pytest.mark.parametrize("flag", ["--hour-cap", "--day-cap"])
+def test_free_tier_refuses_each_pro_cap_individually(fake_runner, capsys, flag):
+    assert cli.main(["run", flag, "1", "--", "true"]) == 2
+    assert fake_runner.instances == []
+    assert "require an active Pro license" in capsys.readouterr().err
 
 
 def test_pro_license_enables_hour_and_day_caps(fake_runner, tmp_path, capsys):
@@ -234,7 +240,127 @@ def test_license_deactivate_clears_local_cache(monkeypatch, tmp_path, capsys):
 def test_license_activate_without_key_fails(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(tmp_path / "license.json"))
     assert cli.main(["license", "activate"]) == 2
-    assert "requires a key" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert 'Usage: agentcap license activate "YOUR_LICENSE_KEY"' in err
+    assert "Polar purchase / customer portal" in err
+
+
+def test_license_activate_invalid_key_prints_actionable_message(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(tmp_path / "license.json"))
+
+    class DenyingPolar:
+        persist = True
+
+        def activate(self, key):
+            return LicenseStatus(False, "free", "license key not found"), None
+
+        def validate(self, key, activation_id=None):
+            return LicenseStatus(False, "free", "license key not found")
+
+    monkeypatch.setattr(license_module, "PolarLicenseValidator", DenyingPolar)
+
+    assert cli.main(["license", "activate", "wrong-key"]) == 1
+    captured = capsys.readouterr()
+    assert "tier: free" in captured.out
+    assert "License key not found or no longer valid" in captured.err
+    assert "kutaykarahan6@gmail.com" in captured.err
+    assert "wrong-key" not in captured.out + captured.err
+
+
+def test_license_status_prints_cache_path_but_never_the_key(
+    monkeypatch, tmp_path, capsys
+):
+    path = tmp_path / "license.json"
+    write_pro_cache(path)
+    monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(path))
+
+    assert cli.main(["license", "status"]) == 0
+    out = capsys.readouterr().out
+    assert f"cache path: {path}" in out
+    assert "polar-key" not in out
+
+
+def test_license_activate_save_error_is_reported_without_traceback(
+    monkeypatch, tmp_path, capsys
+):
+    path = tmp_path / "license.json"
+    monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(path))
+
+    class GrantingPolar:
+        persist = True
+
+        def activate(self, key):
+            return LicenseStatus(True, "pro", "license valid"), "act_123"
+
+        def validate(self, key, activation_id=None):
+            return LicenseStatus(True, "pro", "license valid")
+
+    monkeypatch.setattr(license_module, "PolarLicenseValidator", GrantingPolar)
+
+    def fail_write(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(license_module.LicenseManager, "_write", fail_write)
+
+    assert cli.main(["license", "activate", "polar-key-secret"]) == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("agentcap: license validated, but could not save"
+                                   " activation to ")
+    assert str(path) in captured.err
+    assert "No space left on device" in captured.err
+    assert "Check write permission and free disk space." in captured.err
+    assert "Traceback" not in captured.err
+    assert "polar-key-secret" not in captured.out + captured.err
+
+
+def test_license_deactivate_clear_error_is_reported_without_traceback(
+    monkeypatch, tmp_path, capsys
+):
+    path = tmp_path / "license.json"
+    monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(path))
+
+    def fail_clear(self):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(license_module.LicenseManager, "clear", fail_clear)
+
+    assert cli.main(["license", "deactivate"]) == 1
+    captured = capsys.readouterr()
+    assert "license validated, but could not save activation" in captured.err
+    assert str(path) in captured.err
+    assert "Permission denied" in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("platform_name", ["nt"])
+def test_run_refuses_windows_before_starting(
+    monkeypatch, fake_runner, capsys, platform_name
+):
+    monkeypatch.setattr(cli.os, "name", platform_name)
+    assert cli.main(["run", "--", "true"]) == 2
+    assert fake_runner.instances == []
+    err = capsys.readouterr().err
+    assert "Windows is not supported yet" in err
+    assert "Use WSL2, macOS or Linux." in err
+
+
+def test_run_refuses_windows_when_only_sys_platform_is_win(
+    monkeypatch, fake_runner, capsys
+):
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    assert cli.main(["run", "--", "true"]) == 2
+    assert fake_runner.instances == []
+    assert "Windows is not supported yet" in capsys.readouterr().err
+
+
+def test_demo_refuses_windows_before_starting(monkeypatch, capsys):
+    monkeypatch.setattr(cli.os, "name", "nt")
+    assert cli.main(["demo"]) == 2
+    captured = capsys.readouterr()
+    assert "Windows is not supported yet" in captured.err
+    assert "SIMULATED DEMO" not in captured.out
 
 
 def test_license_activate_network_failure_exits_one_without_traceback(
