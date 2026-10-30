@@ -1,14 +1,53 @@
 # AgentCap
 
-**Per-job quota for Claude Code, Codex and Gemini CLI — and where your tokens went.** Hard $ caps on API keys, a % cap per job on Claude Max/Pro and ChatGPT subscriptions, an early warning before a cap is hit, and a local, read-only history of every token you spent.
+**Stop Claude Code and Codex runs that loop or eat your weekly quota.** AgentCap stops a run
+that repeats the same tool call or keeps failing, and stops a job at its share of your
+Claude Max/Pro or ChatGPT weekly / 5-hour quota, with an evidence receipt of why. Free
+`agentcap waste` shows where your tokens already went: subagents, Opus, cache misses,
+tool loops and error streaks.
 
-**The API-key guard for unattended agent runs.** AgentCap runs
+```text
+$ agentcap waste --since 7d
+SUBAGENTS                $41.20    25% of spend  in 31 subagent/forked threads
+OPUS                     $38.90    24% of spend
+CACHE MISSES              $6.10  57 cache re-writes after the TTL ran out (5 min, or 1 h)
+REPEATED TOOL CALLS       $9.80  12 streaks of >= 3 identical calls in a row
+TOOL ERROR STREAKS        $4.30  5 streaks of >= 3 failing calls in a row
+Pro would have stopped this run at $3.12 / at 4 repeats (Bash x11 in 7f3a91c2, $2.40 after that).
+```
+*(illustrative numbers; run it on your own logs, it is read-only)*
+
+## Stop loops and quota burn (Pro)
+
+```bash
+agentcap run --quota 5% -- claude                 # subscription: stop at 5% of the weekly quota, or on a loop
+agentcap run --quota 10% --window 5h -- codex     # same for Codex on a ChatGPT plan
+agentcap run --cap 2 -- codex exec "fix tests"    # API key: $2 cap + loop/burn breaker
+```
+
+- **Loop breaker.** Same tool call (name + input) 4 times in a row, or 8 failing tool calls in a
+  row: the run is stopped (exit 4). On subscriptions it works without touching your login or
+  traffic: Claude Code via an official `PreToolUse` hook (denies the 4th identical call, then
+  SIGINT if the agent keeps going); Codex by reading its own rollout file (SIGINT). On API keys the
+  proxy also catches identical requests and `--max-burn` $/min spikes.
+- **Per-job quota %.** Stop one job at its share of the account's weekly or 5-hour limit.
+- **Evidence receipt.** Each stop prints and saves why (`same tool call 4 times in a row (Bash)`,
+  `this job used 5.1% of the weekly quota`) as numbers only, never prompts.
+- **Free** runs the same detectors in observe-only mode and prints what Pro would have done.
+
+Honest limits: Claude tool-error streaks are only caught on API-key runs (the subscription hook sees
+the call, not its result); the stop can be one request late; quota % is account-level; verified on
+fixtures, fake CLIs and real Claude Code 2.1.197 hooks, **not yet on a real Max/ChatGPT account.**
+
+## The API-key cap
+
+AgentCap runs
 the CLI behind a local proxy on `127.0.0.1` and applies a local spend cap to the
 run. Before each request it reserves the worst-case cost; when the budget is gone
 it kills the local process and tells you why. No dashboard, no account, no code
 changes for tools that honour a base-URL environment variable.
 
-Claude Code, Codex CLI and Gemini CLI are routed automatically. AgentCap meters API-key
+Claude Code and Codex CLI are routed automatically (Gemini CLI too). AgentCap meters API-key
 traffic — `POST /v1/responses` and `/v1/chat/completions` (Codex CLI uses the
 Responses API) plus Gemini `generateContent` / `streamGenerateContent` and Anthropic `POST /v1/messages`. ChatGPT
 or Google sign-in (OAuth/subscription) traffic is not metered.
@@ -401,9 +440,11 @@ fingerprint hash (SHA-256; it contains no hostname and no username) to Polar's
 public licence API at `api.polar.sh`. Free users make no licence requests at
 all.
 
-## Usage history, one budget, early warning (new in 0.2)
+## `agentcap waste` and usage history (Free, new in 0.2)
 
 ```bash
+agentcap waste                       # subagent + Opus share, cache misses, tool loops, error streaks ($ each)
+agentcap report --by agent           # session -> subagent tree with $ and Opus share
 agentcap import                      # read-only: ~/.claude/projects, ~/.codex/sessions, AgentCap's ledger
 agentcap report --by day             # Free: day | session | model | project, tokens + API-equivalent $
 agentcap report --by model --since 7d --csv
@@ -423,8 +464,15 @@ agentcap run --quota -- claude       # uses the 5% / 5h quota from the budget
 - **Early warning:** when the current burn rate would hit the run cap within ~10 minutes, AgentCap
   prints (and on Pro sends) one `cap_eta` alert: "cap is hit in ~N min".
 - **$ is API-equivalent:** what the same tokens would cost at list API prices — not your subscription bill.
+- **Subagents:** Claude Code `<session>/subagents/agent-*.jsonl` and `isSidechain` lines; Codex
+  `session_meta` `source.subagent.thread_spawn.parent_thread_id` and `forked_from_id`. These formats
+  are undocumented and change between CLI versions.
+- **`waste` heuristics:** a cache miss is a cache write larger than the cache read after the prompt
+  cache TTL ran out (5 min; 1 h when written with `ephemeral_1h`; Codex: a big uncached prompt after
+  > 5 min idle). Tool inputs are hashed, never printed. Not in local logs: `agent_summary` / title
+  background calls and HTTP retries (planned: local OTel receiver).
 
-### Pro analytics (`agentcap report <view>`)
+### Pro extras: analytics (`agentcap report <view>`)
 
 | view | what you get |
 | --- | --- |
@@ -442,15 +490,17 @@ steps are noisy. No team aggregation: everything stays on your machine.
 **Free (MIT License, forever):** the per-run spend cap.
 - Per-run `--cap` (`--hour-cap` / `--day-cap` exit 2 on Free with a clear message)
 - Output clamping, fail-closed metering, terminal alerts
-- Codex, Gemini CLI, Claude Code, and any SDK script
-- `agentcap import`, `agentcap report` by day/session/model/project, `agentcap budget`, the `cap_eta` early warning
+- Claude Code, Codex, any SDK script (and Gemini CLI)
+- `agentcap waste`, `agentcap report --by agent` (subagent tree), `agentcap import`, `agentcap report` by day/session/model/project, `agentcap budget`, the `cap_eta` early warning
 
 When the Pro detectors below would have fired on a Free run, AgentCap does not stop it.
 It prints one line: `Pro's loop breaker would have stopped this at $X.XX`.
 
-**Pro, $19 one-time (launch price): the unattended pack.** For runs nobody is watching, such as overnight
-jobs, CI and background agents:
-- **Loop/burn breaker:** stops the agent (exit 4) before the next request is sent when
+**Pro, $19 one-time (launch price): stop runs that loop or eat your quota.**
+- **Subscription quota mode + loop breaker:** `agentcap run --quota 5% -- claude|codex` stops a job at
+  its share of your Claude Max/Pro or ChatGPT quota, or when it repeats the same tool call 4 times /
+  fails 8 tool calls in a row (see above).
+- **API-key loop/burn breaker:** stops the agent (exit 4) before the next request is sent when
   (a) the same step repeats 4 times in a row (the last tool call + its result, normalised;
   the growing conversation history is ignored), (b) 8 consecutive tool results are errors, or
   (c) spend exceeds `--max-burn` USD/minute over a rolling 2-minute window (default `2.00`,
@@ -459,9 +509,7 @@ jobs, CI and background agents:
 - **Phone and webhook alerts:** Telegram (`AGENTCAP_TELEGRAM_BOT_TOKEN`, `AGENTCAP_TELEGRAM_CHAT_ID`)
   and webhook (`AGENTCAP_WEBHOOK_URL`) alerts for cap hits, loop kills and the end-of-run receipt.
   Tokens are read from the environment and are never printed or logged.
-- **Subscription quota mode:** `agentcap run --quota 5% -- claude|codex` stops a job at its
-  share of your Claude Max/Pro or ChatGPT quota (see above).
-- **Usage analytics:** `agentcap report forecast | calibration | savings | receipts` (see above).
+- **Extras — usage analytics:** `agentcap report forecast | calibration | savings | receipts` (see above).
 - **Spend receipt:** a JSON file per run (`~/.local/state/agentcap/receipts/<run>.json`, or
   `AGENTCAP_RECEIPT_DIR`) with requests, spend, caps, the stop reason and the exit code. It contains
   numbers only, never prompts. The same one-line receipt is sent to Telegram and the webhook.

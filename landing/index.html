@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>AgentCap — the API-key guard for unattended Codex CLI and Gemini CLI runs</title>
-  <meta name="description" content="AgentCap applies a local spend cap to unattended Codex CLI and Gemini CLI runs: conservative worst-case reservation, output clamping, and the local process stopped at the cap with the reason printed.">
-  <meta property="og:title" content="AgentCap — the API-key guard for unattended Codex CLI and Gemini CLI runs">
-  <meta property="og:description" content="A local spend cap for unattended Codex CLI and Gemini CLI runs. Conservative reservation, output clamping, and the local process stopped at the cap. Terminal alert in Free; Pro adds hour/day caps, a loop/burn breaker and webhook/Telegram alerts. $19 one-time launch price.">
+  <title>AgentCap — stop Claude Code and Codex runs that loop or eat your weekly quota</title>
+  <meta name="description" content="AgentCap stops Claude Code and Codex runs that repeat the same tool call, keep failing, or eat their share of your weekly quota, with an evidence receipt. Free agentcap waste shows subagent, Opus, cache-miss and loop waste in your local logs. Hard $ caps for API keys too.">
+  <meta property="og:title" content="AgentCap — stop Claude Code and Codex runs that loop or eat your weekly quota">
+  <meta property="og:description" content="AgentCap stops Claude Code and Codex runs that repeat the same tool call, keep failing, or eat their share of your weekly quota, with an evidence receipt. Free agentcap waste shows subagent, Opus, cache-miss and loop waste in your local logs. Hard $ caps for API keys too. Pro $19 one-time launch price.">
   <meta property="og:type" content="website">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -42,25 +42,23 @@
     <!-- COPY:hero START -->
     <section class="hero" id="top" aria-labelledby="hero-title">
       <div class="shell">
-        <p class="eyebrow">Local spend caps for unattended API-key agent runs</p>
-        <h1 id="hero-title">Hard spend caps for Claude Code, Codex and Gemini CLI. Free.</h1>
-        <p class="lede"><strong>And a loop breaker that texts you before an overnight run burns $500.</strong></p>
-        <p class="lede"><code>agentcap run --cap 3 -- claude -p "..."</code> &rarr; the agent is stopped before it spends more than $3.</p>
+        <p class="eyebrow">Loop breaker + per-job quota for Claude Code and Codex</p>
+        <h1 id="hero-title">Stop Claude Code and Codex runs that loop or eat your weekly quota.</h1>
+        <p class="lede"><strong>Same tool call 4&times; in a row, 8 failures in a row, or 5% of your weekly quota: the run stops, with a receipt that says why.</strong></p>
+        <p class="lede"><code>agentcap run --quota 5% -- claude</code> &rarr; works on Claude Max/Pro and ChatGPT plans, without touching your login or traffic.</p>
         <p class="lede">
-          AgentCap runs Claude Code, Codex CLI or Gemini CLI behind a local proxy on
-          <code>127.0.0.1</code> and applies a local spend cap to the run. Before
-          each request it reserves the worst-case cost, clamps the output limit
-          when the budget runs short, and when the cap is reached it kills the
-          local process — then prints why.
+          Free: <code>agentcap waste</code> reads your local Claude Code / Codex logs and shows
+          what already leaked: subagent and Opus share, cache misses after idle gaps, repeated
+          tool calls and error streaks, each with an API-equivalent $ estimate.
+          API keys get a hard $ cap on top (<code>agentcap run --cap 3 -- claude -p "..."</code>).
         </p>
         <div class="cta-row">
           <a class="btn-primary" href="#install">Install free</a>
           <a class="btn-secondary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $19</a>
-          <p class="micro cta-note">API keys only · Anthropic, OpenAI &amp; Gemini</p>
+          <p class="micro cta-note">Subscriptions (quota mode) and API keys · Gemini CLI too</p>
         </div>
         <p class="micro">
-          No account. Works in API-key mode. Prompts and keys pass through the
-          local proxy in memory and are never stored or uploaded.
+          No account. Read-only on subscriptions. Prompts and keys are never stored or uploaded.
         </p>
       </div>
     </section>
@@ -297,23 +295,23 @@ agentcap run summary
             <h3 id="free-title">Free</h3>
             <p class="price">$0 <span class="price-note">MIT License</span></p>
             <ul>
-              <li>Per-run spend cap</li>
-              <li>Output clamping, fail-closed metering</li>
-              <li>Claude Code, Codex, Gemini CLI, SDK scripts</li>
-              <li>Tells you when Pro&rsquo;s loop breaker would have stopped a loop</li>
+              <li><code>agentcap waste</code>: subagent/Opus share, cache misses, tool loops, error streaks</li>
+              <li><code>agentcap report --by agent</code>: session &rarr; subagent tree with $</li>
+              <li>Per-run $ cap for API keys, fail-closed metering</li>
+              <li>Tells you when Pro would have stopped a loop or a quota burn</li>
             </ul>
             <a class="btn-secondary" href="#install">Install free</a>
           </article>
           <article class="card card-pro" aria-labelledby="pro-title">
             <h3 id="pro-title">Pro</h3>
-            <p class="price">$19 <span class="price-note">one-time launch price · the unattended pack</span></p>
+            <p class="price">$19 <span class="price-note">one-time launch price · stop loops and quota burn</span></p>
             <ul>
-              <li>Hourly and daily caps across runs</li>
-              <li>Loop/burn breaker: same step 4&times; in a row, 8 failing tool calls in a row, or spend above $2/min (configurable)</li>
+              <li>Loop breaker on Claude Code and Codex, subscriptions included: same tool call 4&times; in a row or 8 failing tool calls in a row</li>
+              <li>Per-job quota: stop a job at 5% of your Claude Max/Pro or ChatGPT weekly / 5-hour quota</li>
+              <li>Evidence receipt for every stop</li>
+              <li>API keys: burn breaker ($/min), hourly and daily caps</li>
               <li>Telegram + webhook alerts</li>
-              <li>Subscription quota mode: stop a job at 5% of your Claude Max / ChatGPT quota</li>
-              <li>Spend receipt for every run</li>
-              <li>For overnight, CI and background agents</li>
+              <li>Extras: quota forecast, receipts export</li>
               <li>One licence key for up to 3 machines</li>
             </ul>
             <a class="btn-primary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $19</a>
