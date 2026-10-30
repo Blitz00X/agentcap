@@ -36,6 +36,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, TextIO
 WINDOWS = ("week", "5h")
 WARN_FRACTION = 0.8
 EXIT_QUOTA_EXCEEDED = 3
+EXIT_LOOP_DETECTED = 4
 BASELINE_MAX_AGE_S = 15 * 60
 CLAUDE_KEYS = {"5h": "five_hour", "week": "seven_day"}
 CODEX_MINUTES = {"5h": 300, "week": 10080}
@@ -366,13 +367,104 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
     return 0
 
 
+LOOP_REPEATS = 4   # same as the proxy loop breaker: same step 4x in a row
+LOOP_ERRORS = 8    # 8 failing tool calls in a row
+
+
+class LoopWatch:
+    """Repeated-identical-tool-call / tool-error streaks from tool calls we can see
+    without touching traffic: Claude ``PreToolUse`` payloads, Codex rollout lines."""
+
+    def __init__(self) -> None:
+        self.digest: str | None = None
+        self.tool = ""
+        self.count = 0
+        self.errors = 0
+        self.tripped: str | None = None
+
+    def call(self, name: str, payload: Any) -> None:
+        from .waste import _digest
+
+        d = _digest(name, payload)
+        self.count = self.count + 1 if d == self.digest else 1
+        self.digest, self.tool = d, name
+        if self.count >= LOOP_REPEATS and not self.tripped:
+            self.tripped = f"same tool call {self.count} times in a row ({name[:40]})"
+
+    def result(self, error: bool) -> None:
+        self.errors = self.errors + 1 if error else 0
+        if self.errors >= LOOP_ERRORS and not self.tripped:
+            self.tripped = f"{self.errors} failing tool calls in a row ({self.tool[:40]})"
+
+    def feed_codex(self, obj: Any) -> None:
+        from .waste import _codex_error
+
+        if not isinstance(obj, dict) or obj.get("type") != "response_item":
+            return
+        p = obj.get("payload")
+        if not isinstance(p, dict):
+            return
+        if p.get("type") in ("function_call", "custom_tool_call", "local_shell_call"):
+            self.call(str(p.get("name") or p.get("type")),
+                      p.get("arguments", p.get("input", p.get("action"))))
+        elif p.get("type") in ("function_call_output", "custom_tool_call_output"):
+            self.result(_codex_error(p.get("output")))
+
+
+def _loop_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
+    """Track identical PreToolUse calls; return a deny reason when Pro should stop."""
+
+    name = payload.get("tool_name")
+    if not isinstance(name, str):
+        return None
+    from .waste import _digest
+
+    d = _digest(name, payload.get("tool_input"))
+    state = _read_json(job_dir / "tools.json") or {}
+    count = int(state.get("count") or 0) + 1 if state.get("digest") == d else 1
+    _atomic_write(job_dir / "tools.json", {"digest": d, "count": count})
+    if count < LOOP_REPEATS:
+        return None
+    enforce = bool((_read_json(job_dir / "job.json") or {}).get("enforce"))
+    detail = f"same tool call {count} times in a row ({name[:40]})"
+    _atomic_write(job_dir / "loop.json", {"count": count, "tool": name[:40], "detail": detail,
+                                          "stopped": enforce, "ts": time.time()})
+    if not enforce:
+        return None
+    return (f"agentcap loop breaker: {detail}. Stop now: do not call more tools; "
+            "summarise what is done and what is left.")
+
+
+def _deny(stdout: TextIO, reason: str) -> int:
+    json.dump(
+        {
+            "continue": False,
+            "stopReason": reason,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            },
+        },
+        stdout,
+    )
+    stdout.write("\n")
+    return 0
+
+
 def hook_main(job_dir: Path, stdin: TextIO, stdout: TextIO) -> int:
-    """PreToolUse: deny once the job's share reached the quota (fail-open)."""
+    """PreToolUse: deny on a tool loop or once the job's share reached the quota (fail-open)."""
 
     try:
-        stdin.read()
+        payload = json.loads(stdin.read() or "{}")
     except Exception:
-        pass
+        payload = {}
+    try:
+        loop_reason = _loop_hook(job_dir, payload) if isinstance(payload, dict) else None
+    except Exception:
+        loop_reason = None
+    if loop_reason:
+        return _deny(stdout, loop_reason)
     status = _read_json(job_dir / "status.json")
     if not status or not status.get("limit_hit"):
         return 0
@@ -417,6 +509,7 @@ class CodexTailer:
         self.offsets: dict[Path, int] = {}
         self.own: Path | None = None
         self.others: set[Path] = set()
+        self.loop = LoopWatch()
 
     def _files(self) -> list[Path]:
         if not self.dir.exists():
@@ -477,7 +570,9 @@ class CodexTailer:
         self.offsets[self.own] = offset + end + 1
         for line in chunk[: end + 1].decode("utf-8", "replace").splitlines():
             try:
-                reading = codex_readings(json.loads(line)).get(window)
+                obj = json.loads(line)
+                self.loop.feed_codex(obj)
+                reading = codex_readings(obj).get(window)
             except ValueError:
                 continue
             if reading:
@@ -631,6 +726,8 @@ class QuotaRunner:
         self.child = subprocess.Popen(argv, env=env, start_new_session=True, cwd=self.cwd)
 
         warned = hit = parallel = observed = no_data_warned = False
+        loop_detail: str | None = None
+        loop_at: float | None = None
         hit_at: float | None = None
         reason = "exited"
         share = 0.0
@@ -687,6 +784,24 @@ class QuotaRunner:
                     if now - hit_at >= (self.claude_grace_s if denies else self.claude_grace_s * 3):
                         self._stop()
                         stopped = True
+                if loop_detail is None:
+                    if self.agent == "claude":
+                        lj = _read_json(self.job_dir / "loop.json")
+                        loop_detail = lj.get("detail") if lj else None
+                    elif tailer is not None:
+                        loop_detail = tailer.loop.tripped
+                    if loop_detail:
+                        loop_at = now
+                        if self.enforce:
+                            self._say(f"agentcap: loop breaker: {loop_detail}. Stopping the agent.")
+                            self._event("loop_detected", share, detail=loop_detail)
+                            if self.agent == "codex":
+                                self._stop()
+                                stopped = True
+                if (loop_detail and self.enforce and not stopped and code is None
+                        and loop_at is not None and now - loop_at >= self.claude_grace_s):
+                    self._stop()
+                    stopped = True
                 self._live(share, observed, hit)
                 if code is not None:
                     break
@@ -695,9 +810,15 @@ class QuotaRunner:
             self._stop()
             reason = "interrupted"
         code = self.child.wait()
-        if hit and self.enforce:
+        if loop_detail and self.enforce and not hit:
+            reason = "loop_detected"
+            code = EXIT_LOOP_DETECTED
+        elif hit and self.enforce:
             reason = "quota_exceeded"
             code = EXIT_QUOTA_EXCEEDED
+        if loop_detail and not self.enforce:
+            self._say(f"agentcap: Pro's loop breaker would have stopped this job at {LOOP_REPEATS} repeats"
+                      f" ({loop_detail}). https://agentcap.launchbench.studio/#pricing")
         self.summary = QuotaSummary(
             self.agent, self.window, self.quota, share, code, reason,
             tracker.baseline_exact, tracker.resets_seen, parallel, observed,

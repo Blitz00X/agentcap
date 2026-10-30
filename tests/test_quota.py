@@ -222,7 +222,7 @@ FAKE_CLAUDE = textwrap.dedent('''\
             payload.pop("rate_limits")
         out = subprocess.run(sl, shell=True, input=json.dumps(payload), capture_output=True, text=True).stdout
         print("STATUS", out.strip().replace("\\n", " | "), flush=True)
-        res = subprocess.run(hook, shell=True, input=json.dumps({{"hook_event_name": "PreToolUse", "tool_name": "Bash"}}),
+        res = subprocess.run(hook, shell=True, input=json.dumps({{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {{"command": "same" if os.environ.get("FAKE_SAME") else f"step {{i}}"}}}}),
                              capture_output=True, text=True).stdout.strip()
         if res:
             d = json.loads(res)
@@ -260,6 +260,12 @@ FAKE_CODEX = textwrap.dedent('''\
                 "primary": {{"used_percent": 10.0, "window_minutes": 300, "resets_at": int(time.time() + 3600)}},
                 "secondary": {{"used_percent": week, "window_minutes": 10080, "resets_at": int(resets)}}}}}}}}
             fh.write(json.dumps(line) + "\\n"); fh.flush()
+            if os.environ.get("FAKE_LOOP"):
+                fc = {{"timestamp": "t", "type": "response_item", "payload": {{"type": "function_call",
+                      "name": "shell", "arguments": json.dumps({{"command": ["pytest"]}}), "call_id": f"c{{i}}"}}}}
+                fo = {{"timestamp": "t", "type": "response_item", "payload": {{"type": "function_call_output",
+                      "call_id": f"c{{i}}", "output": json.dumps({{"output": "x", "metadata": {{"exit_code": 1}}}})}}}}
+                fh.write(json.dumps(fc) + "\\n" + json.dumps(fo) + "\\n"); fh.flush()
             print("TURN", i, flush=True)
             time.sleep(0.15)
 ''')
@@ -433,3 +439,58 @@ def test_cli_quota_status_read_only(fakebin, tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "claude week: 41.0% used" in out and "codex week: 40.0% used" in out
     assert sorted(p.stat().st_mtime for p in tmp_path.rglob("*") if p.is_file()) == before
+
+
+# ------------------------------------------------ loop breaker on subscriptions
+def _hook(job, tool="Bash", cmd="npm test"):
+    out = io.StringIO()
+    q.hook_main(job, io.StringIO(json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
+                                             "tool_input": {"command": cmd}})), out)
+    return json.loads(out.getvalue()) if out.getvalue().strip() else None
+
+
+def test_hook_denies_fourth_identical_tool_call(tmp_path):
+    (tmp_path / "job.json").write_text(json.dumps({"enforce": True, "quota": 5, "window": "week"}))
+    assert _hook(tmp_path) is None
+    assert _hook(tmp_path, cmd="ls") is None  # a different call resets the streak
+    for _ in range(3):
+        assert _hook(tmp_path) is None
+    d = _hook(tmp_path)
+    assert d["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "same tool call 4 times" in d["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "npm test" not in json.dumps(json.loads((tmp_path / "loop.json").read_text()))
+
+
+def test_hook_free_records_but_never_denies_loops(tmp_path):
+    (tmp_path / "job.json").write_text(json.dumps({"enforce": False, "quota": 5, "window": "week"}))
+    for _ in range(5):
+        assert _hook(tmp_path) is None
+    assert json.loads((tmp_path / "loop.json").read_text())["count"] >= 4
+
+
+def test_e2e_codex_loop_breaker_stops_subscription_run(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_LOOP", "1")
+    monkeypatch.setenv("FAKE_STEP", "0.01")
+    r, events, err = make_runner(["codex", "exec", "fix"], tmp_path, quota=50.0)
+    assert r.run() == 4
+    assert r.summary.reason == "loop_detected"
+    assert "loop_detected" in [e["type"] for e in events]
+    assert "same tool call 4 times" in err.getvalue()
+
+
+def test_e2e_codex_loop_free_nudge(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_LOOP", "1")
+    monkeypatch.setenv("FAKE_STEP", "0.01")
+    monkeypatch.setenv("FAKE_N", "8")
+    r, events, err = make_runner(["codex", "exec", "fix"], tmp_path, quota=50.0, enforce=False)
+    assert r.run() == 0
+    assert "Pro's loop breaker would have stopped this job at 4 repeats" in err.getvalue()
+
+
+def test_e2e_claude_loop_breaker_denies_and_stops(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_SAME", "1")
+    monkeypatch.setenv("FAKE_STEP", "0.01")
+    r, events, err = make_runner(["claude", "-p", "fix"], tmp_path, quota=50.0)
+    assert r.run() == 4
+    assert r.summary.reason == "loop_detected"
+    assert "same tool call 4 times" in err.getvalue()
