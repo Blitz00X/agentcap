@@ -105,10 +105,12 @@ integrated terminal behind `agentcap run --cap`, shows live run spend in the
 status bar, warns at 80% / 95%, and shows a modal when the cap (exit 3) or Pro's
 loop breaker (exit 4) stops the run. It needs the `agentcap` CLI above.
 
-It is **not on the VS Code Marketplace or Open VSX yet**. Install the `.vsix`
-attached to the [GitHub release](https://github.com/Blitz00X/agentcap/releases):
+It is **not on the VS Code Marketplace or Open VSX yet**. [Download agentcap-0.2.0.vsix](https://agentcap.launchbench.studio/agentcap-0.2.0.vsix)
+(sha256 `175213b0979019cb472752ad71e613a48c6a22e7d899b761093ab7eac9867e70`) and install it:
 
 ```bash
+curl -LO https://agentcap.launchbench.studio/agentcap-0.2.0.vsix
+sha256sum agentcap-0.2.0.vsix   # compare with the sha256 above
 code --install-extension agentcap-0.2.0.vsix     # VS Code
 cursor --install-extension agentcap-0.2.0.vsix   # Cursor
 ```
