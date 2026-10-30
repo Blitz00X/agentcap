@@ -318,7 +318,7 @@ agentcap run summary
           </article>
         </div>
         <p class="micro">
-          After purchase, copy your license key from your Polar order (purchase email / Polar customer portal), then run <code>agentcap license activate "YOUR_LICENSE_KEY"</code> and check with <code>agentcap license status</code> (expect <code>tier: pro</code>).
+          After purchase: open the <strong>Access purchase</strong> link in the Polar email, copy the key from the Polar customer portal, run <code>agentcap license activate "YOUR_LICENSE_KEY"</code> and check <code>agentcap license status</code> (expect <code>tier: pro</code>). <a href="#thanks">Step-by-step</a>.
         </p>
         <p class="micro">
           Payments handled by Polar (merchant of record). Not a subscription.
@@ -327,6 +327,19 @@ agentcap run summary
       </div>
     </section>
     <!-- COPY:pricing END -->
+
+    <section class="section" id="thanks" aria-labelledby="thanks-title">
+      <div class="shell">
+        <h2 id="thanks-title">Thanks for buying AgentCap Pro: activate it in 2 minutes</h2>
+        <ol>
+          <li><strong>Get your key.</strong> The license key is <em>not</em> in the email itself. Open the Polar email and click <strong>Access purchase</strong> (it opens the Polar customer portal), then copy the key under <em>AgentCap Pro license key</em>. You can sign in to the portal later with the same email.</li>
+          <li><strong>Activate (CLI).</strong> <code>pip install -U agentcap-cli</code>, then <code>agentcap license activate "YOUR_LICENSE_KEY"</code>. Check with <code>agentcap license status</code>: it should say <code>tier: pro</code>.</li>
+          <li><strong>VS Code / Cursor.</strong> The extension uses the same CLI licence: activate once in a terminal, then restart the agent from the AgentCap status bar item.</li>
+          <li><strong>Claude Code plugin.</strong> Activate with the CLI as above; the plugin reads the same licence, so loop and quota stops switch to Pro on the next tool call.</li>
+          <li><strong>Up to 3 machines.</strong> Moving machines? <code>agentcap license deactivate</code> frees the slot. You can also manage activations in the Polar portal.</li>
+        </ol>
+      </div>
+    </section>
 
     <section class="section" id="why" aria-labelledby="why-title">
       <div class="shell">

@@ -504,6 +504,13 @@ When the Pro detectors below would have fired on a Free run, AgentCap does not s
 It prints one line: `Pro's loop breaker would have stopped this at $X.XX`.
 
 **Pro, $19 one-time (launch price): stop runs that loop or eat your quota.**
+
+**Get Pro:** buy at https://agentcap.launchbench.studio/#pricing (Polar checkout). Polar then
+emails you an **Access purchase** link; the key is in the Polar customer portal (not in the
+email body). Run `agentcap license activate "YOUR_LICENSE_KEY"` and check `agentcap license
+status` (`tier: pro`). One key works on up to 3 machines; `agentcap license deactivate` frees one.
+The VS Code/Cursor extension and the Claude Code plugin use the same CLI licence.
+
 - **Subscription quota mode + loop breaker:** `agentcap run --quota 5% -- claude|codex` stops a job at
   its share of your Claude Max/Pro or ChatGPT quota, or when it repeats the same tool call 4 times /
   fails 8 tool calls in a row (see above).
