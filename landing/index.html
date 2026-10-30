@@ -42,10 +42,12 @@
     <!-- COPY:hero START -->
     <section class="hero" id="top" aria-labelledby="hero-title">
       <div class="shell">
-        <p class="eyebrow">Local spend cap for unattended API-key runs</p>
-        <h1 id="hero-title">The API-key guard for unattended Codex CLI and Gemini CLI runs.</h1>
+        <p class="eyebrow">Local spend caps for unattended API-key agent runs</p>
+        <h1 id="hero-title">Hard spend caps for Claude Code, Codex and Gemini CLI. Free.</h1>
+        <p class="lede"><strong>And a loop breaker that texts you before an overnight run burns $500.</strong></p>
+        <p class="lede"><code>agentcap run --cap 3 -- claude -p "..."</code> &rarr; the agent is stopped before it spends more than $3.</p>
         <p class="lede">
-          AgentCap runs Codex CLI or Gemini CLI behind a local proxy on
+          AgentCap runs Claude Code, Codex CLI or Gemini CLI behind a local proxy on
           <code>127.0.0.1</code> and applies a local spend cap to the run. Before
           each request it reserves the worst-case cost, clamps the output limit
           when the budget runs short, and when the cap is reached it kills the
@@ -54,7 +56,7 @@
         <div class="cta-row">
           <a class="btn-primary" href="#install">Install free</a>
           <a class="btn-secondary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
-          <p class="micro cta-note">API keys only · OpenAI &amp; Gemini</p>
+          <p class="micro cta-note">API keys only · Anthropic, OpenAI &amp; Gemini</p>
         </div>
         <p class="micro">
           No account. Works in API-key mode. Prompts and keys pass through the
@@ -227,7 +229,7 @@ agentcap run summary
                 <th scope="row">Your own script</th>
                 <td>Any</td>
                 <td>Uses the OpenAI or Gemini SDK with base-URL environment variables.</td>
-                <td>No code changes: AgentCap sets <code>OPENAI_BASE_URL</code> and <code>GOOGLE_GEMINI_BASE_URL</code>.</td>
+                <td>No code changes: AgentCap sets <code>OPENAI_BASE_URL</code>, <code>GOOGLE_GEMINI_BASE_URL</code> and <code>ANTHROPIC_BASE_URL</code>.</td>
               </tr>
             </tbody>
           </table>
@@ -239,6 +241,9 @@ agentcap run summary
           poolside/laguna-s-2.1:free via the Responses API) — real responses, ledger token counts
           matched OpenRouter&rsquo;s reported usage exactly, cap stop with exit 3; not against OpenAI
           billing. Gemini CLI 0.58 and Codex CLI 0.163 are tested end-to-end against a local fake API only.
+        </p>
+        <p class="note">
+          Tested end-to-end with Claude Code 2.1.197, Codex CLI and Gemini CLI against a local Anthropic/OpenAI/Gemini test server; 89 new tests for 0.1.5 on top of the existing suite.
         </p>
         <p><strong>Platforms:</strong> Linux and macOS. Windows: not yet (use WSL2).</p>
         <p class="micro">
@@ -258,23 +263,23 @@ agentcap run summary
         <div class="cards">
           <article class="card" aria-labelledby="free-title">
             <h3 id="free-title">Free</h3>
-            <p class="price">$0</p>
+            <p class="price">$0 <span class="price-note">MIT</span></p>
             <ul>
-              <li>Local spend cap per run, with conservative worst-case reservation</li>
-              <li>Output clamping so the run keeps going</li>
-              <li>Kills the local process at the cap</li>
-              <li>Terminal alert that tells you why</li>
-              <li>No key, no account, no network calls</li>
+              <li>Run, hourly and daily caps</li>
+              <li>Output clamping, fail-closed metering</li>
+              <li>Claude Code, Codex, Gemini CLI, SDK scripts</li>
+              <li>Tells you when Pro&rsquo;s loop breaker would have stopped a loop</li>
             </ul>
             <a class="btn-secondary" href="#install">Install free</a>
           </article>
           <article class="card card-pro" aria-labelledby="pro-title">
             <h3 id="pro-title">Pro</h3>
-            <p class="price">$12 <span class="price-note">one-time</span></p>
+            <p class="price">$12 <span class="price-note">one-time · the unattended pack</span></p>
             <ul>
-              <li>Repeated-request breaker: identical request 5 times in 120 seconds (exit code 4)</li>
-              <li>Webhook + Telegram alerts</li>
-              <li>Hourly / daily caps, as an extra</li>
+              <li>Loop breaker: kill on the 5th identical request in 120 s</li>
+              <li>Telegram + webhook alerts</li>
+              <li>Spend receipt for every run</li>
+              <li>For overnight, CI and background agents</li>
               <li>One licence key for up to 3 machines</li>
             </ul>
             <a class="btn-primary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
@@ -290,6 +295,16 @@ agentcap run summary
       </div>
     </section>
     <!-- COPY:pricing END -->
+
+    <section class="section" id="why" aria-labelledby="why-title">
+      <div class="shell">
+        <h2 id="why-title">Why</h2>
+        <ul>
+          <li>&ldquo;Claude Code: 500+ dollars from repeated identical requests&rdquo; &mdash; <a href="https://github.com/anthropics/claude-code/issues/35166">anthropics/claude-code#35166</a></li>
+          <li>&ldquo;No self-serve loop circuit breaker&rdquo; &mdash; <a href="https://github.com/anthropics/claude-code/issues/81078">anthropics/claude-code#81078</a></li>
+        </ul>
+      </div>
+    </section>
 
     <!-- COPY:terms START -->
     <section class="section" id="terms" aria-labelledby="terms-title">

@@ -1,14 +1,16 @@
 # AgentCap
 
-**The API-key guard for unattended Codex CLI and Gemini CLI runs.** AgentCap runs
+**Hard spend caps for Claude Code, Codex CLI and Gemini CLI. Free.** And a loop breaker that texts you before an overnight run burns $500.
+
+**The API-key guard for unattended agent runs.** AgentCap runs
 the CLI behind a local proxy on `127.0.0.1` and applies a local spend cap to the
 run. Before each request it reserves the worst-case cost; when the budget is gone
 it kills the local process and tells you why. No dashboard, no account, no code
 changes for tools that honour a base-URL environment variable.
 
-Codex CLI and Gemini CLI are routed automatically. AgentCap meters API-key
+Claude Code, Codex CLI and Gemini CLI are routed automatically. AgentCap meters API-key
 traffic — `POST /v1/responses` and `/v1/chat/completions` (Codex CLI uses the
-Responses API) plus Gemini `generateContent` / `streamGenerateContent`. ChatGPT
+Responses API) plus Gemini `generateContent` / `streamGenerateContent` and Anthropic `POST /v1/messages`. ChatGPT
 or Google sign-in (OAuth/subscription) traffic is not metered.
 
 ## What it is
@@ -91,7 +93,7 @@ Uses your API key (`OPENAI_API_KEY` / `GEMINI_API_KEY`). ChatGPT or Google
 sign-in (OAuth/subscription) traffic is not metered.
 
 `agentcap run` accepts `--cap` (default `$5`, or `$AGENTCAP_CAP`),
-`--hour-cap` / `--day-cap` (Pro), `--allow-unmetered`, `--no-clamp`, `--port`,
+`--hour-cap` / `--day-cap` (Free since 0.1.5), `--allow-unmetered`, `--no-clamp`, `--port`,
 `--trust-workspace` and `--quiet`.
 
 ### CLI routing
@@ -117,6 +119,39 @@ without it, headless Gemini may refuse the workspace.
 At the end of a run AgentCap warns **“no model requests observed — protection
 not verified”** if the proxy saw no model traffic. That means the agent may have
 bypassed the proxy, so check the command and auth mode.
+
+## Claude Code (new in 0.1.5)
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+agentcap run --cap 3 -- claude -p "fix the failing tests"
+# or: agentcap run --cap 3 --hour-cap 10 --day-cap 25 -- npx @anthropic-ai/claude-code -p "..."
+```
+
+AgentCap points Claude Code at its local proxy (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>/anthropic`)
+and meters every `POST /v1/messages`, streamed or not:
+
+- Prices come from Anthropic's published table (docs.claude.com pricing, checked 2026-10-30):
+  input, cache reads, 5-minute cache writes (1.25x input), 1-hour cache writes (2x input) and output.
+  Thinking tokens are billed as output and are covered by `max_tokens`.
+- Before a request goes out, AgentCap reserves its worst case (`max_tokens` of output, all prompt
+  tokens as 1-hour cache writes). If that does not fit the remaining budget it lowers `max_tokens`
+  (and a manual thinking budget) or refuses the request. It never raises a limit.
+- Unknown models, unknown `inference_geo` values and fast mode (`speed: "fast"`, not priced yet) are
+  blocked (fail-closed). `inference_geo: "us"` is charged at 1.1x.
+- `count_tokens` and `GET /v1/models` pass through for free. Other Anthropic endpoints are blocked
+  unless you pass `--allow-unmetered`.
+- AgentCap refuses to start Claude Code when `CLAUDE_CODE_USE_BEDROCK`, `_VERTEX` or `_FOUNDRY` is set,
+  or when a Claude settings file sets its own `ANTHROPIC_BASE_URL` in `env`. Those would send
+  traffic around the cap.
+
+Limits:
+
+- With a Claude subscription login instead of an API key, the cap counts API-list-price
+  equivalents, not your plan's billing.
+- Costs are estimates from provider-reported usage. Your Anthropic invoice is authoritative.
+- A large first request needs a cap that fits it. Claude Code's first request often reserves
+  about $0.50–$1. AgentCap prints a suggested `--cap` when it refuses one.
 
 ## Try it without an API key
 
@@ -157,7 +192,8 @@ test suite uses `httpx.MockTransport` and never calls the network.
 | --- | --- | --- | --- |
 | Codex CLI | 0.163 | `codex exec "…"` with `OPENAI_API_KEY`; ChatGPT sign-in is not metered. | Automatically, via an injected custom provider (`-c model_provider=agentcap …`). |
 | Gemini CLI | 0.58–0.66 | `gemini -p "…"` with `GEMINI_API_KEY`; Google sign-in is not metered. | Automatically, via a temporary `GEMINI_CLI_HOME` overlay (your `~/.gemini` is linked, its `settings.json` is copied with the auth type forced to `gemini-api-key`; nothing in `~/.gemini` is modified). Add `--trust-workspace` to `agentcap run` for untrusted folders. |
-| Your own script | Any | Uses the OpenAI or Gemini SDK with base-URL environment variables. | No code changes: AgentCap sets `OPENAI_BASE_URL` and `GOOGLE_GEMINI_BASE_URL`. |
+| Claude Code | 2.1.197 | `claude -p "…"` with `ANTHROPIC_API_KEY`; Claude subscription sign-in is not metered. | Automatically, via `ANTHROPIC_BASE_URL`. Tested end-to-end against a local fake Anthropic API only (not against Anthropic billing yet). |
+| Your own script | Any | Uses the OpenAI or Gemini SDK with base-URL environment variables. | No code changes: AgentCap sets `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` and `ANTHROPIC_BASE_URL`. |
 
 Tested with a real Gemini API key on Gemini CLI 0.66 (spend metered from Google's
 usageMetadata, output clamped to the cap). Codex CLI 0.165 verified against real
@@ -270,31 +306,26 @@ fingerprint hash (SHA-256; it contains no hostname and no username) to Polar's
 public licence API at `api.polar.sh`. Free users make no licence requests at
 all.
 
-## Free vs Pro
+## Free vs Pro (0.1.5)
 
-| Capability | Free | Pro |
-| --- | --- | --- |
-| Local spend cap per run, with conservative reservation | ✅ | ✅ |
-| Output clamping | ✅ | ✅ |
-| Kills the local process at the cap | ✅ | ✅ |
-| Terminal alert with the reason | ✅ | ✅ |
-| Repeated-request breaker (exit code 4) | — | ✅ |
-| Webhook alerts (`AGENTCAP_WEBHOOK_URL`) | — | ✅ |
-| Telegram alerts (`AGENTCAP_TELEGRAM_BOT_TOKEN`, `AGENTCAP_TELEGRAM_CHAT_ID`) | — | ✅ |
-| Hourly / daily caps | — | ✅ |
+**Free (MIT, forever):** every spend cap.
+- Per-run `--cap`, cross-run `--hour-cap` and `--day-cap`
+- Output clamping, fail-closed metering, terminal alerts
+- Codex, Gemini CLI, Claude Code, and any SDK script
 
-Free is **$0**: the local spend cap — a per-run USD cap with conservative
-worst-case reservation, output clamping, the run killed at the cap, and terminal
-alerts — with no account, no key, and no network calls.
+If a Free run repeats the same request 5 times within 120 s, AgentCap does not stop it.
+It prints one line: `Pro's loop breaker would have stopped this at $X.XX`.
 
-Pro is **$12 one-time** — not a subscription. It centres on the
-**repeated-request breaker**: it stops a run when the identical API request is
-sent 5 times within 120 seconds (exit code 4). It does not catch every
-no-progress loop: an agent whose conversation keeps growing sends different
-requests each time. Triggers: a retry storm resending the same request. Does not
-trigger: an agent looping while its context grows. Pro also adds **alerts** over
-a webhook and Telegram, plus hourly / daily caps as an extra, and updates for
-the 0.x line.
+**Pro, $12 one-time: the unattended pack.** For runs nobody is watching, such as overnight
+jobs, CI and background agents:
+- **Loop breaker:** stops the agent (exit 4) on the 5th identical request within 120 s,
+  before that request is sent.
+- **Phone and webhook alerts:** Telegram (`AGENTCAP_TELEGRAM_BOT_TOKEN`, `AGENTCAP_TELEGRAM_CHAT_ID`)
+  and webhook (`AGENTCAP_WEBHOOK_URL`) alerts for cap hits, loop kills and the end-of-run receipt.
+  Tokens are read from the environment and are never printed or logged.
+- **Spend receipt:** a JSON file per run (`~/.local/state/agentcap/receipts/<run>.json`, or
+  `AGENTCAP_RECEIPT_DIR`) with requests, spend, caps, the stop reason and the exit code. It contains
+  numbers only, never prompts. The same one-line receipt is sent to Telegram and the webhook.
 
 [Buy AgentCap Pro — $12](https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi)
 
@@ -328,7 +359,27 @@ Polar customer portal.
 | LoopGuard | [tryloopguard.com](https://tryloopguard.com): free MIT CLI that integrates with Claude Code, Codex CLI and Cursor (no proxy, works with subscriptions) with per-session/daily caps and a no-progress loop killer; paid tier ($9/month) adds phone/Slack alerts and remote pause. A good fit if you use subscriptions or Claude Code. |
 | LiteLLM budgets | Budgets per key, user or team in the LiteLLM proxy; budgets need its database. A good fit if you already run a LiteLLM gateway; it is a server you deploy and configure. |
 | OpenRouter credit limits / provider spend caps | Account- or key-level and typically monthly (OpenRouter credit limits, OpenAI and Google spend caps). Provider caps are evaluated with a delay — Google has described about 10 minutes for the Gemini API cap — so a fast loop can overshoot. |
-| AgentCap | Local proxy for API-key traffic from Codex CLI, Gemini CLI or your own script: local spend cap per run with conservative reservation and output clamping, kills the process group at the cap and prints why. Pro: repeated-request breaker + Telegram/webhook alerts, $12 one-time. |
+| AgentCap | Local proxy for API-key traffic from Claude Code, Codex CLI, Gemini CLI or your own script: run/hour/day caps (Free) with conservative reservation and output clamping, kills the process group at the cap and prints why. Pro (unattended pack): loop breaker, Telegram/webhook alerts, spend receipt, $12 one-time. |
+
+The comparison above is from public pages; see the RelayPlane detail below.
+
+## AgentCap vs RelayPlane
+
+RelayPlane is a good tool. If it fits you, use it. The facts below come from RelayPlane's own
+website as of 2026-10-30. We have not tested RelayPlane hands-on.
+
+| | RelayPlane (per its site) | AgentCap |
+|---|---|---|
+| License | MIT | MIT (Free tier) |
+| Per-run / session / hour / day caps | Free | Free (run, hour, day) |
+| Kill switch | Yes | Yes. Stops the agent's process group (exit 3) |
+| Over-budget response | HTTP 429 `budget_exceeded` | HTTP 429, and the request is never sent |
+| Output reservation | Capped at 4096 output tokens | Full `max_tokens` worst case, plus clamping to fit |
+| Loop breaker | Not listed on their site | Pro |
+| Telegram / webhook alerts, spend receipt | Not listed on their site | Pro |
+
+The difference that matters for runaway bills: AgentCap reserves the worst case each request
+can cost before sending it, so a single long response cannot overshoot the cap.
 
 Pick what matches your setup — these tools can also be combined.
 
