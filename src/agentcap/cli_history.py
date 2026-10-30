@@ -38,6 +38,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     fmt.add_argument("--json", action="store_true")
     fmt.add_argument("--csv", action="store_true")
 
+    wst = subparsers.add_parser(
+        "waste", help="subagent/Opus share, cache misses, tool loops and error streaks (Free, read-only)"
+    )
+    wst.add_argument("--since", default="30d", help="all, 7d, 24h or YYYY-MM-DD (default 30d)")
+    wst.add_argument("--claude-dir", type=Path, help="default ~/.claude/projects")
+    wst.add_argument("--codex-dir", type=Path, help="default ~/.codex/sessions")
+    wst.add_argument("--top", type=int, default=3)
+    wst.add_argument("--json", action="store_true")
+
     bud = subparsers.add_parser("budget", help="set task/hour/day $ caps and per-job quota % in one place")
     bsub = bud.add_subparsers(dest="budget_action")
     bset = bsub.add_parser("set", help="set or change budget values (others are kept)")
@@ -162,6 +171,17 @@ def _pro_view(args: argparse.Namespace, store: history.HistoryStore, since: floa
 def dispatch(args: argparse.Namespace) -> int | None:
     if args.subcommand == "budget":
         return _budget(args)
+    if args.subcommand == "waste":
+        from . import waste
+        try:
+            since = report.parse_since(args.since)
+        except ValueError as exc:
+            print(f"agentcap: {exc}", file=sys.stderr)
+            return 2
+        rep = waste.scan(since=since, claude_dir=args.claude_dir, codex_dir=args.codex_dir)
+        period = "all time" if since is None else f"since {args.since}"
+        print(waste.render_json(rep) if args.json else waste.render(rep, period, args.top))
+        return 0
     if args.subcommand == "import":
         _do_import(args, history.HistoryStore(args.db))
         return 0
@@ -174,8 +194,17 @@ def dispatch(args: argparse.Namespace) -> int | None:
         store = history.HistoryStore(args.db)
         if args.view != "table":
             return _pro_view(args, store, since)
-        if not store.events():
-            _do_import(args, store, quiet=args.json or args.csv)
+        if not store.events() or args.by == "agent":
+            _do_import(args, store, quiet=True if args.by == "agent" else (args.json or args.csv))
+        if args.by == "agent":
+            tree = report.agent_tree(store.events(since))
+            if args.json:
+                print(report.render_agent_json(tree))
+            elif not tree:
+                print("No usage found. Run `agentcap import` (reads ~/.claude and ~/.codex logs).")
+            else:
+                print(report.render_agent_tree(tree))
+            return 0
         rows = report.aggregate(store.events(since), args.by)
         if args.json:
             print(report.render_json(rows, args.by))

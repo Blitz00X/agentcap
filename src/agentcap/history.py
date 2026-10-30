@@ -61,7 +61,10 @@ CREATE TABLE IF NOT EXISTS events (
     cache_read_tokens INTEGER NOT NULL DEFAULT 0,
     cache_write_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
-    usd TEXT
+    usd TEXT,
+    agent_id TEXT,
+    parent_session TEXT,
+    is_sidechain INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS quota_samples (
@@ -87,6 +90,11 @@ class HistoryStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
+            have = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+            for col, decl in (("agent_id", "TEXT"), ("parent_session", "TEXT"),
+                              ("is_sidechain", "INTEGER NOT NULL DEFAULT 0")):
+                if col not in have:  # migrate 0.2 pre-release databases
+                    conn.execute(f"ALTER TABLE events ADD COLUMN {col} {decl}")
         try:
             os.chmod(self.path, 0o600)
         except OSError:
@@ -101,18 +109,28 @@ class HistoryStore:
         new = dup = 0
         with self._conn() as conn:
             for row in rows:
+                row = {"agent_id": None, "parent_session": None, "is_sidechain": 0, **row}
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO events (dedupe_key, source, ts, session_id, project,"
                     " branch, model, input_tokens, cache_read_tokens, cache_write_tokens,"
-                    " output_tokens, usd) VALUES (:dedupe_key, :source, :ts, :session_id,"
+                    " output_tokens, usd, agent_id, parent_session, is_sidechain)"
+                    " VALUES (:dedupe_key, :source, :ts, :session_id,"
                     " :project, :branch, :model, :input_tokens, :cache_read_tokens,"
-                    " :cache_write_tokens, :output_tokens, :usd)",
+                    " :cache_write_tokens, :output_tokens, :usd, :agent_id, :parent_session,"
+                    " :is_sidechain)",
                     row,
                 )
                 if cur.rowcount:
                     new += 1
                 else:
                     dup += 1
+                    if row["agent_id"] or row["parent_session"] or row["is_sidechain"]:
+                        conn.execute(  # backfill lineage on rows imported before tagging
+                            "UPDATE events SET agent_id=:agent_id, parent_session=:parent_session,"
+                            " is_sidechain=:is_sidechain WHERE dedupe_key=:dedupe_key"
+                            " AND agent_id IS NULL AND parent_session IS NULL",
+                            row,
+                        )
         return new, dup
 
     def add_quota_samples(self, rows: Iterable[dict[str, Any]]) -> None:
@@ -229,6 +247,11 @@ def import_claude(store: HistoryStore, root: Path, pricer: _Pricer | None = None
         stats.files += 1
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
+        # <session>/subagents/agent-<id>.jsonl (Claude Code >= 2.x, undocumented format)
+        file_agent = file_parent = None
+        if path.parent.name == "subagents" and path.stem.startswith("agent-"):
+            file_agent = path.stem[len("agent-"):]
+            file_parent = path.parent.parent.name
         for obj in _lines(path):
             if obj is None:
                 stats.skipped += 1
@@ -262,12 +285,43 @@ def import_claude(store: HistoryStore, root: Path, pricer: _Pricer | None = None
                     "branch": obj.get("gitBranch") or None, "model": model,
                     "input_tokens": inp, "cache_read_tokens": cread,
                     "cache_write_tokens": cwrite, "output_tokens": out, "usd": usd,
+                    **_claude_lineage(obj, file_agent, file_parent),
                 }
             )
         new, dup = store.add_events(rows)
         stats.imported += new
         stats.duplicates += dup
     return stats
+
+
+def _claude_lineage(obj: dict, file_agent: str | None, file_parent: str | None) -> dict:
+    side = bool(obj.get("isSidechain")) or file_agent is not None
+    if not side:
+        return {"agent_id": None, "parent_session": None, "is_sidechain": 0}
+    agent = obj.get("agentId") or file_agent or "sidechain"
+    return {"agent_id": str(agent), "parent_session": obj.get("sessionId") or file_parent,
+            "is_sidechain": 1}
+
+
+def codex_lineage(meta: dict) -> tuple[str | None, str | None]:
+    """(agent_id, parent_thread) from a Codex ``session_meta`` payload."""
+
+    parent = meta.get("parent_thread_id")
+    src = meta.get("source")
+    spawn = None
+    if isinstance(src, dict):
+        sub = src.get("subagent")
+        if isinstance(sub, dict):
+            spawn = sub.get("thread_spawn")
+    if isinstance(spawn, dict):
+        parent = parent or spawn.get("parent_thread_id")
+    agent = meta.get("agent_nickname") or (spawn or {}).get("agent_role") or meta.get("agent_path")
+    if parent:
+        return str(agent or "subagent"), str(parent)
+    fork = meta.get("forked_from_id")
+    if fork:
+        return str(agent or "fork"), str(fork)
+    return (str(agent) if agent else None), None
 
 
 # ----------------------------------------------------------------------- codex
@@ -285,6 +339,7 @@ def import_codex(store: HistoryStore, root: Path, pricer: _Pricer | None = None)
             continue
         stats.files += 1
         session = cwd = branch = None
+        agent_id = parent_session = None
         model = ""
         last_total: Any = None
         rows: list[dict[str, Any]] = []
@@ -300,6 +355,7 @@ def import_codex(store: HistoryStore, root: Path, pricer: _Pricer | None = None)
             if kind == "session_meta":
                 session = payload.get("id")
                 cwd = payload.get("cwd")
+                agent_id, parent_session = codex_lineage(payload)
                 git = payload.get("git")
                 if isinstance(git, dict):
                     branch = git.get("branch")
@@ -357,7 +413,8 @@ def import_codex(store: HistoryStore, root: Path, pricer: _Pricer | None = None)
                     "source": "codex", "ts": ts, "session_id": session, "project": cwd,
                     "branch": branch, "model": model, "input_tokens": inp_all - cread - cwrite,
                     "cache_read_tokens": cread, "cache_write_tokens": cwrite,
-                    "output_tokens": out, "usd": usd,
+                    "output_tokens": out, "usd": usd, "agent_id": agent_id,
+                    "parent_session": parent_session, "is_sidechain": int(parent_session is not None),
                 }
             )
         new, dup = store.add_events(rows)
