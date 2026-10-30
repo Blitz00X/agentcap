@@ -197,6 +197,9 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "demo", help="run a simulated spend-cap demo against a fake local API"
     )
+    from . import cli_history
+
+    cli_history.register(subparsers)
     return parser
 
 
@@ -656,6 +659,11 @@ def main(argv: list[str] | None = None) -> int:
         return _quota(args)
     if args.subcommand == "demo":
         return _demo(args)
+    from . import cli_history
+
+    handled = cli_history.dispatch(args)
+    if handled is not None:
+        return handled
     parser.print_help()
     return 0
 
