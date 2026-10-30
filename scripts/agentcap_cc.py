@@ -184,7 +184,98 @@ def hook_start(payload: Mapping[str, Any], stdout: TextIO, *, now: float) -> int
     return 0
 
 
+# ------------------------------------------------------------ loop breaker
+LOOP_REPEATS = 4   # same tool call (name + input) 4x in a row, like the CLI/proxy breaker
+LOOP_ERRORS = 8    # 8 failing tool calls in a row
+POLL_TOOLS = frozenset({"wait", "sleep", "write_stdin", "list_agents", "TaskOutput", "BashOutput"})
+PRICING_URL = "https://agentcap.launchbench.studio/#pricing"
+
+
+def _digest(name: str, payload: Any) -> str:
+    canon = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(f"{name}\0{canon}".encode()).hexdigest()[:16]
+
+
+def _loop_path(sid: str) -> Path:
+    return cc_dir() / "loops" / f"{_safe(sid)}.json"
+
+
+def _loop_state(payload: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]] | None:
+    sid = payload.get("session_id")
+    if not isinstance(sid, str) or not sid:
+        return None
+    allst = _read_json(_loop_path(sid)) or {}
+    stream = str(payload.get("agent_id") or "main")  # subagents get their own streak
+    return sid, allst, allst.setdefault(stream, {})
+
+
+def _stop(stdout: TextIO, event: str, reason: str, *, deny: bool) -> None:
+    out: dict[str, Any] = {"continue": False, "stopReason": reason, "systemMessage": reason}
+    if deny:
+        out["hookSpecificOutput"] = {"hookEventName": event, "permissionDecision": "deny",
+                                     "permissionDecisionReason": reason}
+    _emit(stdout, out)
+
+
+def loop_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bool) -> bool:
+    """Track identical tool calls; True when this call was denied (Pro)."""
+
+    name = payload.get("tool_name")
+    got = _loop_state(payload)
+    if not isinstance(name, str) or got is None or name in POLL_TOOLS:
+        return False
+    sid, allst, st = got
+    d = _digest(name, payload.get("tool_input"))
+    st["count"] = int(st.get("count", 0)) + 1 if st.get("digest") == d else 1
+    if st.get("digest") != d:
+        st["nudged"] = False
+    st["digest"], st["tool"], st["ts"] = d, name[:40], now
+    hit = st["count"] >= LOOP_REPEATS
+    if hit and pro:
+        st["stops"] = int(st.get("stops", 0)) + 1
+    nudge = hit and not pro and not st.get("nudged")
+    if nudge:
+        st["nudged"] = True
+    _atomic_write(_loop_path(sid), allst)
+    detail = f"same tool call {st['count']} times in a row ({name[:40]})"
+    if hit and pro:
+        _stop(stdout, "PreToolUse", f"agentcap loop breaker: {detail}. Stop now: do not call more "
+              "tools; summarise what is done and what is left.", deny=True)
+        return True
+    if nudge:
+        _emit(stdout, {"systemMessage": f"agentcap: {detail}. AgentCap Pro would stop the agent here: {PRICING_URL}"})
+        return True
+    return False
+
+
+def hook_post(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bool, failed: bool) -> int:
+    got = _loop_state(payload)
+    if got is None:
+        return 0
+    sid, allst, st = got
+    st["errors"] = int(st.get("errors", 0)) + 1 if failed else 0
+    hit = st["errors"] >= LOOP_ERRORS
+    nudge = hit and not pro and not st.get("err_nudged")
+    if not failed:
+        st["err_nudged"] = False
+    if nudge:
+        st["err_nudged"] = True
+    _atomic_write(_loop_path(sid), allst)
+    if not hit:
+        return 0
+    name = str(payload.get("tool_name") or "tool")[:40]
+    detail = f"{st['errors']} failing tool calls in a row (last: {name})"
+    if pro:
+        _stop(stdout, "PostToolUseFailure", f"agentcap loop breaker: {detail}. Stop now and summarise "
+              "what is done and what is left.", deny=False)
+    elif nudge:
+        _emit(stdout, {"systemMessage": f"agentcap: {detail}. AgentCap Pro would stop the agent here: {PRICING_URL}"})
+    return 0
+
+
 def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bool) -> int:
+    if loop_pre(payload, stdout, now=now, pro=pro):
+        return 0
     sid = payload.get("session_id")
     if not isinstance(sid, str) or not sid or not session_path(sid).exists():
         return 0
@@ -217,7 +308,7 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
             save(sid, state)
             _emit(stdout, {"systemMessage": (
                 f"agentcap: this session passed its {float(quota):g}% {window} quota ({share:.1f}%). "
-                "AgentCap Pro would stop the agent here: https://agentcap.dev/#pricing"
+                "AgentCap Pro would stop the agent here: https://agentcap.launchbench.studio/#pricing"
             )})
         return 0
     if share >= float(quota) * WARN_FRACTION and not state.get("warned"):
@@ -395,6 +486,8 @@ def main(argv: list[str] | None = None, stdin: TextIO = sys.stdin, stdout: TextI
                 return hook_start(payload, stdout, now=now)
             if event == "pre":
                 return hook_pre(payload, stdout, now=now, pro=is_pro())
+            if event in ("post", "postfail"):
+                return hook_post(payload, stdout, now=now, pro=is_pro(), failed=event == "postfail")
             if event == "stop":
                 return hook_stop(payload, stdout, now=now, pro=is_pro())
             return 0

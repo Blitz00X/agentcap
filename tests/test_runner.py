@@ -206,8 +206,8 @@ def test_loop_detection_kills_child_with_exit_4(tmp_path, monkeypatch):
 
     assert code == EXIT_LOOP_DETECTED == 4
     assert runner.summary.reason == "loop_detected"
-    # Threshold is 5; the fifth request is blocked before reaching upstream.
-    assert calls["n"] == 4
+    # Threshold is 4; the fourth request is blocked before reaching upstream.
+    assert calls["n"] == 3
     output = stderr.getvalue()
     assert "runaway loop detected" in output
     assert "reason: loop_detected" in output

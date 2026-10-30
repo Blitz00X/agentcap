@@ -68,14 +68,14 @@ def test_pro_denies_at_limit_with_exact_baseline(env):
     pro(env)
     statusline(sl_payload(40.0))
     assert "exact" in cmd("quota", "5%")
-    assert hook("pre", PRE) is None
+    assert hook("pre", dict(PRE, tool_input={"command": "step1"})) is None
     statusline(sl_payload(44.2))
-    warn = hook("pre", PRE)
+    warn = hook("pre", dict(PRE, tool_input={"command": "step2"}))
     assert "4.2%" in warn["systemMessage"] and warn["hookSpecificOutput"]["additionalContext"]
-    assert hook("pre", PRE) is None  # warn once
+    assert hook("pre", dict(PRE, tool_input={"command": "step3"})) is None  # warn once
     line = statusline(sl_payload(45.1))
     assert "session 5.1% / 5%" in line
-    deny = hook("pre", PRE)
+    deny = hook("pre", dict(PRE, tool_input={"command": "step4"}))
     assert deny["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "/agentcap:off" in deny["hookSpecificOutput"]["permissionDecisionReason"]
 
@@ -84,9 +84,9 @@ def test_free_only_nudges_once(env):
     statusline(sl_payload(10.0))
     assert "Pro" in cmd("quota", "2")
     statusline(sl_payload(12.5))
-    msg = hook("pre", PRE)
+    msg = hook("pre", dict(PRE, tool_input={"command": "step5"}))
     assert "hookSpecificOutput" not in msg and "Pro would stop" in msg["systemMessage"]
-    assert hook("pre", PRE) is None
+    assert hook("pre", dict(PRE, tool_input={"command": "step6"})) is None
 
 
 def test_5h_window_and_reset_carry(env):
@@ -163,4 +163,67 @@ def test_manifests_valid_json():
     market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
     assert plugin["name"] == market["plugins"][0]["name"] == "agentcap"
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]
-    assert set(hooks) == {"SessionStart", "PreToolUse", "Stop"}
+    assert set(hooks) == {"SessionStart", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"}
+
+
+# ------------------------------------------------------------- loop breaker
+def _pre(cmdline="pytest", agent=None):
+    p = dict(PRE, tool_input={"command": cmdline})
+    if agent:
+        p["agent_id"] = agent
+    return hook("pre", p)
+
+
+def test_loop_pro_denies_fourth_identical_call(env):
+    pro(env)
+    assert _pre() is None and _pre("ls") is None  # a different call resets the streak
+    for _ in range(3):
+        assert _pre() is None
+    d = _pre()
+    assert d["continue"] is False
+    assert d["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "same tool call 4 times in a row (Bash)" in d["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "pytest" not in json.dumps(d)  # tool input never echoed
+
+
+def test_loop_free_message_and_nudge_once(env):
+    for _ in range(3):
+        assert _pre() is None
+    d = _pre()
+    assert "hookSpecificOutput" not in d and "continue" not in d
+    assert "Pro would stop" in d["systemMessage"]
+    assert _pre() is None  # one nudge per streak
+
+
+def test_loop_tracked_per_subagent(env):
+    pro(env)
+    for _ in range(3):
+        assert _pre(agent="a") is None
+    assert _pre(agent="b") is None
+
+
+def test_error_streak_pro_stops_after_eight_failures(env):
+    pro(env)
+    fail = dict(PRE, hook_event_name="PostToolUseFailure", error="REDACTED")
+    ok = dict(PRE, hook_event_name="PostToolUse", tool_response={"stdout": "REDACTED"})
+    for _ in range(7):
+        assert hook("postfail", fail) is None
+    assert hook("post", ok) is None  # success resets
+    for _ in range(7):
+        assert hook("postfail", fail) is None
+    d = hook("postfail", fail)
+    assert d["continue"] is False and "8 failing tool calls in a row" in d["stopReason"]
+    assert "REDACTED" not in json.dumps(d)
+
+
+def test_error_streak_free_nudges(env):
+    fail = dict(PRE, hook_event_name="PostToolUseFailure", error="x")
+    for _ in range(7):
+        hook("postfail", fail)
+    d = hook("postfail", fail)
+    assert "continue" not in d and "Pro would stop" in d["systemMessage"]
+
+
+def test_hooks_json_registers_post_hooks():
+    h = json.loads((Path(SCRIPT).parent.parent / "hooks" / "hooks.json").read_text())["hooks"]
+    assert "PostToolUse" in h and "PostToolUseFailure" in h

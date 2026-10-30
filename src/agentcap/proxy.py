@@ -147,7 +147,7 @@ class ProxyConfig:
     run_id: str
     caps: Caps = field(default_factory=Caps)
     features: Iterable[str] | None = None
-    loop_threshold: int = 5
+    loop_threshold: int = 4
     loop_window_s: float = 300.0
     #: Consecutive failing tool results before the breaker trips.
     tool_error_threshold: int = 8

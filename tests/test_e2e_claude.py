@@ -109,7 +109,7 @@ def test_e2e_pro_loop_breaker_exit_4_and_receipt(tmp_path, upstream, claude_bin)
     assert code == 4, err
     receipt = json.loads(r.receipt_path.read_text())
     assert receipt["reason"] == "loop_detected" and receipt["loop_detected"] is True
-    assert receipt["requests"] == 5 and receipt["command"] == "claude"
+    assert receipt["requests"] == 4 and receipt["command"] == "claude"
     assert "SECRET" not in r.receipt_path.read_text() and "fix the bug" not in r.receipt_path.read_text()
 
 

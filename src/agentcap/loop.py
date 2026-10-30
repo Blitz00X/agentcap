@@ -36,7 +36,7 @@ class LoopDetector:
 
     def __init__(
         self,
-        threshold: int = 5,
+        threshold: int = 4,
         window_s: float = 120.0,
         *,
         clock: Callable[[], float] | None = None,

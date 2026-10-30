@@ -197,10 +197,10 @@ async def test_hour_and_day_caps_are_pro(harness):
     assert (await h2.messages(body(max_tokens=64000))).status_code == 429
 
 
-async def test_pro_loop_breaker_blocks_on_fifth_identical_request(harness):
+async def test_pro_loop_breaker_blocks_on_fourth_identical_request(harness):
     h = harness(features=PRO_FEATURES)
-    codes = [(await h.messages(body(max_tokens=10))).status_code for _ in range(5)]
-    assert codes == [200, 200, 200, 200, 429]
+    codes = [(await h.messages(body(max_tokens=10))).status_code for _ in range(4)]
+    assert codes == [200, 200, 200, 429]
     assert h.kills and h.kills[0]["reason"] == "loop_detected"
 
 

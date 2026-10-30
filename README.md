@@ -239,6 +239,12 @@ No pip install: the plugin is stdlib Python (`python3` on PATH). How it works:
   `Stop` prints a receipt (`session 4.2% / 5% (weekly)`). **Free:** live meter + one notice
   at the limit (`Pro would stop the agent here`). Pro is read from the licence the `agentcap`
   CLI stores after `agentcap activate`.
+- Loop breaker (works with or without `/agentcap:quota`): `PreToolUse` hashes each tool call
+  (name + input, per session and per subagent; polling tools like `TaskOutput`/`BashOutput`
+  are ignored). The 4th identical call in a row is denied with `continue: false` on **Pro**;
+  **Free** gets one notice per streak. `PostToolUse` / `PostToolUseFailure` count failing
+  tool calls: 8 in a row stops the agent on Pro (`continue: false`), Free gets a notice.
+  Tool input and output are never stored, only a 16-char hash and counts.
 - Read-only: no OAuth token, credentials file or API traffic is touched.
 
 Honest limits: the % is account-level (parallel sessions count), the stop can be one request
