@@ -1,7 +1,7 @@
 {
   "name": "agentcap",
   "displayName": "AgentCap",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Cap one Claude Code session's share of your Max/Pro weekly or 5-hour quota (/agentcap:quota 5%). Read-only: uses the rate_limits % Claude Code gives the statusLine; never touches tokens or traffic.",
   "author": {"name": "Blitz00X", "url": "https://github.com/Blitz00X"},
   "homepage": "https://github.com/Blitz00X/agentcap",

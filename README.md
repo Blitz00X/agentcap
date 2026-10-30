@@ -10,7 +10,10 @@ tool loops and error streaks.
 $ agentcap waste --since 7d
 SUBAGENTS                $41.20    25% of spend  in 31 subagent/forked threads
 OPUS                     $38.90    24% of spend
-CACHE MISSES              $6.10  57 cache re-writes after the TTL ran out (5 min, or 1 h)
+CACHE MISSES              $6.10  57 cache re-writes after the TTL ran out (5 min since the last request, or 1 h)
+   main session     $2.30  21x    subagents     $3.80  36x
+   Tip: idle subagents re-wrote their own context 36x (~$3.80). Set subagentPromptCacheTtl: "1h" ...
+STARTING CONTEXT     31 subagents, first request median 38.2k tok, largest 131.0k (7f3a91c2/a1b2c3d4)
 REPEATED TOOL CALLS       $9.80  12 streaks of >= 3 identical calls in a row
 TOOL ERROR STREAKS        $4.30  5 streaks of >= 3 failing calls in a row
 Pro would have stopped this run at $3.12 / at 4 repeats (Bash x11 in 7f3a91c2, $2.40 after that).
@@ -23,16 +26,29 @@ Pro would have stopped this run at $3.12 / at 4 repeats (Bash x11 in 7f3a91c2, $
 agentcap run --quota 5% -- claude                 # subscription: stop at 5% of the weekly quota, or on a loop
 agentcap run --quota 10% --window 5h -- codex     # same for Codex on a ChatGPT plan
 agentcap run --cap 2 -- codex exec "fix tests"    # API key: $2 cap + loop/burn breaker
+agentcap approve                                  # raise a stopped job's limit by 50% (at most twice)
 ```
+
+On a $20/month Codex plan, two code-review prompts used the whole 5-hour limit
+([Povilas Korop](https://x.com/PovilasKorop/status/2116114249655501050): $7.70 + $1.43 at API prices).
+`--quota 10% --window 5h -- codex` stops the job before that.
+
+Free tools like [claude-code-spend-stop](https://github.com/VedantBhayani/claude-code-spend-stop) and
+[RelayPlane](https://relayplane.com) give you a free $ cap. AgentCap adds the loop breaker, a cap on
+your subscription quota % and Codex support.
 
 - **Loop breaker.** Same tool call (name + input) 4 times in a row, or 8 failing tool calls in a
   row: the run is stopped (exit 4). On subscriptions it works without touching your login or
-  traffic: Claude Code via an official `PreToolUse` hook (denies the 4th identical call, then
-  SIGINT if the agent keeps going); Codex by reading its own rollout file (SIGINT). On API keys the
+  traffic: Claude Code via an official `PreToolUse` hook (denies the 4th identical call and ends
+  the turn; an interactive session stays open so you can `agentcap approve` or quit; headless
+  `claude -p` runs get SIGINT if they keep going); Codex by reading its own rollout file (SIGINT). On API keys the
   proxy also catches identical requests and `--max-burn` $/min spikes.
 - **Per-job quota %.** Stop one job at its share of the account's weekly or 5-hour limit.
 - **Evidence receipt.** Each stop prints and saves why (`same tool call 4 times in a row (Bash)`,
-  `this job used 5.1% of the weekly quota`) as numbers only, never prompts.
+  `this job used 5.1% of the weekly quota`) and the last tool call's name, as numbers and tool
+  names only, never prompts or tool inputs.
+- **Approve.** After a stop, `agentcap approve` (or `/agentcap:approve` in the plugin) raises the
+  limit by 50%, at most twice, and the run continues.
 - **Free** runs the same detectors in observe-only mode and prints what Pro would have done.
 
 Honest limits: Claude tool-error streaks are only caught on API-key runs (the subscription hook sees
@@ -275,7 +291,9 @@ agentcap quota                                 # read-only: last seen usage (Fre
   statusline command that records the official `rate_limits` (`five_hour` / `seven_day`
   `used_percentage`, `resets_at`) and then runs **your own statusline command unchanged**,
   plus a `PreToolUse` hook that denies further tool calls with a clear reason once the job's
-  share reaches the limit. If the agent does not stop, AgentCap sends it SIGINT. Exit code 3.
+  share reaches the limit and ends the turn (`continue: false`). An interactive session stays open
+  (run `agentcap approve` to continue, or quit). Headless `claude -p` runs, and sessions where
+  the hook never fired, get SIGINT. Exit code 3.
 - **Codex CLI:** AgentCap tails the `token_count` events Codex writes to
   `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits.primary/secondary.used_percent`,
   `window_minutes`, `resets_at`) and sends SIGINT at the limit. Exit code 3.
@@ -466,6 +484,11 @@ agentcap run --quota -- claude       # uses the 5% / 5h quota from the budget
 Tools like agent-tree show you what your subagents are doing; AgentCap also stops them when they loop
 (same tool call 4x in a row or 8 tool errors in a row, Pro). `agentcap waste` lists cache misses first:
 resuming a session after the cache expired re-writes the whole prompt cache, so start a new session (or `/clear`) after a break.
+Misses are split into main session and subagents. An idle subagent re-writes only its own context
+(not the whole conversation, unless it is a forked subagent), at 1.25x normal input. If your
+subagents sit idle for more than 5 minutes, set `subagentPromptCacheTtl: "1h"`. A 1 h write costs
+2x input, so it only pays off when the subagent is reused. `STARTING CONTEXT` shows how many tokens
+each subagent's first request carries.
 
 - **Store:** `~/.local/share/agentcap/usage.db` (`$XDG_DATA_HOME` respected, mode 600). `import` is
   idempotent; it reads only `*.jsonl` session logs and AgentCap's own files. It never opens auth or
@@ -482,7 +505,8 @@ resuming a session after the cache expired re-writes the whole prompt cache, so 
   are undocumented and change between CLI versions.
 - **`waste` heuristics:** a cache miss is a cache write larger than the cache read after the prompt
   cache TTL ran out (5 min; 1 h when written with `ephemeral_1h`; Codex: a big uncached prompt after
-  > 5 min idle). Tool inputs are hashed, never printed. Not in local logs: `agent_summary` / title
+  > 5 min idle). Its $ is what the re-write cost above a cache read: 5 min writes at 1.25x input,
+  1 h writes at 2x input (Anthropic list prices). Tool inputs are hashed, never printed. Not in local logs: `agent_summary` / title
   background calls and HTTP retries (planned: local OTel receiver).
 
 ### Pro extras: analytics (`agentcap report <view>`)
