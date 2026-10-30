@@ -31,6 +31,7 @@ def _same_period(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 PERIOD_TOLERANCE_S = {"5h": 1800.0, "week": 6 * 3600.0}
 MIN_TREND_PCT = 5.0
+STALE_H = 1.0
 
 
 def _periods(samples: list[dict[str, Any]], window: str) -> list[list[dict[str, Any]]]:
@@ -134,7 +135,12 @@ def render_forecast(items: Iterable[Forecast], *, now: float, warn_hours: float 
     lines = []
     for f in items:
         head = f"{f.source} {f.window:>4}: {f.used_percent:5.1f}% used, +{f.rate_per_hour:.1f}%/h"
-        if f.used_percent >= 100:
+        idle_h = (now - f.seen_at) / 3600.0
+        if f.resets_at is not None and f.resets_at <= now:
+            lines.append(f"{head} -> window has reset since last seen ({_when(f.seen_at)}); no fresh data")
+        elif idle_h > STALE_H:
+            lines.append(f"{head} -> idle: last reading {idle_h:.1f}h ago, no current burn")
+        elif f.used_percent >= 100:
             reset = f", resets {_when(f.resets_at)}" if f.resets_at else ""
             lines.append(f"{head} -> limit reached{reset}  !! BLOCKED")
         elif f.before_reset and f.hits_at is not None:

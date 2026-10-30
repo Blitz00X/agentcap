@@ -253,3 +253,16 @@ def test_calibration_trend_uses_only_substantial_periods(store):
         qs(store, base + 10, 10.0 + pct, resets=base + week)
     text = analytics.render_calibration(analytics.calibration(store, "codex", "week"), "codex", "week")
     assert "-50%" in text  # compared with the first period that has >= 5%
+
+
+def test_forecast_after_reset_or_idle_is_not_an_alarm(store):
+    qs(store, T0, 90.0, window="5h", resets=T0 + H)
+    qs(store, T0 + 600, 100.0, window="5h", resets=T0 + H)
+    f = analytics.forecast(store, "codex", "5h", now=T0 + 3 * H)
+    text = analytics.render_forecast([f], now=T0 + 3 * H)
+    assert "reset since" in text and "BLOCKED" not in text
+    qs(store, T0, 10.0, resets=T0 + 100 * H)
+    qs(store, T0 + H, 20.0, resets=T0 + 100 * H)
+    f = analytics.forecast(store, "codex", "week", now=T0 + 10 * H)
+    text = analytics.render_forecast([f], now=T0 + 10 * H)
+    assert "idle" in text and "EARLY WARNING" not in text and "limit hits" not in text
