@@ -1,0 +1,16 @@
+{
+  "name": "agentcap",
+  "owner": {
+    "name": "Blitz00X"
+  },
+  "plugins": [
+    {
+      "name": "agentcap",
+      "source": "./",
+      "description": "Per-session quota caps for Claude Code on Max/Pro subscriptions."
+    }
+  ],
+  "metadata": {
+    "description": "AgentCap: spend and quota caps for coding agents"
+  }
+}

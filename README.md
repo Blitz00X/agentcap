@@ -177,6 +177,37 @@ Limits:
 - A large first request needs a cap that fits it. Claude Code's first request often reserves
   about $0.50–$1. AgentCap prints a suggested `--cap` when it refuses one.
 
+## Install as a Claude Code plugin (Max / Pro subscriptions)
+
+The easiest path on a Claude Max or Pro plan. Inside Claude Code:
+
+```
+/plugin marketplace add Blitz00X/agentcap
+/plugin install agentcap@agentcap
+/agentcap:setup          # once: adds AgentCap's read-only statusLine (your own line keeps showing)
+/agentcap:quota 5%       # this session may use 5% of the weekly quota (`2% 5h` for the 5-hour window)
+/agentcap:status         # session 3.1% / 5% (weekly)
+/agentcap:off            # clear it;  /agentcap:unsetup restores your old statusLine
+```
+
+No pip install: the plugin is stdlib Python (`python3` on PATH). How it works:
+
+- Claude Code only exposes the subscription `rate_limits` % to the **statusLine** command, and a
+  plugin can't set the main statusLine. So `/agentcap:setup` asks once and writes it to
+  `~/.claude/settings.json` (backup `settings.json.agentcap-backup`, previous line chained,
+  `/agentcap:unsetup` undoes it).
+- Plugin hooks: `PreToolUse` warns at 80% and, on **Pro**, denies tool calls at the limit;
+  `Stop` prints a receipt (`session 4.2% / 5% (weekly)`). **Free:** live meter + one notice
+  at the limit (`Pro would stop the agent here`). Pro is read from the licence the `agentcap`
+  CLI stores after `agentcap activate`.
+- Read-only: no OAuth token, credentials file or API traffic is touched.
+
+Honest limits: the % is account-level (parallel sessions count), the stop can be one request
+late, and the share updates when the statusLine refreshes. Verified with real Claude Code
+2.1.197 (plugin install from the marketplace, hooks loaded, `/agentcap:quota` executed,
+PreToolUse deny blocked the tool) against a local fake API and synthetic `rate_limits`;
+**not yet checked against a real Max account.**
+
 ## Works with Claude Max / ChatGPT subscriptions (quota mode)
 
 On a subscription there is no dollar bill, but there is a weekly and a 5-hour usage limit.

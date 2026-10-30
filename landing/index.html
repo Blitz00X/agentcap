@@ -182,7 +182,8 @@ cursor --install-extension agentcap-0.1.2.vsix   # Cursor</code></pre>
     <section class="section" id="quota" aria-labelledby="quota-title">
       <div class="shell">
         <h2 id="quota-title">Works with Claude Max / ChatGPT subscriptions (quota mode)</h2>
-        <p>No API key? Cap one job's share of your subscription limit instead: <code>agentcap run --quota 5% -- claude</code> stops the job after it used 5% of your weekly quota (<code>--window 5h</code> for the 5-hour window). Works with Claude Code and Codex.</p>
+        <p><strong>Claude Max/Pro: install as a Claude Code plugin.</strong> <code>/plugin marketplace add Blitz00X/agentcap</code>, <code>/plugin install agentcap@agentcap</code>, <code>/agentcap:setup</code> once, then <code>/agentcap:quota 5%</code> caps this session at 5% of your weekly quota. No pip install, read-only, <code>/agentcap:unsetup</code> undoes the statusLine change.</p>
+        <p>Outside the plugin: cap one job's share of your subscription limit instead: <code>agentcap run --quota 5% -- claude</code> stops the job after it used 5% of your weekly quota (<code>--window 5h</code> for the 5-hour window). Works with Claude Code and Codex.</p>
         <ul>
           <li><strong>Read-only.</strong> AgentCap never touches your subscription login, tokens or traffic. It reads Claude Code's official statusline <code>rate_limits</code> and Codex's local session logs, then stops the local agent (Claude Code <code>PreToolUse</code> hook, then SIGINT).</li>
           <li>Your settings are not edited: Claude Code gets a one-run <code>--settings</code> layer, and your own statusline keeps working.</li>
