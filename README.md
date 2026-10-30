@@ -1,6 +1,6 @@
 # AgentCap
 
-**Hard spend caps for Claude Code, Codex CLI and Gemini CLI. Free.** And a loop breaker that texts you before an overnight run burns $500.
+**Per-job quota for Claude Code, Codex and Gemini CLI — and where your tokens went.** Hard $ caps on API keys, a % cap per job on Claude Max/Pro and ChatGPT subscriptions, an early warning before a cap is hit, and a local, read-only history of every token you spent.
 
 **The API-key guard for unattended agent runs.** AgentCap runs
 the CLI behind a local proxy on `127.0.0.1` and applies a local spend cap to the
@@ -401,12 +401,49 @@ fingerprint hash (SHA-256; it contains no hostname and no username) to Polar's
 public licence API at `api.polar.sh`. Free users make no licence requests at
 all.
 
-## Free vs Pro (0.1.5)
+## Usage history, one budget, early warning (new in 0.2)
+
+```bash
+agentcap import                      # read-only: ~/.claude/projects, ~/.codex/sessions, AgentCap's ledger
+agentcap report --by day             # Free: day | session | model | project, tokens + API-equivalent $
+agentcap report --by model --since 7d --csv
+
+agentcap budget set --task-usd 2 --day-usd 20 --task-quota 5% --window 5h
+agentcap run -- codex exec "..."     # uses the $2 task cap from the budget
+agentcap run --quota -- claude       # uses the 5% / 5h quota from the budget
+```
+
+- **Store:** `~/.local/share/agentcap/usage.db` (`$XDG_DATA_HOME` respected, mode 600). `import` is
+  idempotent; it reads only `*.jsonl` session logs and AgentCap's own files. It never opens auth or
+  credential files, never stores prompt or response text, and never touches network or OAuth traffic.
+  Unknown or changed log lines are skipped and counted, not fatal.
+- **Budget:** one file, `~/.config/agentcap/budget.json`. Scopes: task (one `agentcap run` = one agent
+  session) in $, hour/day across runs in $ (Pro), and per-job % of the subscription quota (Pro stops).
+  A flag or `AGENTCAP_CAP` always beats the budget. On Free, a budget hour/day cap is ignored with a note.
+- **Early warning:** when the current burn rate would hit the run cap within ~10 minutes, AgentCap
+  prints (and on Pro sends) one `cap_eta` alert: "cap is hit in ~N min".
+- **$ is API-equivalent:** what the same tokens would cost at list API prices — not your subscription bill.
+
+### Pro analytics (`agentcap report <view>`)
+
+| view | what you get |
+| --- | --- |
+| `forecast` | 5h / weekly quota: "limit hits at Tue 14:20 (~1.5h)", with an early-warning mark |
+| `calibration` | "this week 1% of quota = 1.4M tokens ≈ $1.49", tracked per reset period so you can see if your limit shrank |
+| `savings` | cache-write waste ($ of cache writes never read) and API-vs-plan breakeven with a plan recommendation (plan prices: `agentcap/plans.py`, override in `~/.config/agentcap/plans.json`) |
+| `receipts` | per job / session / repo receipts, `--csv` export, plus AgentCap run receipts |
+
+Calibration pairs quota % samples (Codex `rate_limits` in rollouts; Claude statusline readings recorded
+during `agentcap run --quota`) with the tokens imported in the same window. It is an estimate; small %
+steps are noisy. No team aggregation: everything stays on your machine.
+
+## Free vs Pro (0.2)
 
 **Free (MIT License, forever):** the per-run spend cap.
 - Per-run `--cap` (`--hour-cap` / `--day-cap` exit 2 on Free with a clear message)
 - Output clamping, fail-closed metering, terminal alerts
 - Codex, Gemini CLI, Claude Code, and any SDK script
+- `agentcap import`, `agentcap report` by day/session/model/project, `agentcap budget`, the `cap_eta` early warning
 
 When the Pro detectors below would have fired on a Free run, AgentCap does not stop it.
 It prints one line: `Pro's loop breaker would have stopped this at $X.XX`.
@@ -424,6 +461,7 @@ jobs, CI and background agents:
   Tokens are read from the environment and are never printed or logged.
 - **Subscription quota mode:** `agentcap run --quota 5% -- claude|codex` stops a job at its
   share of your Claude Max/Pro or ChatGPT quota (see above).
+- **Usage analytics:** `agentcap report forecast | calibration | savings | receipts` (see above).
 - **Spend receipt:** a JSON file per run (`~/.local/state/agentcap/receipts/<run>.json`, or
   `AGENTCAP_RECEIPT_DIR`) with requests, spend, caps, the stop reason and the exit code. It contains
   numbers only, never prompts. The same one-line receipt is sent to Telegram and the webhook.
