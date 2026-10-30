@@ -248,6 +248,7 @@ def loop_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
     if st.get("digest") != d:
         st["nudged"] = False
     st["digest"], st["tool"], st["ts"] = d, name[:40], now
+    allst["last_tool"] = name[:40]
     hit = st["count"] >= LOOP_REPEATS
     if hit and pro:
         st["stops"] = int(st.get("stops", 0)) + 1
@@ -308,11 +309,14 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
             reason = (
                 f"agentcap: this session used {share:.1f}% of the {window} subscription quota "
                 f"(limit {float(quota):g}%). Stop now: do not call more tools; summarise what is done "
-                "and what is left. The user can raise it with /agentcap:quota or clear it with /agentcap:off."
+                "and what is left. The user can raise it with /agentcap:approve (+50%), "
+                "/agentcap:quota or clear it with /agentcap:off."
             )
             state["denies"] = int(state.get("denies", 0)) + 1
             save(sid, state)
-            _emit(stdout, {
+            _emit(stdout, {  # deny + end the turn; the session itself stays open
+                "continue": False,
+                "stopReason": reason,
                 "systemMessage": reason,
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -357,7 +361,9 @@ def hook_stop(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
     save(sid, state)
     if pro:
         rec = {"ts": now, "session_id": sid, "window": state.get("window"), "quota": state.get("quota"),
-               "share": share, "used_now": state.get("used"), "denies": state.get("denies", 0)}
+               "share": share, "used_now": state.get("used"), "denies": state.get("denies", 0),
+               "approvals": state.get("approvals", 0),
+               "last_tool": (_read_json(_loop_path(sid)) or {}).get("last_tool")}
         with open(cc_dir() / "receipts.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
     _emit(stdout, {"systemMessage": share_line(state)})
@@ -397,6 +403,36 @@ def cmd_quota(args: list[str], sid: str | None, *, now: float) -> str:
     if not (_read_json(cc_dir() / "statusline.json") or {}).get("installed"):
         lines.append("Not active yet: run /agentcap:setup (adds AgentCap's statusLine, which is the only place Claude Code exposes quota %).")
     return "\n".join(lines)
+
+
+APPROVE_FACTOR, APPROVE_MAX = 1.5, 2
+
+
+def cmd_approve(sid: str | None) -> str:
+    """Pro: raise this session's quota by 50% (max twice) and clear a loop-breaker stop."""
+
+    if not sid:
+        return "agentcap: no session found."
+    if not is_pro():
+        return f"agentcap: approve is a Pro feature (Free never blocks, so there is nothing to approve). {PRICING_URL}"
+    state = load(sid)
+    loop = _loop_path(sid)
+    if loop.exists():
+        allst = _read_json(loop) or {}
+        for k, v in list(allst.items()):
+            if isinstance(v, dict):
+                v.update({"count": 0, "errors": 0})
+        _atomic_write(loop, allst)
+    if state.get("quota") is None:
+        return "agentcap: loop streak cleared; no quota set for this session."
+    n = int(state.get("approvals", 0))
+    if n >= APPROVE_MAX:
+        return (f"agentcap: already approved twice (limit {float(state['quota']):g}%). "
+                "Use /agentcap:quota to set a new limit on purpose.")
+    new = round(float(state["quota"]) * APPROVE_FACTOR, 4)
+    state.update({"quota": new, "approvals": n + 1, "nudged": False})
+    save(sid, state)
+    return f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g}%; tell the agent to continue."
 
 
 def cmd_status(sid: str | None) -> str:
@@ -521,6 +557,8 @@ def main(argv: list[str] | None = None, stdin: TextIO = sys.stdin, stdout: TextI
     sid = resolve_session(sid_raw)
     if cmd == "quota":
         out = cmd_quota(rest, sid, now=now)
+    elif cmd == "approve":
+        out = cmd_approve(sid)
     elif cmd == "status":
         out = cmd_status(sid)
     elif cmd == "off":

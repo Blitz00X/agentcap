@@ -321,7 +321,7 @@ def test_live_status_file_for_editor(fakebin, tmp_path, monkeypatch):
 def test_e2e_claude_sigint_when_model_ignores_stop(fakebin, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_IGNORE_STOP", "1")
     monkeypatch.setenv("FAKE_N", "200")
-    r, events, err = make_runner(["claude"], tmp_path, grace=0.5)
+    r, events, err = make_runner(["claude", "-p", "fix"], tmp_path, grace=0.5)
     t0 = time.time()
     assert r.run() == 3
     assert time.time() - t0 < 20
@@ -494,3 +494,106 @@ def test_e2e_claude_loop_breaker_denies_and_stops(fakebin, tmp_path, monkeypatch
     assert r.run() == 4
     assert r.summary.reason == "loop_detected"
     assert "same tool call 4 times" in err.getvalue()
+
+
+# ------------------------------------------- 0.2.1: interactive stop, approve
+def test_e2e_interactive_claude_is_not_sigint_when_hook_denies(fakebin, tmp_path, monkeypatch):
+    # interactive session: the hook denies and ends the turn; agentcap must not kill the session
+    monkeypatch.setenv("FAKE_IGNORE_STOP", "1")
+    monkeypatch.setenv("FAKE_N", "14")
+    r, events, err = make_runner(["claude"], tmp_path, grace=0.2)
+    sent = []
+    monkeypatch.setattr(r, "_signal", lambda sig: sent.append(sig))
+    assert r.run() == 3
+    assert sent == []
+    assert "session stays open" in err.getvalue()
+
+
+def test_e2e_headless_claude_still_sigint(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_IGNORE_STOP", "1")
+    monkeypatch.setenv("FAKE_N", "200")
+    r, events, err = make_runner(["claude", "--print", "fix"], tmp_path, grace=0.3)
+    assert r.run() == 3
+
+
+def test_is_headless_claude():
+    assert q.is_headless_claude(["claude", "-p", "x"])
+    assert q.is_headless_claude(["claude", "--print"])
+    assert not q.is_headless_claude(["claude"])
+    assert not q.is_headless_claude(["claude", "--resume"])
+
+
+def _job(tmp_path, **kw):
+    root = tmp_path / "state"
+    d = root / "jobs" / "q1-1"
+    d.mkdir(parents=True)
+    job = {"enforce": True, "quota": 4.0, "window": "week", "started_at": 1}
+    job.update(kw)
+    (d / "job.json").write_text(json.dumps(job))
+    (d / "status.json").write_text(json.dumps({"limit_hit": True, "share": 4.2, "quota": 4.0}))
+    return root, d
+
+
+def test_approve_raises_quota_50pct_at_most_twice(tmp_path):
+    root, d = _job(tmp_path)
+    (d / "loop.json").write_text("{}"); (d / "tools.json").write_text("{}")
+    msg = q.approve_job(root)
+    assert "6%" in msg and "1/2" in msg
+    job = json.loads((d / "job.json").read_text())
+    assert job["quota"] == 6.0 and job["approvals"] == 1
+    assert json.loads((d / "status.json").read_text())["limit_hit"] is False
+    assert not (d / "loop.json").exists() and not (d / "tools.json").exists()
+    assert "9%" in q.approve_job(root)
+    assert "already approved twice" in q.approve_job(root)
+    assert json.loads((d / "job.json").read_text())["quota"] == 9.0
+
+
+def test_approve_free_job_and_no_job(tmp_path):
+    assert "no running" in q.approve_job(tmp_path / "none")
+    root, d = _job(tmp_path, enforce=False)
+    assert "Pro" in q.approve_job(root)
+
+
+def test_approve_skips_finished_jobs(tmp_path):
+    root, d = _job(tmp_path)
+    (d / "done.json").write_text("{}")
+    assert "no running" in q.approve_job(root)
+
+
+def test_hook_records_last_tool_name_only(tmp_path):
+    (tmp_path / "job.json").write_text(json.dumps({"enforce": True, "quota": 5, "window": "week"}))
+    _hook(tmp_path, tool="Edit", cmd="secret-arg")
+    t = json.loads((tmp_path / "tools.json").read_text())
+    assert t["tool"] == "Edit" and "secret-arg" not in json.dumps(t)
+
+
+def test_receipt_has_last_tool(fakebin, tmp_path):
+    r, events, err = make_runner(["claude", "-p", "fix"], tmp_path)
+    assert r.run() == 3
+    receipt = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
+    assert receipt["last_tool"] == "Bash"
+    assert "last tool call: Bash" in err.getvalue()
+
+
+def test_runner_picks_up_approval(fakebin, tmp_path, monkeypatch):
+    # approve while running: quota goes 5 -> 7.5, the job continues past 5%
+    monkeypatch.setenv("FAKE_N", "7")
+    r, events, err = make_runner(["claude", "-p", "fix"], tmp_path, quota=3.0)
+    orig = r._live
+    def live(share, observed, hit):
+        if hit and not getattr(r, "_did", False):
+            r._did = True
+            q.approve_job(r.job_root)
+        return orig(share, observed, hit)
+    monkeypatch.setattr(r, "_live", live)
+    code = r.run()
+    assert "approved" in err.getvalue()
+    assert r.summary.quota == 4.5
+
+
+def test_cli_approve(tmp_path, monkeypatch, capsys):
+    from agentcap import cli
+    root, d = _job(tmp_path)
+    monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(root))
+    assert cli.main(["approve"]) == 0
+    assert "6%" in capsys.readouterr().out

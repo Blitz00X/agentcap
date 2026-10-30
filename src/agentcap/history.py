@@ -210,7 +210,8 @@ class _Pricer:
         except PricingError:
             self.store = None
 
-    def usd(self, model: str, inp: int, cread: int, cwrite: int, out: int) -> str | None:
+    def usd(self, model: str, inp: int, cread: int, cwrite: int, out: int,
+            cwrite_1h: int = 0) -> str | None:
         if self.store is None or not model:
             return None
         price = None
@@ -225,7 +226,8 @@ class _Pricer:
         try:
             if price.provider == "anthropic":
                 value = cost(
-                    price, inp + cread + cwrite, cread, out, cache_write_tokens=cwrite
+                    price, inp + cread + cwrite, cread, out, cache_write_tokens=cwrite,
+                    cache_write_1h_tokens=min(cwrite_1h, cwrite),
                 )
             else:  # OpenAI: cache writes bill as ordinary input
                 value = cost(price, inp + cread + cwrite, cread, out)

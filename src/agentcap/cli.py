@@ -230,6 +230,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "quota", help="show subscription quota usage seen locally (read-only)"
     )
     subparsers.add_parser(
+        "approve", help="raise the running quota job's limit by 50%% (Pro, at most twice)"
+    )
+    subparsers.add_parser(
         "demo", help="run a simulated spend-cap demo against a fake local API"
     )
     from . import cli_history
@@ -734,6 +737,11 @@ def main(argv: list[str] | None = None) -> int:
         return _status(args)
     if args.subcommand == "quota":
         return _quota(args)
+    if args.subcommand == "approve":
+        from .quota import approve_job
+
+        print(approve_job())
+        return 0
     if args.subcommand == "demo":
         return _demo(args)
     from . import cli_history

@@ -242,3 +242,57 @@ def test_session_start_prunes_old_loop_state(env):
     _os.utime(other, (_t.time() - week, _t.time() - week))
     hook("start", {"session_id": SID, "cwd": "/w", "hook_event_name": "SessionStart"})
     assert not old.exists() and fresh.exists() and other.exists()
+
+
+# ------------------------------------------- 0.2.1: end turn, approve, last tool
+def _at_limit(env):
+    pro(env)
+    statusline(sl_payload(40.0)); cmd("quota", "4%"); statusline(sl_payload(44.5))
+
+
+def test_quota_deny_ends_the_turn(env):
+    _at_limit(env)
+    d = hook("pre", PRE)
+    assert d["continue"] is False and d["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "/agentcap:approve" in d["stopReason"]
+
+
+def test_approve_raises_by_half_twice(env):
+    _at_limit(env)
+    assert hook("pre", PRE)["continue"] is False
+    out = cmd("approve")
+    assert "6%" in out and "1/2" in out
+    assert hook("pre", dict(PRE, tool_input={"command": "next"})) is None
+    assert "9%" in cmd("approve")
+    assert "already approved twice" in cmd("approve")
+    assert cc.load(SID)["quota"] == 9.0
+
+
+def test_approve_is_pro_only(env):
+    statusline(sl_payload(40.0)); cmd("quota", "4%")
+    assert "Pro" in cmd("approve")
+    assert cc.load(SID)["quota"] == 4.0
+
+
+def test_approve_resets_loop_streak(env):
+    pro(env)
+    for _ in range(4):
+        d = _pre()
+    assert d["continue"] is False
+    statusline(sl_payload(1.0)); cmd("quota", "50%")
+    cmd("approve")
+    assert _pre() is None
+
+
+def test_stop_receipt_has_last_tool(env):
+    pro(env)
+    statusline(sl_payload(1.0)); cmd("quota", "5%"); statusline(sl_payload(2.0))
+    hook("pre", dict(PRE, tool_name="Edit", tool_input={"file_path": "/secret"}))
+    hook("stop", {"session_id": SID, "hook_event_name": "Stop", "cwd": "/w"})
+    rec = json.loads((cc.cc_dir() / "receipts.jsonl").read_text().splitlines()[-1])
+    assert rec["last_tool"] == "Edit" and "/secret" not in json.dumps(rec)
+
+
+def test_approve_command_file_exists():
+    text = (ROOT / "commands" / "approve.md").read_text()
+    assert "approve" in text and "disable-model-invocation: true" in text

@@ -15,6 +15,11 @@ only *reads* official local signals and stops the local agent:
   ``rate_limits`` into ``~/.codex/sessions/**/rollout-*.jsonl``; we tail them
   and SIGINT the child at the limit.
 
+Interactive Claude Code is never signalled while the hook works: the deny
+ends the turn (``continue: false``) and the session stays open, so the user
+can ``agentcap approve`` (+50%, at most twice) or quit.  Headless runs
+(``claude -p``) and Codex are still SIGINT'd at the limit.
+
 Percentages are account-level, so parallel sessions are counted too (we warn
 when we detect them).  Values update once per model response, so a job can
 overshoot by up to one request.
@@ -38,6 +43,55 @@ WARN_FRACTION = 0.8
 EXIT_QUOTA_EXCEEDED = 3
 EXIT_LOOP_DETECTED = 4
 BASELINE_MAX_AGE_S = 15 * 60
+APPROVE_FACTOR = 1.5
+APPROVE_MAX = 2
+
+
+def is_headless_claude(argv: Sequence[str]) -> bool:
+    """``claude -p`` / ``--print`` runs non-interactively; nobody is there to approve."""
+
+    return any(a in ("-p", "--print") or a.startswith("--print=") for a in argv[1:])
+
+
+def _running_jobs(root: Path) -> list[Path]:
+    jobs = root / "jobs"
+    if not jobs.is_dir():
+        return []
+    out = [d for d in jobs.iterdir()
+           if (d / "job.json").exists() and not (d / "done.json").exists()]
+    return sorted(out, key=lambda d: (d / "job.json").stat().st_mtime, reverse=True)
+
+
+def approve_job(root: Path | None = None) -> str:
+    """Raise the newest running quota job's limit by 50% (max twice) and clear a loop stop."""
+
+    root = root or state_root()
+    running = _running_jobs(root)
+    if not running:
+        return "agentcap: no running quota job to approve."
+    d = running[0]
+    job = _read_json(d / "job.json") or {}
+    if not job.get("enforce"):
+        return "agentcap: this job is observe-only (Free); approve is a Pro feature."
+    n = int(job.get("approvals") or 0)
+    if n >= APPROVE_MAX:
+        return (f"agentcap: already approved twice (limit {float(job.get('quota', 0)):g}%); "
+                "start a new job if you really need more.")
+    new = round(float(job.get("quota", 0)) * APPROVE_FACTOR, 4)
+    job.update({"quota": new, "approvals": n + 1, "approved_at": time.time()})
+    _atomic_write(d / "job.json", job)
+    status = _read_json(d / "status.json")
+    if status:
+        status["limit_hit"] = False
+        status["quota"] = new
+        _atomic_write(d / "status.json", status)
+    for name in ("loop.json", "tools.json", "denies.log"):
+        try:
+            (d / name).unlink()
+        except OSError:
+            pass
+    return (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g}% of the "
+            f"{'weekly' if job.get('window') == 'week' else '5-hour'} quota; the run continues.")
 CLAUDE_KEYS = {"5h": "five_hour", "week": "seven_day"}
 CODEX_MINUTES = {"5h": 300, "week": 10080}
 STATE_ENV = "AGENTCAP_QUOTA_DIR"
@@ -425,7 +479,7 @@ def _loop_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
     d = _digest(name, payload.get("tool_input"))
     state = _read_json(job_dir / "tools.json") or {}
     count = int(state.get("count") or 0) + 1 if state.get("digest") == d else 1
-    _atomic_write(job_dir / "tools.json", {"digest": d, "count": count})
+    _atomic_write(job_dir / "tools.json", {"digest": d, "count": count, "tool": name[:40]})
     if count < LOOP_REPEATS:
         return None
     enforce = bool((_read_json(job_dir / "job.json") or {}).get("enforce"))
@@ -434,8 +488,17 @@ def _loop_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
                                           "stopped": enforce, "ts": time.time()})
     if not enforce:
         return None
+    _note_deny(job_dir)
     return (f"agentcap loop breaker: {detail}. Stop now: do not call more tools; "
             "summarise what is done and what is left.")
+
+
+def _note_deny(job_dir: Path) -> None:
+    try:
+        with open(job_dir / "denies.log", "a", encoding="utf-8") as fh:
+            fh.write(f"{time.time()}\n")
+    except OSError:
+        pass
 
 
 def _deny(stdout: TextIO, reason: str) -> int:
@@ -471,16 +534,12 @@ def hook_main(job_dir: Path, stdin: TextIO, stdout: TextIO) -> int:
     status = _read_json(job_dir / "status.json")
     if not status or not status.get("limit_hit"):
         return 0
-    try:
-        with open(job_dir / "denies.log", "a", encoding="utf-8") as fh:
-            fh.write(f"{time.time()}\n")
-    except OSError:
-        pass
+    _note_deny(job_dir)
     reason = (
         f"agentcap quota mode: this job used {float(status.get('share', 0)):.1f}% of the "
         f"{'weekly' if status.get('window') == 'week' else '5-hour'} subscription quota "
         f"(limit {float(status.get('quota', 0)):g}%). Stop now: do not call more tools; "
-        "summarise what is done and what is left."
+        "summarise what is done and what is left. (The user can run `agentcap approve` to raise it.)"
     )
     json.dump(
         {
@@ -633,6 +692,7 @@ class QuotaRunner:
         self.agent = detect_quota_agent(self.argv)
         if self.agent is None:
             raise ValueError("quota mode supports `claude` and `codex` only")
+        self.headless = self.agent == "codex" or is_headless_claude(self.argv)
         self.quota = quota
         self.window = window
         self.enforce = enforce
@@ -711,7 +771,12 @@ class QuotaRunner:
             _atomic_write(settings, claude_settings(self.job_dir))
             argv = inject_claude_settings(argv, settings)
         else:
+            _atomic_write(self.job_dir / "job.json", {
+                "quota": self.quota, "window": self.window, "started_at": started,
+                "enforce": self.enforce, "agent": "codex",
+            })
             tailer = CodexTailer(self.sessions_dir, started)
+            self._tailer = tailer
             prior = tailer.last_reading_before(self.window)
             if prior and started - prior[0] <= BASELINE_MAX_AGE_S and (
                 prior[1].resets_at is None or prior[1].resets_at > started
@@ -735,10 +800,22 @@ class QuotaRunner:
         reason = "exited"
         share = 0.0
         stopped = False
+        open_said = False
+        approvals = 0
         try:
             while True:
                 code = self.child.poll()
                 now = time.time()
+                jobnow = _read_json(self.job_dir / "job.json") or {}
+                if int(jobnow.get("approvals") or 0) > approvals and code is None:
+                    approvals = int(jobnow["approvals"])
+                    self.quota = float(jobnow.get("quota", self.quota))
+                    hit = warned = stopped = open_said = False
+                    hit_at = loop_at = None
+                    loop_detail = None
+                    self._say(f"agentcap: approved ({approvals}/{APPROVE_MAX}): limit is now "
+                              f"{self.quota:g}%; continuing.")
+                    self._event("quota_approved", share, approvals=approvals)
                 if self.agent == "claude":
                     status = _read_json(self.job_dir / "status.json") or {}
                     if status.get("has_rate_limits"):
@@ -784,8 +861,10 @@ class QuotaRunner:
                     and hit_at is not None and code is None
                 ):
                     denies = (self.job_dir / "denies.log").exists()
-                    if now - hit_at >= (self.claude_grace_s if denies else self.claude_grace_s * 3):
-                        self._stop()
+                    if not self.headless and denies:
+                        open_said = self._say_open(open_said, "the quota limit")
+                    elif now - hit_at >= (self.claude_grace_s if denies else self.claude_grace_s * 3):
+                        self._stop()  # headless, or the hook never ran (fallback)
                         stopped = True
                 if loop_detail is None:
                     if self.agent == "claude":
@@ -802,9 +881,14 @@ class QuotaRunner:
                                 self._stop()
                                 stopped = True
                 if (loop_detail and self.enforce and not stopped and code is None
-                        and loop_at is not None and now - loop_at >= self.claude_grace_s):
-                    self._stop()
-                    stopped = True
+                        and loop_at is not None):
+                    denies = (self.job_dir / "denies.log").exists()
+                    if not self.headless and denies:
+                        open_said = self._say_open(open_said, "the loop breaker")
+                    elif now - loop_at >= (self.claude_grace_s if denies or self.headless
+                                           else self.claude_grace_s * 3):
+                        self._stop()
+                        stopped = True
                 self._live(share, observed, hit)
                 if code is not None:
                     break
@@ -827,7 +911,26 @@ class QuotaRunner:
             tracker.baseline_exact, tracker.resets_seen, parallel, observed,
         )
         self._receipt(self.summary)
+        try:
+            _atomic_write(self.job_dir / "done.json", {"ts": time.time(), "exit_code": code})
+        except OSError:
+            pass
         return code
+
+    def _say_open(self, said: bool, what: str) -> bool:
+        if not said:
+            self._say(f"agentcap: {what} stopped this turn (tool calls are denied). The session stays "
+                      "open: run `agentcap approve` in another terminal to raise the limit by 50% "
+                      f"(at most {APPROVE_MAX}x), or quit Claude Code.")
+        return True
+
+    def _last_tool(self) -> str | None:
+        t = _read_json(self.job_dir / "tools.json") or {}
+        name = t.get("tool")
+        if not name and self.agent == "codex":
+            tailer = getattr(self, "_tailer", None)
+            name = tailer.loop.tool if tailer is not None else None
+        return str(name)[:40] if name else None
 
     def _live(self, share: float, observed: bool, hit: bool) -> None:
         """Optional live status for editor integrations (AGENTCAP_QUOTA_LIVE)."""
@@ -861,6 +964,9 @@ class QuotaRunner:
                 + (f" (limit {s.quota:g}%)" if self.enforce else "")
                 + (f"; {'; '.join(notes)}" if notes else "") + "."
             )
+        last = self._last_tool()
+        if last:
+            self._say(f"agentcap: last tool call: {last}")
             if not self.enforce and s.share >= s.quota:
                 self._say(
                     f"agentcap: Pro's quota mode would have stopped this job at {s.quota:g}%. "
@@ -875,6 +981,7 @@ class QuotaRunner:
                         "quota_pct": s.quota, "share_pct": s.share, "exit_code": s.exit_code,
                         "reason": s.reason, "baseline_exact": s.baseline_exact,
                         "parallel_sessions": s.parallel, "window_resets": s.resets_seen,
+                        "last_tool": last,
                     })
                 except OSError:
                     pass

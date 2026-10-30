@@ -171,3 +171,76 @@ def test_waste_cache_misses_come_first_with_suggestion(home, capsys):
     tip = [l for l in lines if l.strip().startswith("Tip:")]
     assert tip and "new session" in tip[0] and "/clear" in tip[0]
     assert tip[0] == lines[heads[1] - 1]  # tip closes the cache section
+
+
+# ---------------------------------------------- 0.2.1: miss split, 1h tip, pricing
+def _msg(ts, sess, mid, cw, cr=0, h1=0, agent=None, model="claude-sonnet-4-5"):
+    o = {"type": "assistant", "timestamp": ts, "sessionId": sess, "uuid": "u" + mid, "requestId": "r" + mid,
+         "isSidechain": agent is not None,
+         "message": {"id": mid, "model": model, "role": "assistant", "content": [{"type": "text", "text": "x"}],
+                     "usage": {"input_tokens": 10, "cache_read_input_tokens": cr,
+                               "cache_creation_input_tokens": cw, "output_tokens": 10,
+                               "cache_creation": {"ephemeral_5m_input_tokens": cw - h1,
+                                                  "ephemeral_1h_input_tokens": h1}}}}
+    if agent:
+        o["agentId"] = agent
+    return json.dumps(o)
+
+
+@pytest.fixture
+def split_home(tmp_path):
+    proj = tmp_path / ".claude" / "projects" / "-w"
+    sub = proj / "s1" / "subagents"
+    sub.mkdir(parents=True)
+    (proj / "s1.jsonl").write_text("\n".join([
+        _msg("2026-10-29T09:00:00Z", "s1", "m1", 40000),
+        _msg("2026-10-29T09:10:00Z", "s1", "m2", 40000),          # 10 min idle: main miss (5m)
+    ]) + "\n")
+    (sub / "agent-z9.jsonl").write_text("\n".join([
+        _msg("2026-10-29T09:00:30Z", "s1", "a1", 12000, agent="z9"),  # first request: 12k context
+        _msg("2026-10-29T09:20:30Z", "s1", "a2", 100000, agent="z9"),  # 20 min idle: subagent miss
+    ]) + "\n")
+    return tmp_path
+
+
+def test_waste_misses_split_main_vs_subagent(split_home):
+    w = waste.scan(home=split_home)
+    main = [m for m in w.cache_misses if m.agent is None]
+    sub = [m for m in w.cache_misses if m.agent == "z9"]
+    assert len(main) == 1 and len(sub) == 1
+    text = waste.render(w, "all")
+    assert "main session" in text and "subagents" in text
+    assert 'subagentPromptCacheTtl: "1h"' in text
+
+
+def test_waste_miss_cost_uses_5m_write_rate(split_home):
+    # sonnet-4-5: input $3/M, cache read $0.30/M; a 5-minute write is 1.25x input = $3.75/M
+    w = waste.scan(home=split_home)
+    main = next(m for m in w.cache_misses if m.agent is None)
+    assert main.usd == pytest.approx(40000 * (3.75 - 0.30) / 1e6, rel=1e-6)
+
+
+def test_waste_miss_cost_uses_1h_write_rate(tmp_path):
+    proj = tmp_path / ".claude" / "projects" / "-w"
+    proj.mkdir(parents=True)
+    (proj / "s2.jsonl").write_text("\n".join([
+        _msg("2026-10-29T09:00:00Z", "s2", "m1", 40000, h1=40000),
+        _msg("2026-10-29T11:00:00Z", "s2", "m2", 40000, h1=40000),  # 2 h idle on 1h TTL
+    ]) + "\n")
+    w = waste.scan(home=tmp_path)
+    assert len(w.cache_misses) == 1
+    assert w.cache_misses[0].usd == pytest.approx(40000 * (6.0 - 0.30) / 1e6, rel=1e-6)  # 2x input
+
+
+def test_waste_subagent_starting_context(split_home):
+    w = waste.scan(home=split_home)
+    assert w.subagent_first == [("claude", "s1", "z9", 12010)]
+    text = waste.render(w, "all")
+    assert "STARTING CONTEXT" in text and "12.0k" in text
+
+
+def test_pricer_bills_1h_writes_at_2x():
+    p = history._Pricer()
+    five = Decimal(p.usd("claude-sonnet-4-5", 0, 0, 1_000_000, 0))
+    hour = Decimal(p.usd("claude-sonnet-4-5", 0, 0, 1_000_000, 0, cwrite_1h=1_000_000))
+    assert five == Decimal("3.75") and hour == Decimal("6")

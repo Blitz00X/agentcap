@@ -26,6 +26,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
 
+from .pricing import ANTHROPIC_WRITE_1H, ANTHROPIC_WRITE_5M
 from .history import _Pricer, _int, _lines, _safe_file, _ts, codex_lineage
 
 REPEAT_MIN = 3          # report streaks from this length
@@ -45,6 +46,7 @@ class CacheMiss:
     gap_s: float
     tokens: int
     usd: float
+    agent: str | None = None  # None = main session, else the subagent / forked thread id
 
 
 @dataclass
@@ -68,6 +70,7 @@ class WasteReport:
     opus_usd: float = 0.0
     subagent_threads: int = 0
     cache_misses: list[CacheMiss] = field(default_factory=list)
+    subagent_first: list[tuple] = field(default_factory=list)  # (source, session, agent, tokens)
     repeat_streaks: list[Streak] = field(default_factory=list)
     error_streaks: list[Streak] = field(default_factory=list)
 
@@ -103,6 +106,7 @@ class _Stream:    # one session or one subagent/forked thread
     agent: str | None = None
     parent: str | None = None
     usd: float = 0.0
+    first_seen: bool = False
     calls: list[_Call] = field(default_factory=list)
     by_id: dict[str, _Call] = field(default_factory=dict)
 
@@ -185,9 +189,11 @@ def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRep
         u = m["usage"]
         inp, cr = _int(u.get("input_tokens")), _int(u.get("cache_read_input_tokens"))
         cw, out = _int(u.get("cache_creation_input_tokens")), _int(u.get("output_tokens"))
-        usd = _f(pricer.usd(m["model"], inp, cr, cw, out))
-        _account(rep, st, m["model"], usd)
         cc = u.get("cache_creation") if isinstance(u.get("cache_creation"), dict) else {}
+        cw1h = min(_int(cc.get("ephemeral_1h_input_tokens")), cw)
+        usd = _f(pricer.usd(m["model"], inp, cr, cw, out, cwrite_1h=cw1h))
+        _account(rep, st, m["model"], usd)
+        _first(rep, st, inp + cr + cw)
         prev = last.get(m["skey"])
         if prev is not None and cw > 0 and cw > cr:
             gap = m["ts"] - prev["ts"]
@@ -196,9 +202,11 @@ def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRep
                 price = _price(pricer, m["model"])
                 extra = 0.0
                 if price is not None:
-                    wp = price.cache_write_per_mtok or price.input_per_mtok
-                    extra = float((Decimal(cw) * (wp - price.cached_input_per_mtok)) / Decimal(1_000_000))
-                rep.cache_misses.append(CacheMiss("claude", st.session, m["ts"], gap, cw, extra))
+                    # paid a cache write (5m: 1.25x input, 1h: 2x input) instead of a cache read
+                    inr, rd = price.input_per_mtok, price.cached_input_per_mtok
+                    extra = float((Decimal(cw - cw1h) * (inr * ANTHROPIC_WRITE_5M - rd)
+                                   + Decimal(cw1h) * (inr * ANTHROPIC_WRITE_1H - rd)) / Decimal(1_000_000))
+                rep.cache_misses.append(CacheMiss("claude", st.session, m["ts"], gap, cw, extra, st.agent))
         last[m["skey"]] = {"ts": m["ts"],
                            "h1": _int(cc.get("ephemeral_1h_input_tokens")) > 0
                            or (prev is not None and prev["h1"] and m["ts"] - prev["ts"] <= TTL_1H)}
@@ -304,6 +312,7 @@ def _codex_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRepo
         cw = min(_int(u.get("cache_write_input_tokens")), inp - cr)
         usd = _f(pricer.usd(model, inp - cr - cw, cr, cw, _int(u.get("output_tokens"))))
         _account(rep, st, model, usd)
+        _first(rep, st, inp)
         if st.calls and st.calls[-1].cost == 0.0 and st.calls[-1].ts <= ts:
             pending = [c for c in st.calls if c.cost == 0.0 and c.run_usd == st.calls[-1].run_usd]
             for c in pending:  # the request that produced these calls
@@ -316,8 +325,16 @@ def _codex_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRepo
             if price is not None:
                 extra = float(Decimal(uncached) * (price.input_per_mtok - price.cached_input_per_mtok)
                               / Decimal(1_000_000))
-            rep.cache_misses.append(CacheMiss("codex", st.session, ts, ts - last_ts, uncached, extra))
+            rep.cache_misses.append(CacheMiss("codex", st.session, ts, ts - last_ts, uncached, extra, st.agent))
         last_ts = ts
+
+
+def _first(rep: WasteReport, st: _Stream, tokens: int) -> None:
+    """Remember a subagent's first-request context size (what it starts with)."""
+
+    if st.agent is not None and not st.first_seen:
+        st.first_seen = True
+        rep.subagent_first.append((st.source, st.session, st.agent, tokens))
 
 
 def _account(rep: WasteReport, st: _Stream, model: str, usd: float) -> None:
@@ -408,16 +425,30 @@ def render(rep: WasteReport, period: str, top: int = 3) -> str:
     out = [f"agentcap waste - {period} - {rep.sessions} sessions - ${rep.total_usd:,.2f} API-equivalent",
            "(local Claude Code / Codex logs, read-only; $ are estimates at API list prices)", ""]
     cm = sum(m.usd for m in rep.cache_misses)
+    main = [m for m in rep.cache_misses if m.agent is None]
+    sub = [m for m in rep.cache_misses if m.agent is not None]
+    mu, su = sum(m.usd for m in main), sum(m.usd for m in sub)
     out.append(f"CACHE MISSES         {_m(cm):>10}  {len(rep.cache_misses)} cache re-writes after the TTL ran out"
-               " (5 min, or 1 h)")
+               " (5 min since the last request, or 1 h)")
+    out.append(f"   main session {_m(mu):>9}  {len(main)}x    subagents {_m(su):>9}  {len(sub)}x")
     for m in rep.cache_misses[:top]:
-        out.append(f"   {m.source:<6} {_sid(m.session):<8}  idle {m.gap_s / 60:5.0f} min  "
+        who = _sid(m.session) + (f"/{m.agent[:8]}" if m.agent else "")
+        out.append(f"   {m.source:<6} {who:<17}  idle {m.gap_s / 60:5.0f} min  "
                    f"{m.tokens / 1000:7.1f}k tok rewritten  ${m.usd:.2f}")
-    if rep.cache_misses:
-        out.append(f"   Tip: you resumed {len(rep.cache_misses)}x after the cache expired and paid ~{_m(cm)} to"
+    if main:
+        out.append(f"   Tip: you resumed {len(main)}x after the cache expired and paid ~{_m(mu)} to"
                    " re-write it. Start a new session (or /clear) instead of resuming after a break.")
+    if any(m.source == "claude" for m in sub):
+        out.append(f"   Tip: idle subagents re-wrote their own context {len(sub)}x (~{_m(su)}). Set"
+                   ' subagentPromptCacheTtl: "1h" in Claude Code settings (1h writes cost 2x input'
+                   " instead of 1.25x, so it pays off when subagents sit idle > 5 min).")
     out.append(f"SUBAGENTS            {_m(rep.subagent_usd):>10}  {rep.subagent_share * 100:4.0f}% of spend"
                f"  in {rep.subagent_threads} subagent/forked threads")
+    if rep.subagent_first:
+        toks = sorted(t for *_, t in rep.subagent_first)
+        biggest = max(rep.subagent_first, key=lambda x: x[3])
+        out.append(f"STARTING CONTEXT     {len(toks)} subagents, first request median {toks[len(toks) // 2] / 1000:.1f}k tok,"
+                   f" largest {biggest[3] / 1000:.1f}k ({_sid(biggest[1])}/{str(biggest[2])[:8]})")
     out.append(f"OPUS                 {_m(rep.opus_usd):>10}  {rep.opus_share * 100:4.0f}% of spend")
     rp = sum(s.usd for s in rep.repeat_streaks)
     out.append(f"REPEATED TOOL CALLS  {_m(rp):>10}  {len(rep.repeat_streaks)} streaks of >= {REPEAT_MIN}"
