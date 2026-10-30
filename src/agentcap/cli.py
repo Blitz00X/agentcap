@@ -189,7 +189,8 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="?",
         const="budget",
         help="subscription quota mode (Pro): stop this job after it used this "
-        "share of your Claude Pro/Max or ChatGPT quota, e.g. 5%% (claude/codex only; "
+        "share of your Claude Pro/Max, ChatGPT or Antigravity (agy) quota, e.g. 5%% "
+        "(claude/codex/agy; opencode exposes no quota; "
         "bare --quota uses `agentcap budget`)",
     )
     run.add_argument(

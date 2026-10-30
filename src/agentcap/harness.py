@@ -367,12 +367,14 @@ class HarnessRunner:
                             if ev.cost is not None:
                                 cost = (cost or 0.0) + ev.cost
                         elif isinstance(ev, ApiError):
+                            if hit is not None or loop.tripped:
+                                continue  # the agent reporting our own SIGINT
                             self._say(f"agentcap: {self.kind} reported an API error ({ev.kind}).")
                 if self.quota is not None and baseline is not None and (
                         time.time() >= next_quota or code is not None):
                     s = self._share(baseline)
                     if s is not None:
-                        share = s
+                        share = s if share is None else max(share, s)
                     next_quota = time.time() + self.quota_poll_s
                 frac, what = self._usage_fraction(tokens, cost, share)
                 if hit is None and not warned and frac >= WARN_FRACTION:
@@ -386,7 +388,9 @@ class HarnessRunner:
                     if self.enforce:
                         self._say(f"agentcap: {self._cap_text(what)} reached. Stopping the agent.")
                         self._event("quota_exceeded" if reason == "quota_exceeded" else "cap_exceeded",
-                                    what=what, share_pct=share, tokens=tokens, cost_usd=cost)
+                                    what=what, tokens=tokens, cost_usd=cost,
+                                    share_pct=round(share, 2) if share is not None else None,
+                                    quota_pct=self.quota, window=self.window)
                         self._stop()
                 if loop.tripped and reason == "exited":
                     reason = "loop_detected"

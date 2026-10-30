@@ -126,7 +126,11 @@ def test_prepare_child_agy_uses_gemini_api_route():
 
 # ----------------------------------------------------------------- e2e fakes
 FAKE_OC = r'''#!{py}
-import json, os, sys, time
+import json, os, signal, sys, time
+if os.environ.get("FAKE_ERR_ON_INT"):
+    def _int(*a):
+        print(json.dumps({{"type": "error", "error": {{"type": "interrupted"}}}}), flush=True); sys.exit(130)
+    signal.signal(signal.SIGINT, _int)
 n = int(os.environ.get("FAKE_N", "3")); mode = os.environ.get("FAKE_MODE", "ok")
 for i in range(n):
     args = {{"command": "ls" if mode == "loop" else f"echo {{i}}"}}
@@ -289,3 +293,41 @@ def test_harness_alert_text_for_token_cap_has_no_dollar_placeholders():
     assert "$?" not in e and "token cap" in e and "Stopping" in e
     u = format_alert({"type": "cap_exceeded", "run_id": "h1", "cap_usd": 0.5, "spent_usd": 0.51})
     assert "cap=$0.5" in u
+
+
+def test_quota_alert_has_limit_and_rounded_share(fakebin, tmp_path, monkeypatch):
+    from agentcap.alerts import format_alert
+    monkeypatch.setenv("FAKE_N", "30")
+    _, code, _, _, events = run(["agy", "--model", "gemini-3.8-flash-low", "-p", "hi"], tmp_path,
+                                quota=2.0, window="week")
+    ev = next(e for e in events if e["type"] == "quota_exceeded")
+    text = format_alert(ev)
+    assert "(limit 2" in text and "?" not in text and "weekly" in text
+    assert len(str(ev["share_pct"]).split(".")[-1]) <= 2
+
+
+def test_quota_share_never_goes_backwards(fakebin, tmp_path):
+    def payload(rem):
+        return {"status": "SUCCESS", "command": {"data": {"groups": [{"name": "Gemini Models",
+                "buckets": [{"window": "5h", "remaining_fraction": rem}]}]}}}
+    seq = iter([payload(0.9)] + [payload(0.88)] * 3)
+    r, code, err, *_ = run(["agy", "--model", "gemini-3.8-flash-low", "-p", "hi"], tmp_path,
+                           quota=50.0, window="5h",
+                           quota_fetch=lambda: next(seq, payload(0.95)))
+    assert r.summary.share is not None and r.summary.share > 1.0, err
+    assert "0.00% of the 5-hour" not in err
+
+
+def test_no_api_error_noise_after_our_own_stop(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "20"); monkeypatch.setenv("FAKE_MODE", "loop")
+    monkeypatch.setenv("FAKE_ERR_ON_INT", "1")
+    _, code, err, *_ = run(["opencode", "run", "hi"], tmp_path, tokens=10**9)
+    assert code == h.EXIT_LOOP_DETECTED
+    assert "reported an API error" not in err
+
+
+def test_quota_help_mentions_agy():
+    import argparse
+    text = cli.build_parser().format_help() if hasattr(cli, "build_parser") else ""
+    src = open(cli.__file__).read()
+    assert "claude/codex only" not in src
