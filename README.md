@@ -310,7 +310,7 @@ agentcap quota                                 # read-only: last seen usage (Fre
 use in the same window counts against the job (AgentCap warns when it sees another session).
 Values arrive once per model response, so a job **can overshoot by up to one request**.
 Claude Code only reports `rate_limits` for Pro/Max logins and only in interactive sessions
-(the statusline does not run in `claude -p`). Codex's rollout format is undocumented and may change.
+(the statusline does not run in `claude -p`). Codex's rollout format is undocumented and may change. Codex reports `used_percent` in whole percent, so a Codex cap under 1% cannot trigger until the job has used a full 1% (AgentCap warns at start). Use `--quota 1%` or more for Codex.
 **Verified so far on fixtures and fake CLIs only** (plus real Claude Code 2.1.197: the `--settings`
 layer, the chained statusline and the `PreToolUse` deny were checked against a local fake API);
 a check on a real Max / ChatGPT account is still pending.

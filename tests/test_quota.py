@@ -611,3 +611,17 @@ def test_codex_stop_marks_job_stopped(fakebin, tmp_path):
     r, events, err = make_runner(["codex"], tmp_path)
     assert r.run() == 3
     assert json.loads((r.job_dir / "job.json").read_text())["stopped"] is True
+
+
+def test_codex_sub_1pct_quota_warns_whole_percent(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "2")
+    r, events, err = make_runner(["codex"], tmp_path, quota=0.5)
+    r.run()
+    assert "whole percent" in err.getvalue()
+
+
+def test_codex_1pct_quota_no_whole_percent_warning(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "2")
+    r, events, err = make_runner(["codex"], tmp_path, quota=1.0)
+    r.run()
+    assert "whole percent" not in err.getvalue()

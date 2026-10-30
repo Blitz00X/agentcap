@@ -1,6 +1,7 @@
 # Changelog
 
-## Unreleased (0.2.2)
+## 0.2.2
+- Codex quota under 1% (`--quota 0.5%`) now prints a warning at start. Codex reports quota in whole percent, so such a cap cannot trigger until a full 1% is used (seen in a real ChatGPT-plan run). README note added.
 - Fix: `agentcap approve` on a Codex or headless job that was already stopped with SIGINT said "the run continues" and used up an approval. It now says the job was already stopped and changes nothing. Found in a real Codex run on a ChatGPT plan on 30 Oct.
 
 ## 0.2.1

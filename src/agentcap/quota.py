@@ -800,6 +800,9 @@ class QuotaRunner:
                else f"observe only (Free); Pro would stop it at {self.quota:g}%")
             + ". Read-only; your login and traffic are untouched."
         )
+        if self.agent == "codex" and self.quota < 1:
+            self._say(f"agentcap: WARNING: Codex reports quota in whole percent, so a {self.quota:g}% cap "
+                      "cannot trigger until the job has used a full 1%. Use --quota 1% or more for Codex.")
         self.child = subprocess.Popen(argv, env=env, start_new_session=True, cwd=self.cwd)
 
         warned = hit = parallel = observed = no_data_warned = False
