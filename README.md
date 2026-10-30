@@ -238,7 +238,7 @@ No pip install: the plugin is stdlib Python (`python3` on PATH). How it works:
 - Plugin hooks: `PreToolUse` warns at 80% and, on **Pro**, denies tool calls at the limit;
   `Stop` prints a receipt (`session 4.2% / 5% (weekly)`). **Free:** live meter + one notice
   at the limit (`Pro would stop the agent here`). Pro is read from the licence the `agentcap`
-  CLI stores after `agentcap license activate <KEY>`.
+  CLI stores after `agentcap license activate` (paste the key at the hidden prompt).
 - Loop breaker (works with or without `/agentcap:quota`): `PreToolUse` hashes each tool call
   (name + input, per session and per subagent; polling tools like `TaskOutput`/`BashOutput`
   are ignored). The 4th identical call in a row is denied with `continue: false` on **Pro**;
@@ -503,11 +503,11 @@ steps are noisy. No team aggregation: everything stays on your machine.
 When the Pro detectors below would have fired on a Free run, AgentCap does not stop it.
 It prints one line: `Pro's loop breaker would have stopped this at $X.XX`.
 
-**Pro, $19 one-time (launch price): stop runs that loop or eat your quota.**
+**Pro, $12 one-time (launch week, until 10 Nov; then $19): stop runs that loop or eat your quota.**
 
 **Get Pro:** buy at https://agentcap.launchbench.studio/#pricing (Polar checkout). Polar then
 emails you an **Access purchase** link; the key is in the Polar customer portal (not in the
-email body). Run `agentcap license activate "YOUR_LICENSE_KEY"` and check `agentcap license
+email body). Run `agentcap license activate`, paste the key at the hidden prompt, and check `agentcap license
 status` (`tier: pro`). One key works on up to 3 machines; `agentcap license deactivate` frees one.
 The VS Code/Cursor extension and the Claude Code plugin use the same CLI licence.
 
@@ -528,11 +528,11 @@ The VS Code/Cursor extension and the Claude Code plugin use the same CLI licence
   `AGENTCAP_RECEIPT_DIR`) with requests, spend, caps, the stop reason and the exit code. It contains
   numbers only, never prompts. The same one-line receipt is sent to Telegram and the webhook.
 
-[Buy AgentCap Pro — $19](https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi)
+[Buy AgentCap Pro — $12 launch week](https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi)
 
 ### Purchase terms
 
-- Pro is $19 one-time (launch price), no subscription.
+- Pro is $12 one-time (launch week, until 10 Nov; then $19), no subscription.
 - 14-day no-questions refund — email
   [kutaykarahan6@gmail.com](mailto:kutaykarahan6@gmail.com).
 - One licence key activates on up to 3 machines.
@@ -544,7 +544,7 @@ The VS Code/Cursor extension and the Claude Code plugin use the same CLI licence
 - The Free tier (per-run cap) needs no key and makes no network calls.
 
 After purchase you receive a licence key by email (via Polar). Activate it with
-`agentcap license activate <KEY>`. `agentcap license deactivate` asks the
+`agentcap license activate` (paste the key at the hidden prompt). `agentcap license deactivate` asks the
 license server to release this activation (freeing the slot for another
 machine) and then removes the local license; if the server cannot be reached the
 local license is kept and the command exits 1 so you can retry. Use
@@ -601,14 +601,14 @@ prices and reported usage; when usage is missing it charges the full reservation
 **Is the day cap shared across machines?** No. Hour/day caps are per machine
 (local SQLite ledger). A license covers 3 machines, each with its own budget.
 
-**What does one-time purchase include?** $19 once, all 0.x updates; not a
+**What does one-time purchase include?** $12 once in launch week ($19 after 10 Nov), all 0.x updates; not a
 promise of future major versions. 14-day refund window per purchase terms.
 
 ## License
 
 MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Kutay Karahan.
 
-After purchase, copy your license key from your Polar order (purchase email / Polar customer portal), then run `agentcap license activate "YOUR_LICENSE_KEY"` and check with `agentcap license status` (expect `tier: pro`).
+After purchase, copy your license key from your Polar order (purchase email / Polar customer portal), then run `agentcap license activate`, paste the key at the hidden prompt, and check with `agentcap license status` (expect `tier: pro`).
 
 The Pro licence key is separate from the source licence. How it is checked:
 

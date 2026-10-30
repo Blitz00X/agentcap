@@ -7,7 +7,7 @@
   <title>AgentCap — stop Claude Code and Codex runs that loop or eat your weekly quota</title>
   <meta name="description" content="AgentCap stops Claude Code and Codex runs that repeat the same tool call, keep failing, or eat their share of your weekly quota, with an evidence receipt. Free agentcap waste shows subagent, Opus, cache-miss and loop waste in your local logs. Hard $ caps for API keys too.">
   <meta property="og:title" content="AgentCap — stop Claude Code and Codex runs that loop or eat your weekly quota">
-  <meta property="og:description" content="AgentCap stops Claude Code and Codex runs that repeat the same tool call, keep failing, or eat their share of your weekly quota, with an evidence receipt. Free agentcap waste shows subagent, Opus, cache-miss and loop waste in your local logs. Hard $ caps for API keys too. Pro $19 one-time launch price.">
+  <meta property="og:description" content="AgentCap stops Claude Code and Codex runs that repeat the same tool call, keep failing, or eat their share of your weekly quota, with an evidence receipt. Free agentcap waste shows subagent, Opus, cache-miss and loop waste in your local logs. Hard $ caps for API keys too. Pro $12 one-time launch price until 10 Nov, then $19.">
   <meta property="og:type" content="website">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -33,7 +33,7 @@
         <a href="#faq">FAQ</a>
         <a href="https://github.com/Blitz00X/agentcap">GitHub</a>
       </nav>
-      <a class="btn-secondary btn-small" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $19</a>
+      <a class="btn-secondary btn-small" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
       <!-- COPY:nav END -->
     </div>
   </header>
@@ -54,7 +54,7 @@
         </p>
         <div class="cta-row">
           <a class="btn-primary" href="#install">Install free</a>
-          <a class="btn-secondary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $19</a>
+          <a class="btn-secondary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
           <p class="micro cta-note">Subscriptions (quota mode) and API keys · Gemini CLI too</p>
         </div>
         <p class="micro">
@@ -304,7 +304,7 @@ agentcap run summary
           </article>
           <article class="card card-pro" aria-labelledby="pro-title">
             <h3 id="pro-title">Pro</h3>
-            <p class="price">$19 <span class="price-note">one-time launch price · stop loops and quota burn</span></p>
+            <p class="price">$12 <span class="price-note">one-time, launch week until 10 Nov (then $19) · stop loops and quota burn</span></p>
             <ul>
               <li>Loop breaker on Claude Code and Codex, subscriptions included: same tool call 4&times; in a row or 8 failing tool calls in a row</li>
               <li>Per-job quota: stop a job at 5% of your Claude Max/Pro or ChatGPT weekly / 5-hour quota</li>
@@ -314,11 +314,11 @@ agentcap run summary
               <li>Extras: quota forecast, receipts export</li>
               <li>One licence key for up to 3 machines</li>
             </ul>
-            <a class="btn-primary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $19</a>
+            <a class="btn-primary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
           </article>
         </div>
         <p class="micro">
-          After purchase: open the <strong>Access purchase</strong> link in the Polar email, copy the key from the Polar customer portal, run <code>agentcap license activate "YOUR_LICENSE_KEY"</code> and check <code>agentcap license status</code> (expect <code>tier: pro</code>). <a href="#thanks">Step-by-step</a>.
+          After purchase: open the <strong>Access purchase</strong> link in the Polar email, copy the key from the Polar customer portal, run <code>agentcap license activate</code>, paste the key at the hidden prompt, and check <code>agentcap license status</code> (expect <code>tier: pro</code>). <a href="#thanks">Step-by-step</a>.
         </p>
         <p class="micro">
           Payments handled by Polar (merchant of record). Not a subscription.
@@ -333,7 +333,7 @@ agentcap run summary
         <h2 id="thanks-title">Thanks for buying AgentCap Pro: activate it in 2 minutes</h2>
         <ol>
           <li><strong>Get your key.</strong> The license key is <em>not</em> in the email itself. Open the Polar email and click <strong>Access purchase</strong> (it opens the Polar customer portal), then copy the key under <em>AgentCap Pro license key</em>. You can sign in to the portal later with the same email.</li>
-          <li><strong>Activate (CLI).</strong> <code>pip install -U agentcap-cli</code>, then <code>agentcap license activate "YOUR_LICENSE_KEY"</code>. Check with <code>agentcap license status</code>: it should say <code>tier: pro</code>.</li>
+          <li><strong>Activate (CLI).</strong> <code>pip install -U agentcap-cli</code>, then <code>agentcap license activate</code> and paste the key at the hidden prompt (nothing is shown or saved in your shell history). Scripts: <code>agentcap license activate -</code> reads the key from stdin, or set <code>AGENTCAP_LICENSE_KEY</code>. Passing the key as an argument still works but is less safe (shell history). Check with <code>agentcap license status</code>: it should say <code>tier: pro</code>.</li>
           <li><strong>VS Code / Cursor.</strong> The extension uses the same CLI licence: activate once in a terminal, then restart the agent from the AgentCap status bar item.</li>
           <li><strong>Claude Code plugin.</strong> Activate with the CLI as above; the plugin reads the same licence, so loop and quota stops switch to Pro on the next tool call.</li>
           <li><strong>Up to 3 machines.</strong> Moving machines? <code>agentcap license deactivate</code> frees the slot. You can also manage activations in the Polar portal.</li>
@@ -356,7 +356,7 @@ agentcap run summary
       <div class="shell">
         <h2 id="terms-title">Purchase terms</h2>
         <ul class="terms-list">
-          <li><strong>Price:</strong> Pro is $19 one-time (launch price). There is no subscription.</li>
+          <li><strong>Price:</strong> Pro is $12 one-time (launch week, until 10 Nov; then $19). There is no subscription.</li>
           <li><strong>Refunds:</strong> 14 days, no questions asked — email
             <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>.</li>
           <li><strong>Machines:</strong> one licence key activates on up to 3 machines.</li>
@@ -369,7 +369,7 @@ agentcap run summary
         </ul>
         <p class="micro">
           Payments are handled by Polar as merchant of record. Activation:
-          <code>agentcap license activate &lt;KEY&gt;</code>.
+          <code>agentcap license activate</code> (paste the key at the hidden prompt).
         </p>
       </div>
     </section>
@@ -434,7 +434,7 @@ agentcap run summary
                   own script: local spend cap per run with conservative
                   reservation and output clamping, kills the process group at the
                   cap and prints why. Pro: hour/day caps, loop/burn breaker +
-                  Telegram/webhook alerts, $19 one-time.
+                  Telegram/webhook alerts, $12 one-time in launch week (then $19).
                 </td>
               </tr>
             </tbody>
@@ -519,7 +519,7 @@ agentcap run summary
         <details>
           <summary>Is Pro a subscription?</summary>
           <p>
-            No, it is a one-time $19 purchase. See
+            No, it is a one-time purchase ($12 in launch week until 10 Nov, then $19). See
             <a href="#terms">Purchase terms</a> for refunds, licence checks and
             fail-open behavior.
           </p>
@@ -575,7 +575,7 @@ agentcap run summary
         <details>
           <summary>What does one-time purchase include?</summary>
           <p>
-            $19 once, all 0.x updates; not a promise of future major versions.
+            $12 once in launch week ($19 after 10 Nov), all 0.x updates; not a promise of future major versions.
             14-day refund window per purchase terms.
           </p>
         </details>

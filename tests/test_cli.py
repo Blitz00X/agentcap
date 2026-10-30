@@ -77,7 +77,7 @@ def test_free_tier_refuses_hour_and_day_caps(fake_runner, capsys):
     assert len(fake_runner.instances) == 0
     err = capsys.readouterr().err
     assert "--hour-cap/--day-cap require an active Pro license" in err
-    assert "$19 one-time" in err
+    assert "$12 one-time (launch week, until 10 Nov; then $19)" in err
 
 
 @pytest.mark.parametrize("flag", ["--hour-cap", "--day-cap"])
@@ -97,7 +97,7 @@ def test_free_tier_alerts_are_gated_with_an_upgrade_hint(
     assert len(fake_runner.instances) == 1
     err = capsys.readouterr().err
     assert "webhook/Telegram alerts require an active Pro license" in err
-    assert "is $19 one-time (launch price): https://agentcap.launchbench.studio/#pricing" in err
+    assert "is $12 one-time (launch week, until 10 Nov; then $19): https://agentcap.launchbench.studio/#pricing" in err
 
 
 def test_pro_alerts_do_not_print_the_upgrade_hint(
@@ -676,3 +676,58 @@ def test_pricing_shows_schedule_and_verification(capsys):
     assert "verified=2026-10-25" in out
     assert "scheduled price changes" in out
     assert "from 2026-12-01" in out
+
+
+class _KeyRecorder:
+    persist = True
+    seen: list = []
+
+    def activate(self, key):
+        _KeyRecorder.seen.append(key)
+        return LicenseStatus(True, "pro", "license valid"), "act_1"
+
+    def validate(self, key, activation_id=None):
+        return LicenseStatus(True, "pro", "license valid")
+
+
+@pytest.fixture
+def recorder(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(tmp_path / "license.json"))
+    monkeypatch.delenv("AGENTCAP_LICENSE_KEY", raising=False)
+    _KeyRecorder.seen = []
+    monkeypatch.setattr(license_module, "PolarLicenseValidator", _KeyRecorder)
+    return _KeyRecorder
+
+
+@pytest.mark.parametrize("argv", [["license", "activate", "-"], ["license", "activate"]])
+def test_license_activate_reads_key_from_piped_stdin(recorder, monkeypatch, capsys, argv):
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO("  KEY-FROM-STDIN \n"))
+    assert cli.main(argv) == 0
+    assert recorder.seen == ["KEY-FROM-STDIN"]
+    out, err = capsys.readouterr()
+    assert "KEY-FROM-STDIN" not in out + err and "tier: pro" in out
+
+
+def test_license_activate_reads_key_from_env(recorder, monkeypatch, capsys):
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    monkeypatch.setenv("AGENTCAP_LICENSE_KEY", "KEY-FROM-ENV")
+    assert cli.main(["license", "activate"]) == 0
+    assert recorder.seen == ["KEY-FROM-ENV"]
+    assert "KEY-FROM-ENV" not in "".join(capsys.readouterr())
+
+
+def test_license_activate_prompts_hidden_on_tty(recorder, monkeypatch, capsys):
+    import io
+    tty = io.StringIO("")
+    tty.isatty = lambda: True
+    monkeypatch.setattr("sys.stdin", tty)
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": "KEY-TYPED")
+    assert cli.main(["license", "activate"]) == 0
+    assert recorder.seen == ["KEY-TYPED"]
+
+
+def test_license_activate_positional_still_works(recorder, capsys):
+    assert cli.main(["license", "activate", "KEY-ARG"]) == 0
+    assert recorder.seen == ["KEY-ARG"]

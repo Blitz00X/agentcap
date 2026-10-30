@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import sys
@@ -42,11 +43,11 @@ WINDOWS_UNSUPPORTED = (
 PRO_CAP_MESSAGE = (
     "agentcap: --hour-cap/--day-cap require an active Pro license; "
     "command was not started. Run `agentcap license status`, then "
-    '`agentcap license activate "YOUR_LICENSE_KEY"`.'
+    '`agentcap license activate` (paste the key at the hidden prompt).'
 )
 PRO_HINT = (
-    "hint: Pro (hour/day caps, loop/burn breaker, phone alerts, spend receipt) is $19 one-time (launch price): https://agentcap.launchbench.studio/#pricing — "
-    'then `agentcap license activate "YOUR_LICENSE_KEY"`.'
+    "hint: Pro (hour/day caps, loop/burn breaker, phone alerts, spend receipt) is $12 one-time (launch week, until 10 Nov; then $19): https://agentcap.launchbench.studio/#pricing — "
+    'then `agentcap license activate` (paste the key at the hidden prompt).'
 )
 PRO_ALERTS_MESSAGE = (
     "agentcap: webhook/Telegram alerts require an active Pro license; "
@@ -85,8 +86,36 @@ def _deactivate_failure(reason: str) -> str:
 
 LICENSE_USAGE_MESSAGE = (
     'Usage: agentcap license activate "YOUR_LICENSE_KEY" '
-    "(copy the key from your Polar purchase / customer portal)"
+    "(copy the key from your Polar purchase / customer portal). Safer: run "
+    "`agentcap license activate` and paste the key at the hidden prompt, pipe it "
+    "(`... | agentcap license activate -`) or set AGENTCAP_LICENSE_KEY."
 )
+LICENSE_KEY_ENV = "AGENTCAP_LICENSE_KEY"
+
+
+def _read_license_key(arg: str | None) -> str:
+    """Key from the argument, stdin (``-`` or piped), env, or a hidden tty prompt."""
+
+    if arg and arg != "-":
+        return arg.strip()
+    stdin = sys.stdin
+    is_tty = bool(stdin is not None and getattr(stdin, "isatty", lambda: False)())
+    if arg == "-" or (stdin is not None and not is_tty):
+        try:
+            key = (stdin.readline() if stdin is not None else "").strip()
+        except (OSError, ValueError):
+            key = ""
+        if key or arg == "-":
+            return key
+    env = os.environ.get(LICENSE_KEY_ENV, "").strip()
+    if env:
+        return env
+    if is_tty:
+        try:
+            return getpass.getpass("AgentCap Pro license key (input hidden): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+    return ""
 LICENSE_INVALID_MESSAGE = (
     "License key not found or no longer valid. Check the copied key; "
     "if it still fails, email kutaykarahan6@gmail.com."
@@ -116,7 +145,10 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("status", "features", "activate", "deactivate"),
         help="status (default), features, activate <KEY>, or deactivate",
     )
-    license_parser.add_argument("key", nargs="?", help="license key for 'activate'")
+    license_parser.add_argument(
+        "key", nargs="?",
+        help="license key for 'activate'; omit to paste it at a hidden prompt, '-' to read stdin, "
+        "or set AGENTCAP_LICENSE_KEY (a key on the command line lands in shell history)")
     license_parser.add_argument(
         "--local-only",
         action="store_true",
@@ -345,11 +377,12 @@ def _license_persist_error(exc: OSError, path) -> str:
 def _license(args: argparse.Namespace) -> int:
     manager = _license_manager()
     if args.action == "activate":
-        if not args.key:
+        key = _read_license_key(args.key)
+        if not key:
             print(LICENSE_USAGE_MESSAGE, file=sys.stderr)
             return 2
         try:
-            status = manager.activate(args.key)
+            status = manager.activate(key)
         except OSError as exc:
             print(_license_persist_error(exc, manager.path), file=sys.stderr)
             return 1
