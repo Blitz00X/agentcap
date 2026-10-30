@@ -272,3 +272,10 @@ def test_cli_tokens_free_observes(fakebin, monkeypatch, capsys):
 
 def test_cli_tokens_needs_harness(capsys):
     assert cli.main(["run", "--tokens", "10", "--", "codex", "exec", "x"]) == 2
+
+
+def test_free_quota_wording(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "4")
+    _, code, err, *_ = run(["agy", "--model", "gemini-3.8-flash-low", "-p", "hi"], tmp_path,
+                           quota=1.0, enforce=False)
+    assert code == 0 and "at its quota limit" in err and "quota exceeded" not in err

@@ -444,7 +444,8 @@ class HarnessRunner:
             self._say(f"agentcap: last tool call: {s.last_tool[:40]}")
         if not self.enforce:
             if s.reason in ("token_cap", "usd_cap", "quota_exceeded"):
-                self._say(f"agentcap: Pro would have stopped this job at its {s.reason.replace('_', ' ')}. "
+                what = {"token_cap": "token cap", "usd_cap": "USD cap", "quota_exceeded": "quota limit"}[s.reason]
+                self._say(f"agentcap: Pro would have stopped this job at its {what}. "
                           "https://agentcap.launchbench.studio/#pricing")
             if loop_detail:
                 self._say(f"agentcap: Pro's loop breaker would have stopped this job ({loop_detail}).")

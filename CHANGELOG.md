@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased (harness-adapters)
+- **opencode and agy (Antigravity CLI) support.** `agentcap run --tokens N -- opencode run ...` / `-- agy -p ...` reads the agent's own JSON event stream (`opencode run --format json`, `agy --output-format stream-json`) and enforces a token cap, the loop breaker (same tool call 4x) and the error breaker (8 failing tool calls in a row); stop is SIGINT. `--log-cap USD` caps on opencode's own cost estimate (for subscriptions such as opencode Go).
+- **agy quota mode:** `agentcap run --quota 5% --window 5h -- agy -p ...` reads `remaining_fraction` from `agy -p /quota --output-format json` (no agent turn, no quota spent) for the model's group. opencode exposes no quota %, so `--quota` is refused for it with a pointer to `--tokens`/`--log-cap`.
+- **$ mode:** `agentcap run --cap 1 -- opencode run -m agentcap/<model> ...` injects a provider through `OPENCODE_CONFIG_CONTENT` (user config untouched, run forced `--standalone`); `agy` is routed through the Gemini API route (`modelProvider: gemini`, `GEMINI_API_KEY`).
+
 ## 0.2.2
 - Codex quota under 1% (`--quota 0.5%`) now prints a warning at start. Codex reports quota in whole percent, so such a cap cannot trigger until a full 1% is used (seen in a real ChatGPT-plan run). README note added.
 - Fix: `agentcap approve` on a Codex or headless job that was already stopped with SIGINT said "the run continues" and used up an approval. It now says the job was already stopped and changes nothing. Found in a real Codex run on a ChatGPT plan on 30 Oct.

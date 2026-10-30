@@ -315,6 +315,24 @@ Claude Code only reports `rate_limits` for Pro/Max logins and only in interactiv
 layer, the chained statusline and the `PreToolUse` deny were checked against a local fake API);
 a check on a real Max / ChatGPT account is still pending.
 
+## opencode and agy (Antigravity CLI)
+
+Headless runs only. AgentCap reads each agent's own event stream; nothing is proxied in these modes.
+
+```bash
+# opencode Go (or any opencode provider): token cap, loop + error breakers
+agentcap run --tokens 200000 -- opencode run -m opencode-go/deepseek-v4.1-flash "fix the test"
+# opencode: cap on opencode's own cost estimate
+agentcap run --log-cap 0.50 -- opencode run -m opencode-go/glm-5.3 "..."
+# agy on a Google subscription: real quota % from `agy -p /quota`
+agentcap run --quota 2% --window 5h -- agy --model gemini-3.8-flash-low -p "..."
+# $ APIs through the proxy (OpenRouter shown)
+AGENTCAP_OPENAI_UPSTREAM=https://openrouter.ai/api OPENAI_API_KEY=$OPENROUTER_API_KEY \
+  agentcap run --cap 0.50 -- opencode run -m agentcap/<openrouter model id> "..."
+```
+
+opencode does not expose subscription quota %, so `--quota` is refused for it; use `--tokens` or `--log-cap`. `--log-cap` trusts opencode's price table, not AgentCap's.
+
 ## Try it without an API key
 
 `agentcap demo` is a simulated demo. It starts a fake API on a random loopback
