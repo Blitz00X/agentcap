@@ -196,6 +196,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--window", default=None, choices=("week", "5h"),
         help="quota window for --quota (default: budget window or week)",
     )
+    run.add_argument(
+        "--tokens", type=int, default=None,
+        help="opencode/agy (Pro): stop after this many tokens, read from the agent's own event log",
+    )
+    run.add_argument(
+        "--log-cap", default=None,
+        help="opencode (Pro): stop when opencode's own cost estimate reaches this USD "
+        "(no proxy; for subscriptions such as opencode Go)",
+    )
     run.add_argument("--port", type=int, default=0, help="proxy port (default: random free)")
     run.add_argument(
         "--trust-workspace",
@@ -472,6 +481,11 @@ def _run(args: argparse.Namespace) -> int:
         )
         return 2
 
+    from .harness import detect_harness
+
+    harness_caps = getattr(args, "tokens", None) is not None or getattr(args, "log_cap", None) is not None
+    if harness_caps or (getattr(args, "quota", None) is not None and detect_harness(argv)):
+        return _run_harness(args, argv)
     if getattr(args, "quota", None) is not None:
         return _run_quota(args, argv)
 
@@ -604,6 +618,55 @@ def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
             enforce=enforce,
             alerts=alerts.emit if enforce else None,
             quiet=args.quiet,
+            receipt_dir=default_receipt_dir() if "spend_receipt" in active_features else None,
+        )
+        code = runner.run()
+    except OSError as exc:
+        print(f"agentcap: could not start the command ({exc.strerror or exc})", file=sys.stderr)
+        return 127
+    except ValueError as exc:
+        print(f"agentcap: {exc}", file=sys.stderr)
+        return 2
+    alerts.wait()
+    return code
+
+
+def _run_harness(args: argparse.Namespace, argv: list[str]) -> int:
+    from .harness import HarnessRunner, detect_harness
+    from .quota import parse_quota
+    from .runner import default_receipt_dir
+
+    if detect_harness(argv) is None:
+        print("agentcap: --tokens/--log-cap support `opencode run` and `agy -p` only.", file=sys.stderr)
+        return 2
+    if args.cap is not None or args.hour_cap is not None or args.day_cap is not None:
+        print(QUOTA_CONFLICT, file=sys.stderr)
+        return 2
+    try:
+        quota = None
+        if args.quota is not None:
+            if args.quota == "budget":
+                from . import budget as budget_mod
+                plan = budget_mod.load()
+                if plan.task_quota is None:
+                    raise ValueError("bare --quota needs a budget: agentcap budget set --task-quota 5%")
+                quota = float(plan.task_quota)
+            else:
+                quota = parse_quota(args.quota)
+        usd = float(args.log_cap) if args.log_cap is not None else None
+        if usd is not None and usd <= 0:
+            raise ValueError("--log-cap must be positive")
+        if args.tokens is not None and args.tokens <= 0:
+            raise ValueError("--tokens must be positive")
+        active_features = set(features(status_from_environment().tier))
+        enforce = "quota_mode" in active_features
+        if not enforce:
+            print("agentcap: stopping is Pro; this Free run only observes and reports.", file=sys.stderr)
+        alerts = dispatcher_from_env(features=active_features)
+        runner = HarnessRunner(
+            argv, tokens=args.tokens, usd=usd, quota=quota, window=args.window or "week",
+            enforce=enforce, alerts=alerts.emit if enforce else None, quiet=args.quiet,
+            quota_poll_s=float(os.environ.get("AGENTCAP_HARNESS_QUOTA_POLL_S", "20")),
             receipt_dir=default_receipt_dir() if "spend_receipt" in active_features else None,
         )
         code = runner.run()

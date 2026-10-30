@@ -134,6 +134,8 @@ def detect_agent(argv: Sequence[str]) -> tuple[str, int] | None:
         return "gemini", 1
     if name == "claude":
         return "claude", 1
+    if name in ("opencode", "agy"):
+        return name, 1
     package = _npx_package(argv)
     if package is not None:
         package_name, index = package
@@ -459,6 +461,54 @@ def _build_gemini_home(real_gemini: Path, root: Path) -> Path:
 
 
 # --------------------------------------------------------------------- entry
+OPENCODE_PROVIDER = "agentcap"
+
+
+def _opencode_model(argv: Sequence[str]) -> str | None:
+    for flag in ("-m", "--model"):
+        if flag in argv and argv.index(flag) + 1 < len(argv):
+            return argv[argv.index(flag) + 1]
+    for a in argv:
+        if a.startswith("--model="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def _prepare_opencode(argv: list[str], env: dict[str, str], port: int) -> PreparedChild:
+    """Route ``opencode run`` through the proxy with an injected provider.
+
+    opencode's background service would not see this process's environment,
+    so the run is forced ``--standalone``.  The user's config is untouched:
+    the provider comes from ``OPENCODE_CONFIG_CONTENT``.  The model must be
+    ``agentcap/<upstream model id>``; any other provider would bypass AgentCap.
+    """
+
+    if len(argv) < 2 or argv[1] != "run":
+        raise AdapterConflict("AgentCap supports headless opencode only: `opencode run -m agentcap/<model> ...`")
+    model = _opencode_model(argv)
+    prefix = OPENCODE_PROVIDER + "/"
+    if not model or not model.startswith(prefix):
+        raise AdapterConflict(
+            "refusing to run opencode: pass -m agentcap/<model> (e.g. agentcap/openai/gpt-oss-20b:free) "
+            "so its requests go through AgentCap; other providers would bypass the cap."
+        )
+    if "--standalone" not in argv:
+        argv.insert(2, "--standalone")
+    upstream_model = model[len(prefix):]
+    config = {
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {OPENCODE_PROVIDER: {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "AgentCap proxy",
+            "options": {"baseURL": f"http://127.0.0.1:{int(port)}/openai/v1",
+                        "apiKey": "{env:OPENAI_API_KEY}"},
+            "models": {upstream_model: {"name": upstream_model, "tool_call": True}},
+        }},
+    }
+    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config)
+    return PreparedChild(argv, env)
+
+
 def prepare_child(
     argv: Sequence[str],
     *,
@@ -490,6 +540,14 @@ def prepare_child(
         prepared_env["ANTHROPIC_BASE_URL"] = claude_base_url(port)
         for name in CLAUDE_BYPASS_ENV:
             prepared_env.pop(name, None)
+        return PreparedChild(prepared_argv, prepared_env)
+
+    if kind == "opencode":
+        return _prepare_opencode(prepared_argv, prepared_env, port)
+    if kind == "agy":
+        # Antigravity CLI: the Gemini API route (GEMINI_API_KEY) honours
+        # GOOGLE_GEMINI_BASE_URL, which the runner points at the proxy.
+        prepared_argv[1:1] = ["--settings", json.dumps({"modelProvider": "gemini"})]
         return PreparedChild(prepared_argv, prepared_env)
 
     real_gemini = gemini_home(prepared_env) / ".gemini"
