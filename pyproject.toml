@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentcap-cli"
-version = "0.1.4"
-description = "API-key spend guard for unattended Codex CLI and Gemini CLI runs: hard per-run cap, kills the process at the limit."
+version = "0.1.5"
+description = "API-key spend guard for unattended Codex CLI, Gemini CLI and Claude Code runs: hard per-run cap, kills the process at the limit."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -17,6 +17,7 @@ keywords = [
   "codex-cli",
   "cost-control",
   "gemini-cli",
+  "claude-code",
   "llm",
   "spend-cap",
   "proxy",
@@ -63,3 +64,5 @@ include = ["src/agentcap", "tests", "README.md", "LICENSE", "pyproject.toml"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
