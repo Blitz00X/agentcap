@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased (harness-adapters)
+- Fix: proxy loop breaker missed tool loops when tool-call ids look like `call-<uuid>` (OpenRouter/opencode); hyphenated and UUID ids are now treated as volatile.
+- Fix: harness token/quota cap alerts no longer print `$?` placeholders; quota alerts show the limit and a rounded share.
+- Fix: harness quota share never goes backwards between polls (final summary showed 0.00%).
+- Fix: no spurious "reported an API error" line after agentcap's own stop.
+- `--quota` help now lists agy and says opencode exposes no quota.
 - **opencode and agy (Antigravity CLI) support.** `agentcap run --tokens N -- opencode run ...` / `-- agy -p ...` reads the agent's own JSON event stream (`opencode run --format json`, `agy --output-format stream-json`) and enforces a token cap, the loop breaker (same tool call 4x) and the error breaker (8 failing tool calls in a row); stop is SIGINT. `--log-cap USD` caps on opencode's own cost estimate (for subscriptions such as opencode Go).
 - **agy quota mode:** `agentcap run --quota 5% --window 5h -- agy -p ...` reads `remaining_fraction` from `agy -p /quota --output-format json` (no agent turn, no quota spent) for the model's group. opencode exposes no quota %, so `--quota` is refused for it with a pointer to `--tokens`/`--log-cap`.
 - **$ mode:** `agentcap run --cap 1 -- opencode run -m agentcap/<model> ...` injects a provider through `OPENCODE_CONFIG_CONTENT` (user config untouched, run forced `--standalone`); `agy` is routed through the Gemini API route (`modelProvider: gemini`, `GEMINI_API_KEY`).
