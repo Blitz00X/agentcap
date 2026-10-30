@@ -125,3 +125,29 @@ def test_waste_json(home, capsys):
     assert cli.main(["waste", "--since", "all", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["subagent_share"] > 0 and "cache_misses" in data
+
+
+# --- shapes seen in real Codex logs (Oct 2026), redacted -------------------
+def test_codex_list_output_errors():
+    item = lambda t: [{"type": "input_text", "text": t}]
+    assert waste._codex_error(item("Script failed\nOutput:\nREDACTED"))
+    assert not waste._codex_error(item("Script completed\nOutput:\nREDACTED"))
+    assert waste._codex_error(item('Output:\n{"exit_code": 2, "stdout": "REDACTED"}'))
+    assert not waste._codex_error(item('Output:\n{"exit_code": 0}'))
+    assert waste._codex_error("Process exited with code 1\nREDACTED")
+    assert not waste._codex_error([{"type": "input_image", "image_url": "data:"}])
+
+
+def test_polling_tools_are_not_loops(tmp_path):
+    d = tmp_path / "codex" / "sessions"
+    d.mkdir(parents=True)
+    lines = [{"timestamp": "2026-10-29T09:00:00Z", "type": "session_meta", "payload": {"id": "p"}}]
+    for k in range(6):
+        for name in ("wait", "sleep"):
+            lines.append({"timestamp": "2026-10-29T09:00:01Z", "type": "response_item",
+                          "payload": {"type": "custom_tool_call", "name": name, "input": "{}", "call_id": f"{name}{k}"}})
+    (d / "rollout-x.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    lines = lines[:1] + [x for x in lines[1:] if x["payload"]["name"] == "wait"]
+    (d / "rollout-y.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    w = waste.scan(home=tmp_path, codex_dir=d, claude_dir=tmp_path / "none")
+    assert w.repeat_streaks == []

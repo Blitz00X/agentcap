@@ -383,8 +383,10 @@ class LoopWatch:
         self.tripped: str | None = None
 
     def call(self, name: str, payload: Any) -> None:
-        from .waste import _digest
+        from .waste import POLL_TOOLS, _digest
 
+        if name in POLL_TOOLS:
+            return
         d = _digest(name, payload)
         self.count = self.count + 1 if d == self.digest else 1
         self.digest, self.tool = d, name
@@ -414,10 +416,11 @@ class LoopWatch:
 def _loop_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
     """Track identical PreToolUse calls; return a deny reason when Pro should stop."""
 
+    from .waste import POLL_TOOLS, _digest
+
     name = payload.get("tool_name")
-    if not isinstance(name, str):
+    if not isinstance(name, str) or name in POLL_TOOLS:
         return None
-    from .waste import _digest
 
     d = _digest(name, payload.get("tool_input"))
     state = _read_json(job_dir / "tools.json") or {}

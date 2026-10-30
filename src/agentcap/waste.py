@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -31,6 +32,8 @@ REPEAT_MIN = 3          # report streaks from this length
 PRO_REPEAT_STOP = 4     # Pro loop breaker: same step 4x
 PRO_ERROR_STOP = 8      # Pro loop breaker: 8 tool errors in a row
 TTL_5M, TTL_1H = 300, 3600
+# polling / waiting tools repeat by design; never call them a loop
+POLL_TOOLS = frozenset({"wait", "sleep", "write_stdin", "list_agents", "TaskOutput", "BashOutput"})
 CODEX_MISS_MIN_TOKENS = 4096  # Codex has no cache writes; only flag big uncached prompts
 
 
@@ -212,16 +215,30 @@ def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRep
 
 
 # ---------------------------------------------------------------------- codex
+_EXIT_RE = re.compile(r'"exit_code"\s*:\s*(-?\d+)|^(?:Exit code|Process exited with code):? (-?\d+)', re.M)
+
+
 def _codex_error(output: Any) -> bool:
+    """Best-effort failure check on a Codex tool output.
+
+    Seen shapes: a list of ``input_text`` items starting ``Script completed`` /
+    ``Script failed`` (custom ``exec`` tool), JSON with ``metadata.exit_code``, and text
+    with ``Exit code: N`` / ``Process exited with code N``.
+    """
+
+    if isinstance(output, list):
+        output = "\n".join(str(i.get("text") or "") for i in output if isinstance(i, dict))
     if isinstance(output, str):
+        head = output[:600]
+        if head.lstrip().startswith("Script failed"):
+            return True
+        if head.lstrip().startswith("Script completed") and '"exit_code"' not in head:
+            return False
         try:
             data = json.loads(output)
         except ValueError:
-            first = output.lstrip().splitlines()[0] if output.strip() else ""
-            if first.lower().startswith(("exit code:", "process exited with code")):
-                code = first.rsplit(" ", 1)[-1].strip()
-                return code.lstrip("-").isdigit() and int(code) != 0
-            return False
+            m = _EXIT_RE.search(head)
+            return bool(m) and int(m.group(1) or m.group(2)) != 0
         output = data
     if isinstance(output, dict):
         meta = output.get("metadata") if isinstance(output.get("metadata"), dict) else output
@@ -326,7 +343,7 @@ def _streaks(st: _Stream) -> Iterator[Streak]:
             i = j
 
     for run in runs(lambda a, b: a.digest == b.digest):
-        if len(run) >= REPEAT_MIN:
+        if len(run) >= REPEAT_MIN and run[0].name not in POLL_TOOLS:
             s = Streak("repeat", st.source, st.session, st.agent, run[0].name, len(run),
                        sum(c.cost for c in run))
             if len(run) > PRO_REPEAT_STOP:
