@@ -134,3 +134,38 @@ def test_missing_sources_are_fine(store, tmp_path):
 
 def test_db_is_private(store):
     assert (store.path.stat().st_mode & 0o777) == 0o600
+
+
+def test_claude_quota_samples_imported_from_statusline_log(store, tmp_path):
+    log = tmp_path / "state" / "claude_samples.jsonl"
+    log.parent.mkdir()
+    log.write_text(
+        '{"ts": 1800000000, "readings": {"5h": {"used": 12.0, "resets_at": 1800010000},'
+        ' "week": {"used": 40.0, "resets_at": 1800500000}}}\n'
+        'garbage\n'
+        '{"ts": 1800000600, "readings": {"week": {"used": 41.0, "resets_at": 1800500000}}}\n'
+    )
+    stats = history.import_claude_quota(store, log.parent)
+    samples = store.quota_samples("claude")
+    assert len(samples) == 3 and stats.skipped == 1
+    history.import_claude_quota(store, log.parent)
+    assert len(store.quota_samples("claude")) == 3
+
+
+def test_statusline_appends_sample_only_on_change(tmp_path, monkeypatch):
+    import io
+    import json as _json
+
+    from agentcap import quota
+
+    monkeypatch.setenv(quota.STATE_ENV, str(tmp_path / "st"))
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "job.json").write_text('{"window": "week", "quota": 5}')
+    payload = {"session_id": "s", "rate_limits": {"seven_day": {"used_percentage": 40, "resets_at": 1800500000}}}
+    for now in (1.0, 2.0):
+        quota.statusline_main(job, io.StringIO(_json.dumps(payload)), io.StringIO(), now=now)
+    payload["rate_limits"]["seven_day"]["used_percentage"] = 41
+    quota.statusline_main(job, io.StringIO(_json.dumps(payload)), io.StringIO(), now=3.0)
+    lines = (tmp_path / "st" / "claude_samples.jsonl").read_text().splitlines()
+    assert len(lines) == 2

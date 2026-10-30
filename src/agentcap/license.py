@@ -67,6 +67,7 @@ PRO_FEATURES = FREE_FEATURES | frozenset(
         "telegram_alerts",
         "spend_receipt",
         "quota_mode",
+        "usage_analytics",
     }
 )
 

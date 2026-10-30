@@ -365,6 +365,35 @@ def import_codex(store: HistoryStore, root: Path, pricer: _Pricer | None = None)
     return stats
 
 
+# ------------------------------------------------------- claude quota samples
+def import_claude_quota(store: HistoryStore, state_dir: Path) -> ImportStats:
+    """Read AgentCap's own statusline sample log (written during quota mode)."""
+
+    stats = ImportStats()
+    path = Path(state_dir) / "claude_samples.jsonl"
+    if not path.is_file():
+        return stats
+    stats.files = 1
+    rows = []
+    for obj in _lines(path):
+        ts = _ts(obj.get("ts")) if obj else None
+        readings = obj.get("readings") if obj else None
+        if ts is None or not isinstance(readings, dict):
+            stats.skipped += 1
+            continue
+        for window, block in readings.items():
+            if window not in ("5h", "week") or not isinstance(block, dict):
+                continue
+            used = block.get("used")
+            if not isinstance(used, (int, float)) or isinstance(used, bool):
+                continue
+            rows.append({"source": "claude", "ts": ts, "window": window, "used_percent": float(used),
+                         "resets_at": _ts(block.get("resets_at")), "session_id": None})
+    store.add_quota_samples(rows)
+    stats.imported = len(rows)
+    return stats
+
+
 # ---------------------------------------------------------------------- ledger
 def import_ledger(store: HistoryStore, ledger_path: Path) -> ImportStats:
     stats = ImportStats()
@@ -411,4 +440,12 @@ def import_all(store: HistoryStore, home: Path | None = None) -> ImportStats:
         else home / ".local" / "state" / "agentcap" / "ledger.sqlite3"
     )
     stats.add(import_ledger(store, ledger))
+    if home == Path.home():
+        from .quota import state_root
+
+        quota_dir = state_root()
+    else:
+        quota_dir = home / ".local" / "state" / "agentcap" / "quota"
+    samples = import_claude_quota(store, quota_dir)
+    stats.skipped += samples.skipped
     return stats

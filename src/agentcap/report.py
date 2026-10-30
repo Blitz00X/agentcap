@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Iterable
 
-GROUPS = ("day", "session", "model", "project", "branch", "source")
+GROUPS = ("day", "session", "model", "project", "branch", "source", "repo", "job")
 FIELDS = ("requests", "input_tokens", "output_tokens", "cache_read_tokens",
           "cache_write_tokens", "usd", "unpriced")
 
@@ -36,9 +36,9 @@ def parse_since(value: str | None, now: float | None = None) -> float | None:
 def _key(row: dict[str, Any], by: str) -> str:
     if by == "day":
         return datetime.fromtimestamp(row["ts"]).strftime("%Y-%m-%d")
-    if by == "session":
+    if by in ("session", "job"):
         return str(row.get("session_id") or "-")
-    if by == "project":
+    if by in ("project", "repo"):
         return str(row.get("project") or "-")
     return str(row.get(by) or "-")
 

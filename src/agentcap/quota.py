@@ -227,6 +227,19 @@ def baseline_from_last(last: Mapping[str, Any] | None, window: str, *, now: floa
     return Reading(used, resets)
 
 
+def _append_sample(record: Mapping[str, Any]) -> None:
+    """Keep a small local history of quota % changes for `agentcap report`."""
+
+    try:
+        path = state_root() / "claude_samples.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
 def _readings_dict(readings: Mapping[str, Reading]) -> dict[str, Any]:
     return {w: {"used": r.used, "resets_at": r.resets_at} for w, r in readings.items()}
 
@@ -328,7 +341,11 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
         }
         _atomic_write(job_dir / "status.json", status_out)
         if readings:
-            _atomic_write(state_root() / "claude_last.json", {"ts": now, "readings": _readings_dict(readings)})
+            current = _readings_dict(readings)
+            previous = (_read_json(state_root() / "claude_last.json") or {}).get("readings")
+            _atomic_write(state_root() / "claude_last.json", {"ts": now, "readings": current})
+            if previous != current:
+                _append_sample({"ts": now, "readings": current})
             line = f"agentcap: job {share:.1f}% / {quota:g}% ({window})"
         else:
             line = "agentcap: waiting for subscription rate_limits"

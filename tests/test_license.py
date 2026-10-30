@@ -200,6 +200,7 @@ def test_feature_gating():
         "telegram_alerts",
         "spend_receipt",  # 0.1.5 Pro unattended pack
         "quota_mode",
+        "usage_analytics",
     }
     assert features("free") < features("pro")
     assert features("unknown-tier") == features("free")
