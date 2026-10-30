@@ -279,3 +279,13 @@ def test_free_quota_wording(fakebin, tmp_path, monkeypatch):
     _, code, err, *_ = run(["agy", "--model", "gemini-3.8-flash-low", "-p", "hi"], tmp_path,
                            quota=1.0, enforce=False)
     assert code == 0 and "at its quota limit" in err and "quota exceeded" not in err
+
+
+def test_harness_alert_text_for_token_cap_has_no_dollar_placeholders():
+    from agentcap.alerts import format_alert
+    t = format_alert({"type": "cap_threshold", "run_id": "h1", "threshold": 80, "what": "token cap"})
+    e = format_alert({"type": "cap_exceeded", "run_id": "h1", "what": "token cap", "tokens": 15100})
+    assert "$?" not in t and "token cap" in t
+    assert "$?" not in e and "token cap" in e and "Stopping" in e
+    u = format_alert({"type": "cap_exceeded", "run_id": "h1", "cap_usd": 0.5, "spent_usd": 0.51})
+    assert "cap=$0.5" in u

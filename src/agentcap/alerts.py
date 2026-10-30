@@ -135,6 +135,11 @@ def format_alert(event: Mapping[str, Any]) -> str:
             f"{event.get('scope', 'run')} cap is hit in ~{event.get('eta_minutes', '?')} min "
             f"(${event.get('spent_usd', '?')} spent)."
         )
+    if kind in ("cap_threshold", "cap_exceeded") and event.get("what") and event.get("cap_usd") is None:
+        what = redact(str(event.get("what")))
+        if kind == "cap_threshold":
+            return f"{prefix}: {event.get('threshold', '?')}% of the job's {what} used."
+        return f"{prefix}: job {what} hit. Stopping the agent."
     if kind == "cap_threshold":
         threshold = event.get("threshold", "?")
         return (
