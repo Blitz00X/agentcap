@@ -59,6 +59,30 @@ uv pip install -e .
 pipx install .
 ```
 
+## Install in VS Code / Cursor
+
+The **AgentCap** editor extension (0.1.2) starts Claude Code or Codex in an
+integrated terminal behind `agentcap run --cap`, shows live run spend in the
+status bar, warns at 80% / 95%, and shows a modal when the cap (exit 3) or Pro's
+loop breaker (exit 4) stops the run. It needs the `agentcap` CLI above.
+
+It is **not on the VS Code Marketplace or Open VSX yet**. Install the `.vsix`
+attached to the [GitHub release](https://github.com/Blitz00X/agentcap/releases):
+
+```bash
+code --install-extension agentcap-0.1.2.vsix     # VS Code
+cursor --install-extension agentcap-0.1.2.vsix   # Cursor
+```
+
+or *Extensions → … → Install from VSIX…*. Then run **AgentCap: Start Codex
+with cap** (or Claude Code) from the command palette; set the cap with
+**AgentCap: Set cap**.
+
+![AgentCap stopping a fake Codex run at a $0.20 cap in VS Code](landing/vscode-demo.gif)
+
+*Real VS Code recording; the agent is a fake Codex script talking to AgentCap's
+local fake upstream, so no real API call or spend is involved.*
+
 ## Quickstart
 
 ```bash
