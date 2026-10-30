@@ -74,14 +74,16 @@ def test_anthropic_upstream_override_validated():
 
 
 # ------------------------------------------------------------------ tiers
-def test_caps_are_free_and_pro_is_unattended_pack():
-    assert {"run_cap", "hour_cap", "day_cap"} <= FREE_FEATURES
+def test_run_cap_is_free_and_pro_is_unattended_pack():
+    assert "run_cap" in FREE_FEATURES
+    assert not ({"hour_cap", "day_cap"} & FREE_FEATURES)
+    assert {"hour_cap", "day_cap"} <= PRO_FEATURES
     assert not ({"loop_detection", "webhook_alerts", "telegram_alerts", "spend_receipt"} & FREE_FEATURES)
     assert {"loop_detection", "webhook_alerts", "telegram_alerts", "spend_receipt"} <= PRO_FEATURES
     assert features("bogus") == set(FREE_FEATURES)
 
 
-def test_cli_accepts_hour_and_day_caps_on_free(monkeypatch):
+def test_cli_hour_and_day_caps_need_pro(monkeypatch):
     from agentcap import cli
     calls = {}
 
@@ -95,6 +97,8 @@ def test_cli_accepts_hour_and_day_caps_on_free(monkeypatch):
     monkeypatch.setattr(cli, "status_from_environment", lambda: type("S", (), {"tier": "free"})())
     parser = cli.build_parser() if hasattr(cli, "build_parser") else cli._build_parser()
     args = parser.parse_args(["run", "--cap", "1", "--hour-cap", "2", "--day-cap", "3", "--", "claude", "-p", "x"])
+    assert cli._run(args) == 2 and not calls
+    monkeypatch.setattr(cli, "status_from_environment", lambda: type("S", (), {"tier": "pro"})())
     assert cli._run(args) == 0
     assert str(calls["hour_cap"]) == "2" and str(calls["day_cap"]) == "3"
 

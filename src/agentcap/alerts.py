@@ -133,9 +133,8 @@ def format_alert(event: Mapping[str, Any]) -> str:
         )
     if kind == "loop_detected":
         return (
-            f"{prefix}: runaway loop detected (identical request "
-            f"{event.get('threshold', '?')} times within "
-            f"{event.get('window_s', '?')}s). Stopping the agent."
+            f"{prefix}: runaway loop detected ("
+            f"{event.get('detail') or 'identical request repeated'}). Stopping the agent."
         )
     if kind == "loop_nudge":
         spent = event.get("spent_usd")
@@ -144,9 +143,8 @@ def format_alert(event: Mapping[str, Any]) -> str:
         except (TypeError, ValueError):
             amount = "$?"
         return (
-            f"{prefix}: this looks like a runaway loop (identical request "
-            f"{event.get('threshold', '?')} times within "
-            f"{event.get('window_s', '?')}s). Pro's loop breaker would have "
+            f"{prefix}: this looks like a runaway loop ("
+            f"{event.get('detail') or 'identical request repeated'}). Pro's loop breaker would have "
             f"stopped this at {amount}. {PRICING_URL}"
         )
     if kind == "run_receipt":

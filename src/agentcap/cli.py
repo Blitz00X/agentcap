@@ -45,7 +45,7 @@ PRO_CAP_MESSAGE = (
     '`agentcap license activate "YOUR_LICENSE_KEY"`.'
 )
 PRO_HINT = (
-    "hint: Pro (loop breaker, phone alerts, spend receipt) is $12 one-time: https://agentcap.launchbench.studio/#pricing — "
+    "hint: Pro (hour/day caps, loop/burn breaker, phone alerts, spend receipt) is $19 one-time (launch price): https://agentcap.launchbench.studio/#pricing — "
     'then `agentcap license activate "YOUR_LICENSE_KEY"`.'
 )
 PRO_ALERTS_MESSAGE = (
@@ -131,8 +131,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"run cap in USD (default: ${DEFAULT_CAP} or $AGENTCAP_CAP)",
     )
-    run.add_argument("--hour-cap", default=None, help="hourly cap in USD across runs")
-    run.add_argument("--day-cap", default=None, help="daily cap in USD across runs")
+    run.add_argument("--hour-cap", default=None, help="hourly cap in USD across runs (Pro)")
+    run.add_argument("--day-cap", default=None, help="daily cap in USD across runs (Pro)")
+    run.add_argument(
+        "--max-burn",
+        default="2.00",
+        help="Pro loop/burn breaker: stop when spend exceeds this USD/minute "
+        "over a rolling 2-minute window (default 2.00; 'off' disables)",
+    )
     run.add_argument(
         "--allow-unmetered",
         action="store_true",
@@ -415,6 +421,8 @@ def _run(args: argparse.Namespace) -> int:
         cap = _decimal_cap(args.cap, "--cap")
         hour_cap = _decimal_cap(args.hour_cap, "--hour-cap")
         day_cap = _decimal_cap(args.day_cap, "--day-cap")
+        raw_burn = str(getattr(args, "max_burn", "2.00") or "2.00").strip().lower()
+        max_burn = None if raw_burn in ("off", "none", "0") else _decimal_cap(raw_burn, "--max-burn")
     except ValueError as exc:
         print(f"agentcap: {exc}", file=sys.stderr)
         return 2
@@ -450,6 +458,7 @@ def _run(args: argparse.Namespace) -> int:
             gemini_upstream=overrides.get("gemini"),
             anthropic_upstream=overrides.get("anthropic"),
             trust_workspace=args.trust_workspace,
+            max_burn_per_min=max_burn,
         )
         return runner.run()
     except OSError as exc:

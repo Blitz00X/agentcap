@@ -7,7 +7,7 @@
   <title>AgentCap — the API-key guard for unattended Codex CLI and Gemini CLI runs</title>
   <meta name="description" content="AgentCap applies a local spend cap to unattended Codex CLI and Gemini CLI runs: conservative worst-case reservation, output clamping, and the local process stopped at the cap with the reason printed.">
   <meta property="og:title" content="AgentCap — the API-key guard for unattended Codex CLI and Gemini CLI runs">
-  <meta property="og:description" content="A local spend cap for unattended Codex CLI and Gemini CLI runs. Conservative reservation, output clamping, and the local process stopped at the cap. Terminal alert in Free; Pro adds webhook/Telegram alerts and a repeated-request breaker. $12 one-time.">
+  <meta property="og:description" content="A local spend cap for unattended Codex CLI and Gemini CLI runs. Conservative reservation, output clamping, and the local process stopped at the cap. Terminal alert in Free; Pro adds hour/day caps, a loop/burn breaker and webhook/Telegram alerts. $19 one-time launch price.">
   <meta property="og:type" content="website">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -33,7 +33,7 @@
         <a href="#faq">FAQ</a>
         <a href="https://github.com/Blitz00X/agentcap">GitHub</a>
       </nav>
-      <a class="btn-secondary btn-small" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
+      <a class="btn-secondary btn-small" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $19</a>
       <!-- COPY:nav END -->
     </div>
   </header>
@@ -55,7 +55,7 @@
         </p>
         <div class="cta-row">
           <a class="btn-primary" href="#install">Install free</a>
-          <a class="btn-secondary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
+          <a class="btn-secondary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $19</a>
           <p class="micro cta-note">API keys only · Anthropic, OpenAI &amp; Gemini</p>
         </div>
         <p class="micro">
@@ -278,9 +278,9 @@ agentcap run summary
         <div class="cards">
           <article class="card" aria-labelledby="free-title">
             <h3 id="free-title">Free</h3>
-            <p class="price">$0 <span class="price-note">MIT</span></p>
+            <p class="price">$0 <span class="price-note">MIT License</span></p>
             <ul>
-              <li>Run, hourly and daily caps</li>
+              <li>Per-run spend cap</li>
               <li>Output clamping, fail-closed metering</li>
               <li>Claude Code, Codex, Gemini CLI, SDK scripts</li>
               <li>Tells you when Pro&rsquo;s loop breaker would have stopped a loop</li>
@@ -289,15 +289,16 @@ agentcap run summary
           </article>
           <article class="card card-pro" aria-labelledby="pro-title">
             <h3 id="pro-title">Pro</h3>
-            <p class="price">$12 <span class="price-note">one-time · the unattended pack</span></p>
+            <p class="price">$19 <span class="price-note">one-time launch price · the unattended pack</span></p>
             <ul>
-              <li>Loop breaker: kill on the 5th identical request in 120 s</li>
+              <li>Hourly and daily caps across runs</li>
+              <li>Loop/burn breaker: same step 4&times; in a row, 8 failing tool calls in a row, or spend above $2/min (configurable)</li>
               <li>Telegram + webhook alerts</li>
               <li>Spend receipt for every run</li>
               <li>For overnight, CI and background agents</li>
               <li>One licence key for up to 3 machines</li>
             </ul>
-            <a class="btn-primary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
+            <a class="btn-primary" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $19</a>
           </article>
         </div>
         <p class="micro">
@@ -326,7 +327,7 @@ agentcap run summary
       <div class="shell">
         <h2 id="terms-title">Purchase terms</h2>
         <ul class="terms-list">
-          <li><strong>Price:</strong> Pro is $12 one-time. There is no subscription.</li>
+          <li><strong>Price:</strong> Pro is $19 one-time (launch price). There is no subscription.</li>
           <li><strong>Refunds:</strong> 14 days, no questions asked — email
             <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>.</li>
           <li><strong>Machines:</strong> one licence key activates on up to 3 machines.</li>
@@ -403,8 +404,8 @@ agentcap run summary
                   Local proxy for API-key traffic from Codex CLI, Gemini CLI or your
                   own script: local spend cap per run with conservative
                   reservation and output clamping, kills the process group at the
-                  cap and prints why. Pro: repeated-request breaker +
-                  Telegram/webhook alerts, $12 one-time.
+                  cap and prints why. Pro: hour/day caps, loop/burn breaker +
+                  Telegram/webhook alerts, $19 one-time.
                 </td>
               </tr>
             </tbody>
@@ -454,16 +455,18 @@ agentcap run summary
         </details>
 
         <details>
-          <summary>What is the repeated-request breaker?</summary>
+          <summary>What is the loop/burn breaker?</summary>
           <p>
-            It stops a run when the identical API request is sent 5 times within
-            120 seconds (exit code 4). It does not catch every no-progress loop: an
-            agent whose conversation keeps growing sends different requests each
-            time.
+            Pro stops a run (exit code 4) before the next request is sent when the
+            agent repeats the same step 4 times in a row (last tool call and its
+            result, ignoring the growing history), gets 8 failing tool results in a
+            row, or spends more than <code>--max-burn</code> (default $2/min) over a
+            rolling 2-minute window.
           </p>
           <p>
-            Triggers: a retry storm resending the same request. Does not trigger:
-            an agent looping while its context grows.
+            Tested on simulated growing-history transcripts (Claude Code and OpenAI
+            tool loops); 50 simulated normal sessions did not trip it. It cannot
+            catch every no-progress loop, which is why the run cap still applies.
           </p>
         </details>
 
@@ -487,7 +490,7 @@ agentcap run summary
         <details>
           <summary>Is Pro a subscription?</summary>
           <p>
-            No, it is a one-time $12 purchase. See
+            No, it is a one-time $19 purchase. See
             <a href="#terms">Purchase terms</a> for refunds, licence checks and
             fail-open behavior.
           </p>
@@ -535,7 +538,7 @@ agentcap run summary
         <details>
           <summary>Is the day cap shared across machines?</summary>
           <p>
-            No. Hour/day caps are per machine (local SQLite ledger). A license
+            No. Hour/day caps (Pro) are per machine (local SQLite ledger). A license
             covers 3 machines, each with its own budget.
           </p>
         </details>
@@ -543,7 +546,7 @@ agentcap run summary
         <details>
           <summary>What does one-time purchase include?</summary>
           <p>
-            $12 once, all 0.x updates; not a promise of future major versions.
+            $19 once, all 0.x updates; not a promise of future major versions.
             14-day refund window per purchase terms.
           </p>
         </details>

@@ -187,11 +187,13 @@ async def test_unknown_geo_and_unpriced_fast_mode_fail_closed(harness):
     assert (await h.messages(body(speed="standard"))).status_code == 200
 
 
-async def test_hour_and_day_caps_work_on_free(harness):
+async def test_hour_and_day_caps_are_pro(harness):
     h = harness(features=FREE_FEATURES, cap=None, hour_usd=Decimal("0.000001"))
+    assert (await h.messages(body(max_tokens=10))).status_code == 200
+    h = harness(features=PRO_FEATURES, cap=None, hour_usd=Decimal("0.000001"))
     r = await h.messages(body(max_tokens=64000))
     assert r.status_code == 429
-    h2 = harness(features=FREE_FEATURES, cap=None, day_usd=Decimal("0.000001"))
+    h2 = harness(features=PRO_FEATURES, cap=None, day_usd=Decimal("0.000001"))
     assert (await h2.messages(body(max_tokens=64000))).status_code == 429
 
 

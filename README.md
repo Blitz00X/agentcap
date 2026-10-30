@@ -117,7 +117,7 @@ Uses your API key (`OPENAI_API_KEY` / `GEMINI_API_KEY`). ChatGPT or Google
 sign-in (OAuth/subscription) traffic is not metered.
 
 `agentcap run` accepts `--cap` (default `$5`, or `$AGENTCAP_CAP`),
-`--hour-cap` / `--day-cap` (Free since 0.1.5), `--allow-unmetered`, `--no-clamp`, `--port`,
+`--hour-cap` / `--day-cap` and `--max-burn` (Pro), `--allow-unmetered`, `--no-clamp`, `--port`,
 `--trust-workspace` and `--quiet`.
 
 ### CLI routing
@@ -149,7 +149,7 @@ bypassed the proxy, so check the command and auth mode.
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 agentcap run --cap 3 -- claude -p "fix the failing tests"
-# or: agentcap run --cap 3 --hour-cap 10 --day-cap 25 -- npx @anthropic-ai/claude-code -p "..."
+# Pro: agentcap run --cap 3 --hour-cap 10 --day-cap 25 -- npx @anthropic-ai/claude-code -p "..."
 ```
 
 AgentCap points Claude Code at its local proxy (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>/anthropic`)
@@ -263,8 +263,9 @@ Models without a bundled price (for example OpenRouter or Ollama ids) are blocke
    and can be disabled with `--no-clamp`.
 6. If even a minimal clamped request cannot fit, the request is blocked and the
    whole child process group is terminated (`SIGTERM`, then `SIGKILL` after
-   5s). `agentcap run` exits with code `3`. Pro's repeated-request breaker exits
-   with `4` when the identical API request is sent 5 times within 120 seconds.
+   5s). `agentcap run` exits with code `3`. Pro's loop/burn breaker exits
+   with `4` (same step 4 times in a row, 8 failing tool results in a row, or a
+   burn rate above `--max-burn` $/min; see Free vs Pro).
    The kill and its red alert fire at most once per run; later rejected
    requests just receive `429` responses.
 7. Unknown models and unparseable bodies are rejected (fail-closed); the request
@@ -332,18 +333,22 @@ all.
 
 ## Free vs Pro (0.1.5)
 
-**Free (MIT, forever):** every spend cap.
-- Per-run `--cap`, cross-run `--hour-cap` and `--day-cap`
+**Free (MIT License, forever):** the per-run spend cap.
+- Per-run `--cap` (`--hour-cap` / `--day-cap` exit 2 on Free with a clear message)
 - Output clamping, fail-closed metering, terminal alerts
 - Codex, Gemini CLI, Claude Code, and any SDK script
 
-If a Free run repeats the same request 5 times within 120 s, AgentCap does not stop it.
+When the Pro detectors below would have fired on a Free run, AgentCap does not stop it.
 It prints one line: `Pro's loop breaker would have stopped this at $X.XX`.
 
-**Pro, $12 one-time: the unattended pack.** For runs nobody is watching, such as overnight
+**Pro, $19 one-time (launch price): the unattended pack.** For runs nobody is watching, such as overnight
 jobs, CI and background agents:
-- **Loop breaker:** stops the agent (exit 4) on the 5th identical request within 120 s,
-  before that request is sent.
+- **Loop/burn breaker:** stops the agent (exit 4) before the next request is sent when
+  (a) the same step repeats 4 times in a row (the last tool call + its result, normalised;
+  the growing conversation history is ignored), (b) 8 consecutive tool results are errors, or
+  (c) spend exceeds `--max-burn` USD/minute over a rolling 2-minute window (default `2.00`,
+  `--max-burn off` disables). Byte-identical repeats are still caught too.
+- **Hour and day caps:** cross-run `--hour-cap` and `--day-cap`.
 - **Phone and webhook alerts:** Telegram (`AGENTCAP_TELEGRAM_BOT_TOKEN`, `AGENTCAP_TELEGRAM_CHAT_ID`)
   and webhook (`AGENTCAP_WEBHOOK_URL`) alerts for cap hits, loop kills and the end-of-run receipt.
   Tokens are read from the environment and are never printed or logged.
@@ -351,11 +356,11 @@ jobs, CI and background agents:
   `AGENTCAP_RECEIPT_DIR`) with requests, spend, caps, the stop reason and the exit code. It contains
   numbers only, never prompts. The same one-line receipt is sent to Telegram and the webhook.
 
-[Buy AgentCap Pro — $12](https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi)
+[Buy AgentCap Pro — $19](https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi)
 
 ### Purchase terms
 
-- Pro is $12 one-time, no subscription.
+- Pro is $19 one-time (launch price), no subscription.
 - 14-day no-questions refund — email
   [kutaykarahan6@gmail.com](mailto:kutaykarahan6@gmail.com).
 - One licence key activates on up to 3 machines.
@@ -383,7 +388,7 @@ Polar customer portal.
 | LoopGuard | [tryloopguard.com](https://tryloopguard.com): free MIT CLI that integrates with Claude Code, Codex CLI and Cursor (no proxy, works with subscriptions) with per-session/daily caps and a no-progress loop killer; paid tier ($9/month) adds phone/Slack alerts and remote pause. A good fit if you use subscriptions or Claude Code. |
 | LiteLLM budgets | Budgets per key, user or team in the LiteLLM proxy; budgets need its database. A good fit if you already run a LiteLLM gateway; it is a server you deploy and configure. |
 | OpenRouter credit limits / provider spend caps | Account- or key-level and typically monthly (OpenRouter credit limits, OpenAI and Google spend caps). Provider caps are evaluated with a delay — Google has described about 10 minutes for the Gemini API cap — so a fast loop can overshoot. |
-| AgentCap | Local proxy for API-key traffic from Claude Code, Codex CLI, Gemini CLI or your own script: run/hour/day caps (Free) with conservative reservation and output clamping, kills the process group at the cap and prints why. Pro (unattended pack): loop breaker, Telegram/webhook alerts, spend receipt, $12 one-time. |
+| AgentCap | Local proxy for API-key traffic from Claude Code, Codex CLI, Gemini CLI or your own script: run cap (Free) with conservative reservation and output clamping, kills the process group at the cap and prints why. Pro (unattended pack): hour/day caps, loop/burn breaker, Telegram/webhook alerts, spend receipt, $19 one-time. |
 
 The comparison above is from public pages; see the RelayPlane detail below.
 
@@ -394,8 +399,8 @@ website as of 2026-10-30. We have not tested RelayPlane hands-on.
 
 | | RelayPlane (per its site) | AgentCap |
 |---|---|---|
-| License | MIT | MIT (Free tier) |
-| Per-run / session / hour / day caps | Free | Free (run, hour, day) |
+| License | MIT | MIT License (the whole open-source CLI; Pro features are unlocked by a paid licence key) |
+| Per-run / session / hour / day caps | Free | Run cap Free; hour/day caps Pro |
 | Kill switch | Yes | Yes. Stops the agent's process group (exit 3) |
 | Over-budget response | HTTP 429 `budget_exceeded` | HTTP 429, and the request is never sent |
 | Output reservation | Capped at 4096 output tokens | Full `max_tokens` worst case, plus clamping to fit |
@@ -424,7 +429,7 @@ prices and reported usage; when usage is missing it charges the full reservation
 **Is the day cap shared across machines?** No. Hour/day caps are per machine
 (local SQLite ledger). A license covers 3 machines, each with its own budget.
 
-**What does one-time purchase include?** $12 once, all 0.x updates; not a
+**What does one-time purchase include?** $19 once, all 0.x updates; not a
 promise of future major versions. 14-day refund window per purchase terms.
 
 ## License

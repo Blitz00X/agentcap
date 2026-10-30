@@ -198,6 +198,7 @@ class Runner:
         trust_workspace: bool = False,
         anthropic_upstream: str | None = None,
         receipt_dir: str | os.PathLike[str] | None = None,
+        max_burn_per_min: Decimal | str | int | None = Decimal("2.00"),
     ) -> None:
         if not argv:
             raise ValueError("argv must contain the command to run")
@@ -301,6 +302,9 @@ class Runner:
                 openai_upstream=openai_upstream or DEFAULT_OPENAI_UPSTREAM,
                 gemini_upstream=gemini_upstream or DEFAULT_GEMINI_UPSTREAM,
                 anthropic_upstream=anthropic_upstream or DEFAULT_ANTHROPIC_UPSTREAM,
+                max_burn_per_min=(
+                    None if max_burn_per_min is None else Decimal(str(max_burn_per_min))
+                ),
             )
         self.clamped_requests = 0
 

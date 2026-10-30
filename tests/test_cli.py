@@ -69,20 +69,22 @@ def test_run_cap_comes_from_env(fake_runner, monkeypatch):
     assert fake_runner.instances[1].kwargs["cap"] == Decimal("0.25")
 
 
-def test_free_tier_runs_hour_and_day_caps(fake_runner, capsys):
-    # 0.1.5: hour/day caps moved to Free; the run starts and nothing is refused.
+def test_free_tier_refuses_hour_and_day_caps(fake_runner, capsys):
+    # Hour/day caps are Pro; Free exits 2 before starting anything.
     assert cli.main(
         ["run", "--hour-cap", "1", "--day-cap", "2", "--", "true"]
-    ) == 0
-    assert len(fake_runner.instances) == 1
-    assert "require an active Pro license" not in capsys.readouterr().err
+    ) == 2
+    assert len(fake_runner.instances) == 0
+    err = capsys.readouterr().err
+    assert "--hour-cap/--day-cap require an active Pro license" in err
+    assert "$19 one-time" in err
 
 
 @pytest.mark.parametrize("flag", ["--hour-cap", "--day-cap"])
-def test_free_tier_accepts_each_cap_individually(fake_runner, capsys, flag):
-    assert cli.main(["run", flag, "1", "--", "true"]) == 0
-    assert len(fake_runner.instances) == 1
-    assert "require an active Pro license" not in capsys.readouterr().err
+def test_free_tier_refuses_each_cap_individually(fake_runner, capsys, flag):
+    assert cli.main(["run", flag, "1", "--", "true"]) == 2
+    assert len(fake_runner.instances) == 0
+    assert "require an active Pro license" in capsys.readouterr().err
 
 
 def test_free_tier_alerts_are_gated_with_an_upgrade_hint(
@@ -95,7 +97,7 @@ def test_free_tier_alerts_are_gated_with_an_upgrade_hint(
     assert len(fake_runner.instances) == 1
     err = capsys.readouterr().err
     assert "webhook/Telegram alerts require an active Pro license" in err
-    assert "is $12 one-time: https://agentcap.launchbench.studio/#pricing" in err
+    assert "is $19 one-time (launch price): https://agentcap.launchbench.studio/#pricing" in err
 
 
 def test_pro_alerts_do_not_print_the_upgrade_hint(

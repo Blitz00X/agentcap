@@ -189,7 +189,7 @@ def write_cached(tmp_path, key: str, clock: FakeClock):
 
 
 def test_feature_gating():
-    assert features("free") == {"run_cap", "hour_cap", "day_cap", "terminal_alerts"}
+    assert features("free") == {"run_cap", "terminal_alerts"}
     assert features("pro") == {
         "run_cap",
         "terminal_alerts",

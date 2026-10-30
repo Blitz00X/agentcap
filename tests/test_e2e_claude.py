@@ -130,7 +130,7 @@ def test_e2e_cli_subprocess(tmp_path, upstream, claude_bin):
            "ANTHROPIC_API_KEY": "sk-ant-e2e-SECRET", "AGENTCAP_ANTHROPIC_UPSTREAM": upstream,
            "AGENTCAP_DB": str(tmp_path / "cli.sqlite3")}
     p = subprocess.run([sys.executable, "-c", "import sys; from agentcap.cli import main; sys.exit(main())",
-                        "run", "--cap", "1", "--hour-cap", "2", "--", str(claude_bin), "-p", "x"],
+                        "run", "--cap", "1", "--", str(claude_bin), "-p", "x"],
                        env=env, capture_output=True, text=True, timeout=60)
     assert p.returncode == 0, p.stderr
     assert "requests: 1" in p.stderr and "AGENTCAP_ANTHROPIC_UPSTREAM override active" in p.stderr

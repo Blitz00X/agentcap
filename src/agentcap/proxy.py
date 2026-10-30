@@ -50,7 +50,7 @@ from .estimate import (
 )
 from .ledger import CapExceeded, Caps, Ledger
 from .license import FREE_FEATURES
-from .loop import LoopDetector, request_hash
+from .loop import LoopDetector, RunawayDetector, describe_trip, request_hash
 from .pricing import (
     MICRO_USD,
     ModelPrice,
@@ -147,7 +147,12 @@ class ProxyConfig:
     caps: Caps = field(default_factory=Caps)
     features: Iterable[str] | None = None
     loop_threshold: int = 5
-    loop_window_s: float = 120.0
+    loop_window_s: float = 300.0
+    #: Consecutive failing tool results before the breaker trips.
+    tool_error_threshold: int = 8
+    #: Burn-rate breaker in USD/minute over ``burn_window_s`` (None = off).
+    max_burn_per_min: Decimal | None = Decimal("2.00")
+    burn_window_s: float = 120.0
     openai_upstream: str = DEFAULT_OPENAI_UPSTREAM
     gemini_upstream: str = DEFAULT_GEMINI_UPSTREAM
     anthropic_upstream: str = DEFAULT_ANTHROPIC_UPSTREAM
@@ -273,14 +278,19 @@ class _Proxy:
         #: lets the run say what Pro's loop breaker would have saved.
         self.shadow_loop: LoopDetector | None = None
         self.loop_nudge: dict[str, Any] | None = None
+        detector = RunawayDetector(
+            repeat_threshold=max(2, config.loop_threshold),
+            repeat_window_s=config.loop_window_s,
+            tool_error_threshold=config.tool_error_threshold,
+            max_burn_per_min=config.max_burn_per_min,
+            burn_window_s=config.burn_window_s,
+            clock=lambda: self._now().timestamp(),
+        )
         if config.has("loop_detection"):
-            self.loop = LoopDetector(
-                threshold=config.loop_threshold, window_s=config.loop_window_s
-            )
+            self.loop = detector
         else:
-            self.shadow_loop = LoopDetector(
-                threshold=config.loop_threshold, window_s=config.loop_window_s
-            )
+            self.shadow_loop = detector
+        self._burn_seen = Decimal("0")
         self.blocked_count = 0
         #: Model requests the proxy actually saw (forwarded or refused).
         self.observed_requests = 0
@@ -680,7 +690,16 @@ class _Proxy:
                 return _unknown_service_tier_error(f"speed={speed}")
         return multiplier
 
-    def _loop_nudge(self, model: str, provider: str) -> None:
+    def _feed_burn(self, detector: RunawayDetector) -> None:
+        try:
+            spent = Decimal(str(self.ledger.spent(self.config.run_id)))
+        except Exception:
+            return
+        if spent > self._burn_seen:
+            detector.record_spend(spent - self._burn_seen)
+            self._burn_seen = spent
+
+    def _loop_nudge(self, model: str, provider: str, trip: dict[str, Any] | None = None) -> None:
         """Free tier: record (once) what Pro's loop breaker would have done."""
 
         spent = self._run_spent()
@@ -691,6 +710,8 @@ class _Proxy:
             "spent_usd": spent,
             "threshold": self.config.loop_threshold,
             "window_s": self.config.loop_window_s,
+            "detector": (trip or {}).get("kind", "repeat"),
+            "detail": describe_trip(trip or {"kind": "repeat", "count": self.config.loop_threshold, "window_s": self.config.loop_window_s}),
         }
         self._emit(dict(self.loop_nudge))
 
@@ -778,12 +799,16 @@ class _Proxy:
         cache_write = cache_write_requested(parsed)
 
         if self.shadow_loop is not None and self.loop_nudge is None:
-            if self.shadow_loop.record_request(parsed):
-                self._loop_nudge(model, provider)
+            self._feed_burn(self.shadow_loop)
+            shadow_trip = self.shadow_loop.check(parsed)
+            if shadow_trip is not None:
+                self._loop_nudge(model, provider, shadow_trip)
 
         # Loop detection happens before money is reserved.
         if self.loop is not None:
-            if self.loop.record_request(parsed):
+            self._feed_burn(self.loop)
+            trip = self.loop.check(parsed)
+            if trip is not None:
                 self._count_blocked()
                 # ``on_loop_detected`` is the specific hook; a generic kill
                 # callback supplied as ``on_cap_exceeded`` also stops the run.
@@ -799,6 +824,8 @@ class _Proxy:
                         "threshold": self.config.loop_threshold,
                         "window_s": self.config.loop_window_s,
                         "request_hash": request_hash(parsed),
+                        "detector": trip["kind"],
+                        "detail": describe_trip(trip),
                     },
                 )
                 self._emit(
@@ -809,14 +836,14 @@ class _Proxy:
                         "threshold": self.config.loop_threshold,
                         "window_s": self.config.loop_window_s,
                         "request_hash": request_hash(parsed),
+                        "detector": trip["kind"],
+                        "detail": describe_trip(trip),
                     }
                 )
                 return _agentcap_error(
                     429,
-                    "agentcap: identical request repeated "
-                    f"{self.config.loop_threshold} times within "
-                    f"{self.config.loop_window_s:g}s; blocked to stop a runaway "
-                    "loop. Request NOT sent.",
+                    f"agentcap: runaway loop detected ({describe_trip(trip)}); "
+                    "blocked to stop a runaway loop. Request NOT sent.",
                     "agentcap_loop_detected",
                     headers={"x-agentcap-blocked": "loop"},
                 )
