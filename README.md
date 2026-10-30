@@ -48,7 +48,9 @@ your subscription quota % and Codex support.
   `this job used 5.1% of the weekly quota`) and the last tool call's name, as numbers and tool
   names only, never prompts or tool inputs.
 - **Approve.** After a stop, `agentcap approve` (or `/agentcap:approve` in the plugin) raises the
-  limit by 50%, at most twice, and the run continues.
+  limit by 50%, at most twice, and the run continues. This works for interactive Claude Code,
+  which stays open after a stop. Codex and headless `claude -p` jobs are stopped with SIGINT, so
+  there approve only helps before the limit is hit; after a stop it says so and changes nothing.
 - **Free** runs the same detectors in observe-only mode and prints what Pro would have done.
 
 Honest limits: Claude tool-error streaks are only caught on API-key runs (the subscription hook sees

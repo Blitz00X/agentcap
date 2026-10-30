@@ -597,3 +597,17 @@ def test_cli_approve(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(root))
     assert cli.main(["approve"]) == 0
     assert "6%" in capsys.readouterr().out
+
+
+def test_approve_refuses_a_job_already_stopped_by_sigint(tmp_path):
+    # real Codex run 30 Oct: approve after the SIGINT said "the run continues" but the job was ending
+    root, d = _job(tmp_path, agent="codex", stopped=True)
+    msg = q.approve_job(root)
+    assert "already stopped" in msg and "continues" not in msg
+    assert json.loads((d / "job.json").read_text())["quota"] == 4.0
+
+
+def test_codex_stop_marks_job_stopped(fakebin, tmp_path):
+    r, events, err = make_runner(["codex"], tmp_path)
+    assert r.run() == 3
+    assert json.loads((r.job_dir / "job.json").read_text())["stopped"] is True

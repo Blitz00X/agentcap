@@ -73,6 +73,9 @@ def approve_job(root: Path | None = None) -> str:
     job = _read_json(d / "job.json") or {}
     if not job.get("enforce"):
         return "agentcap: this job is observe-only (Free); approve is a Pro feature."
+    if job.get("stopped"):
+        return ("agentcap: this job was already stopped (SIGINT), so approve cannot resume it. "
+                "Start it again with a higher --quota.")
     n = int(job.get("approvals") or 0)
     if n >= APPROVE_MAX:
         return (f"agentcap: already approved twice (limit {float(job.get('quota', 0)):g}%); "
@@ -745,6 +748,12 @@ class QuotaRunner:
                 pass
 
     def _stop(self) -> None:
+        job = _read_json(self.job_dir / "job.json") or {}
+        job["stopped"] = True  # a signalled job cannot be resumed by `agentcap approve`
+        try:
+            _atomic_write(self.job_dir / "job.json", job)
+        except OSError:
+            pass
         self._signal(signal.SIGINT)
         deadline = time.time() + 5
         while self.child and self.child.poll() is None and time.time() < deadline:

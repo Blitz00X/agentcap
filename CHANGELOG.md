@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased (0.2.2)
+- Fix: `agentcap approve` on a Codex or headless job that was already stopped with SIGINT said "the run continues" and used up an approval. It now says the job was already stopped and changes nothing. Found in a real Codex run on a ChatGPT plan on 30 Oct.
+
 ## 0.2.1
 - **Interactive Claude Code stays open on a stop.** The quota and loop stops deny the tool call and end the turn (`continue: false`), in the plugin and in `agentcap run --quota -- claude`. An interactive session is no longer sent SIGINT while the hook works. Headless `claude -p` runs and Codex are still stopped with SIGINT. If the hook never fires, SIGINT is still the fallback.
 - **`agentcap approve` / `/agentcap:approve` (Pro).** Raises a stopped job's or session's limit by 50%, at most twice, and clears a loop-breaker streak so the run can continue. Free never blocks, so there is nothing to approve.
