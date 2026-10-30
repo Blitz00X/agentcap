@@ -177,6 +177,45 @@ Limits:
 - A large first request needs a cap that fits it. Claude Code's first request often reserves
   about $0.50–$1. AgentCap prints a suggested `--cap` when it refuses one.
 
+## Works with Claude Max / ChatGPT subscriptions (quota mode)
+
+On a subscription there is no dollar bill, but there is a weekly and a 5-hour usage limit.
+Quota mode caps **one job's share** of it:
+
+```bash
+agentcap run --quota 5% -- claude              # stop this job after 5% of the weekly quota
+agentcap run --quota 10% --window 5h -- codex  # or 10% of the 5-hour window
+agentcap quota                                 # read-only: last seen usage (Free)
+```
+
+- **Read-only, ToS-safe.** AgentCap never proxies, reads or reuses your subscription login
+  or tokens, and never touches subscription traffic. The official, unmodified CLI talks to
+  Anthropic/OpenAI directly.
+- **Claude Code:** for this run only, AgentCap adds a settings layer with `claude --settings <file>`
+  (your `~/.claude/settings.json` and project settings are never edited). It contains a
+  statusline command that records the official `rate_limits` (`five_hour` / `seven_day`
+  `used_percentage`, `resets_at`) and then runs **your own statusline command unchanged**,
+  plus a `PreToolUse` hook that denies further tool calls with a clear reason once the job's
+  share reaches the limit. If the agent does not stop, AgentCap sends it SIGINT. Exit code 3.
+- **Codex CLI:** AgentCap tails the `token_count` events Codex writes to
+  `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits.primary/secondary.used_percent`,
+  `window_minutes`, `resets_at`) and sends SIGINT at the limit. Exit code 3.
+- Baseline at job start (exact when a reading from the last 15 minutes exists, otherwise the
+  first response is not counted), window resets mid-job are handled, 80% warning,
+  per-job receipt: `this job used 4.2% of the weekly quota`. Pro alerts (Telegram/webhook)
+  and receipt files work the same as for dollar caps.
+- **Free:** `agentcap quota` and observe-only runs that print the job's share and
+  `Pro's quota mode would have stopped this job at 5%`. **Pro:** stopping at the limit.
+
+**Honest limits.** The percentage is **account-level**: a parallel session or claude.ai/chatgpt.com
+use in the same window counts against the job (AgentCap warns when it sees another session).
+Values arrive once per model response, so a job **can overshoot by up to one request**.
+Claude Code only reports `rate_limits` for Pro/Max logins and only in interactive sessions
+(the statusline does not run in `claude -p`). Codex's rollout format is undocumented and may change.
+**Verified so far on fixtures and fake CLIs only** (plus real Claude Code 2.1.197: the `--settings`
+layer, the chained statusline and the `PreToolUse` deny were checked against a local fake API);
+a check on a real Max / ChatGPT account is still pending.
+
 ## Try it without an API key
 
 `agentcap demo` is a simulated demo. It starts a fake API on a random loopback
@@ -352,6 +391,8 @@ jobs, CI and background agents:
 - **Phone and webhook alerts:** Telegram (`AGENTCAP_TELEGRAM_BOT_TOKEN`, `AGENTCAP_TELEGRAM_CHAT_ID`)
   and webhook (`AGENTCAP_WEBHOOK_URL`) alerts for cap hits, loop kills and the end-of-run receipt.
   Tokens are read from the environment and are never printed or logged.
+- **Subscription quota mode:** `agentcap run --quota 5% -- claude|codex` stops a job at its
+  share of your Claude Max/Pro or ChatGPT quota (see above).
 - **Spend receipt:** a JSON file per run (`~/.local/state/agentcap/receipts/<run>.json`, or
   `AGENTCAP_RECEIPT_DIR`) with requests, spend, caps, the stop reason and the exit code. It contains
   numbers only, never prompts. The same one-line receipt is sent to Telegram and the webhook.

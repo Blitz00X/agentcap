@@ -151,6 +151,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=True,
         help="never lower a request's output limit to fit the remaining budget",
     )
+    run.add_argument(
+        "--quota",
+        default=None,
+        help="subscription quota mode (Pro): stop this job after it used this "
+        "share of your Claude Pro/Max or ChatGPT quota, e.g. 5%% (claude/codex only)",
+    )
+    run.add_argument(
+        "--window", default="week", choices=("week", "5h"),
+        help="quota window for --quota (default: week)",
+    )
     run.add_argument("--port", type=int, default=0, help="proxy port (default: random free)")
     run.add_argument(
         "--trust-workspace",
@@ -181,6 +191,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--db", action="store_true", help="read the local ledger file instead of a proxy"
     )
 
+    subparsers.add_parser(
+        "quota", help="show subscription quota usage seen locally (read-only)"
+    )
     subparsers.add_parser(
         "demo", help="run a simulated spend-cap demo against a fake local API"
     )
@@ -417,6 +430,9 @@ def _run(args: argparse.Namespace) -> int:
         )
         return 2
 
+    if getattr(args, "quota", None) is not None:
+        return _run_quota(args, argv)
+
     try:
         cap = _decimal_cap(args.cap, "--cap")
         hour_cap = _decimal_cap(args.hour_cap, "--hour-cap")
@@ -470,6 +486,66 @@ def _run(args: argparse.Namespace) -> int:
     except (ValueError, RuntimeError, PricingError) as exc:
         print(f"agentcap: {exc}", file=sys.stderr)
         return 2
+
+
+QUOTA_CONFLICT = (
+    "agentcap: --quota cannot be combined with --cap/--hour-cap/--day-cap: quota "
+    "mode never routes subscription traffic through AgentCap."
+)
+
+
+def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
+    from .quota import QuotaRunner, detect_quota_agent, parse_quota
+    from .runner import default_receipt_dir
+
+    if args.cap is not None or args.hour_cap is not None or args.day_cap is not None:
+        print(QUOTA_CONFLICT, file=sys.stderr)
+        return 2
+    try:
+        quota = parse_quota(args.quota)
+    except ValueError as exc:
+        print(f"agentcap: {exc}", file=sys.stderr)
+        return 2
+    if detect_quota_agent(argv) is None:
+        print("agentcap: quota mode supports `claude` and `codex` only.", file=sys.stderr)
+        return 2
+    active_features = set(features(status_from_environment().tier))
+    enforce = "quota_mode" in active_features
+    if not enforce:
+        print(
+            "agentcap: quota mode stopping is Pro; this Free run only observes "
+            "and reports the job's share.",
+            file=sys.stderr,
+        )
+    _warn_alerts_need_pro(active_features)
+    alerts = dispatcher_from_env(features=active_features)
+    try:
+        runner = QuotaRunner(
+            argv,
+            quota=quota,
+            window=args.window,
+            enforce=enforce,
+            alerts=alerts.emit if enforce else None,
+            quiet=args.quiet,
+            receipt_dir=default_receipt_dir() if "spend_receipt" in active_features else None,
+        )
+        code = runner.run()
+    except OSError as exc:
+        print(f"agentcap: could not start the command ({exc.strerror or exc})", file=sys.stderr)
+        return 127
+    except ValueError as exc:
+        print(f"agentcap: {exc}", file=sys.stderr)
+        return 2
+    alerts.wait()
+    return code
+
+
+def _quota(_args: argparse.Namespace) -> int:
+    from .quota import quota_status
+
+    for line in quota_status():
+        print(line)
+    return 0
 
 
 # ----------------------------------------------------------------------- serve
@@ -576,6 +652,8 @@ def main(argv: list[str] | None = None) -> int:
         return _serve(args)
     if args.subcommand == "status":
         return _status(args)
+    if args.subcommand == "quota":
+        return _quota(args)
     if args.subcommand == "demo":
         return _demo(args)
     parser.print_help()

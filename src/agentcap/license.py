@@ -66,6 +66,7 @@ PRO_FEATURES = FREE_FEATURES | frozenset(
         "webhook_alerts",
         "telegram_alerts",
         "spend_receipt",
+        "quota_mode",
     }
 )
 

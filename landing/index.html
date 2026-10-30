@@ -178,6 +178,22 @@ cursor --install-extension agentcap-0.1.2.vsix   # Cursor</code></pre>
     </section>
     <!-- COPY:vscode END -->
 
+    <!-- COPY:quota START -->
+    <section class="section" id="quota" aria-labelledby="quota-title">
+      <div class="shell">
+        <h2 id="quota-title">Works with Claude Max / ChatGPT subscriptions (quota mode)</h2>
+        <p>No API key? Cap one job's share of your subscription limit instead: <code>agentcap run --quota 5% -- claude</code> stops the job after it used 5% of your weekly quota (<code>--window 5h</code> for the 5-hour window). Works with Claude Code and Codex.</p>
+        <ul>
+          <li><strong>Read-only.</strong> AgentCap never touches your subscription login, tokens or traffic. It reads Claude Code's official statusline <code>rate_limits</code> and Codex's local session logs, then stops the local agent (Claude Code <code>PreToolUse</code> hook, then SIGINT).</li>
+          <li>Your settings are not edited: Claude Code gets a one-run <code>--settings</code> layer, and your own statusline keeps working.</li>
+          <li>80% warning, per-job receipt ("this job used 4.2% of the weekly quota"), Telegram/webhook alerts on Pro.</li>
+        </ul>
+        <p class="note">Honest limits: the percentage is account-level (parallel sessions count, we warn), a job can overshoot by up to one request, and Claude reports limits only in interactive sessions. Verified on test fixtures and fake CLIs so far; real-account check pending. Free: <code>agentcap quota</code> and observe-only runs. Stopping at the limit is Pro.</p>
+      </div>
+    </section>
+    <!-- COPY:quota END -->
+
+
 
     <!-- COPY:demo START -->
     <section class="section" id="demo" aria-labelledby="demo-title">
@@ -294,6 +310,7 @@ agentcap run summary
               <li>Hourly and daily caps across runs</li>
               <li>Loop/burn breaker: same step 4&times; in a row, 8 failing tool calls in a row, or spend above $2/min (configurable)</li>
               <li>Telegram + webhook alerts</li>
+              <li>Subscription quota mode: stop a job at 5% of your Claude Max / ChatGPT quota</li>
               <li>Spend receipt for every run</li>
               <li>For overnight, CI and background agents</li>
               <li>One licence key for up to 3 machines</li>

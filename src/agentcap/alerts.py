@@ -35,6 +35,10 @@ TERMINAL_EVENTS = frozenset(
         "request_too_large",
         "loop_nudge",
         "run_receipt",
+        "quota_threshold",
+        "quota_exceeded",
+        "quota_parallel",
+        "quota_receipt",
     }
 )
 
@@ -42,14 +46,15 @@ TERMINAL_EVENTS = frozenset(
 LOCAL_ONLY_EVENTS = frozenset({"loop_nudge"})
 #: The end-of-run receipt is already printed as the run summary; it only goes
 #: to the Pro channels (webhook / Telegram).
-REMOTE_ONLY_EVENTS = frozenset({"run_receipt"})
+REMOTE_ONLY_EVENTS = frozenset({"run_receipt", "quota_receipt"})
 
 PRICING_URL = "https://agentcap.launchbench.studio/#pricing"
 
 # Alerts that must never be repeated for one run (a run has one kill and one
 # budget-clamp notice, no matter how many later requests are rejected).
 ONCE_EVENTS = frozenset(
-    {"cap_exceeded", "loop_detected", "output_clamped", "loop_nudge", "run_receipt"}
+    {"cap_exceeded", "loop_detected", "output_clamped", "loop_nudge", "run_receipt",
+     "quota_threshold", "quota_exceeded", "quota_parallel", "quota_receipt"}
 )
 
 # Only these fields may appear in an alert payload.  Anything else is dropped.
@@ -75,6 +80,9 @@ ALLOWED_FIELDS = frozenset(
         "remaining_usd",
         "requests",
         "exit_code",
+        "window",
+        "quota_pct",
+        "share_pct",
     }
 )
 
@@ -160,6 +168,18 @@ def format_alert(event: Mapping[str, Any]) -> str:
             + (f" of ${cap} cap" if cap not in (None, "None") else "")
             + f", {event.get('requests', '?')} requests."
         )
+    if kind.startswith("quota_"):
+        label = "weekly" if event.get("window") == "week" else "5-hour"
+        share = event.get("share_pct", "?")
+        quota = event.get("quota_pct", "?")
+        if kind == "quota_threshold":
+            return f"{prefix}: job used {share}% of the {label} subscription quota (80% of its {quota}% limit)."
+        if kind == "quota_exceeded":
+            return f"{prefix}: QUOTA LIMIT HIT: job used {share}% of the {label} quota (limit {quota}%). Stopping the agent."
+        if kind == "quota_parallel":
+            return f"{prefix}: another session is using the same subscription; its usage counts against this job."
+        return (f"{prefix}: job finished ({event.get('reason', '?')}, exit {event.get('exit_code', '?')}): "
+                f"used {share}% of the {label} quota (limit {quota}%).")
     if kind == "usage_missing":
         return (
             f"{prefix}: upstream returned no usage; charged the full "
@@ -238,7 +258,7 @@ class AlertDispatcher:
         message = format_alert(event)
         color = (
             YELLOW
-            if kind in {"output_clamped", "request_too_large", "loop_nudge"}
+            if kind in {"output_clamped", "request_too_large", "loop_nudge", "quota_threshold", "quota_parallel"}
             else RED
         )
         if kind not in REMOTE_ONLY_EVENTS:
