@@ -143,7 +143,8 @@ _ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 _VOLATILE_RE = re.compile(
-    r"(toolu_|call_|fc_|msg_|resp_)[A-Za-z0-9_-]+|"
+    r"(toolu_|call[_-]|fc_|msg_|resp_|chatcmpl-)[A-Za-z0-9_-]+|"
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|"
     r"\b\d{4}-\d{2}-\d{2}[T ][0-9:.]+Z?\b|\b0x[0-9a-f]+\b|\b\d{5,}\b",
     re.IGNORECASE,
 )

@@ -331,3 +331,20 @@ def test_quota_help_mentions_agy():
     text = cli.build_parser().format_help() if hasattr(cli, "build_parser") else ""
     src = open(cli.__file__).read()
     assert "claude/codex only" not in src
+
+
+def test_proxy_loop_breaker_ignores_hyphenated_and_uuid_tool_call_ids():
+    import uuid
+    from agentcap.loop import RunawayDetector
+    d = RunawayDetector()
+    msgs = [{"role": "user", "content": "run ls 8 times"}]
+    trip = None
+    for i in range(6):
+        cid = ("call-" if i % 2 else "") + str(uuid.uuid4())
+        msgs = msgs + [
+            {"role": "assistant", "content": None, "tool_calls": [{"id": cid, "type": "function",
+             "function": {"name": "shell", "arguments": "{\"command\":\"ls\"}"}}]},
+            {"role": "tool", "tool_call_id": cid, "content": "(no output)"},
+        ]
+        trip = d.check({"model": "nvidia/x:free", "messages": msgs}) or trip
+    assert trip and trip["kind"] == "repeat"
