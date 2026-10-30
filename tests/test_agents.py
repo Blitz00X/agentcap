@@ -160,3 +160,14 @@ def test_top_level_and_subcommand_help_render(capsys):
         with _p.raises(SystemExit) as e:
             main(argv)
         assert e.value.code == 0
+
+
+def test_waste_cache_misses_come_first_with_suggestion(home, capsys):
+    assert cli.main(["waste", "--since", "all"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    heads = [i for i, l in enumerate(lines) if l.split("  ")[0].strip() in
+             ("CACHE MISSES", "SUBAGENTS", "OPUS", "REPEATED TOOL CALLS", "TOOL ERROR STREAKS")]
+    assert lines[heads[0]].startswith("CACHE MISSES")
+    tip = [l for l in lines if l.strip().startswith("Tip:")]
+    assert tip and "new session" in tip[0] and "/clear" in tip[0]
+    assert tip[0] == lines[heads[1] - 1]  # tip closes the cache section

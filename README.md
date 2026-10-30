@@ -463,6 +463,10 @@ agentcap run -- codex exec "..."     # uses the $2 task cap from the budget
 agentcap run --quota -- claude       # uses the 5% / 5h quota from the budget
 ```
 
+Tools like agent-tree show you what your subagents are doing; AgentCap also stops them when they loop
+(same tool call 4x in a row or 8 tool errors in a row, Pro). `agentcap waste` lists cache misses first:
+resuming a session after the cache expired re-writes the whole prompt cache, so start a new session (or `/clear`) after a break.
+
 - **Store:** `~/.local/share/agentcap/usage.db` (`$XDG_DATA_HOME` respected, mode 600). `import` is
   idempotent; it reads only `*.jsonl` session logs and AgentCap's own files. It never opens auth or
   credential files, never stores prompt or response text, and never touches network or OAuth traffic.

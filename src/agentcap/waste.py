@@ -407,15 +407,18 @@ def _who(s: Streak) -> str:
 def render(rep: WasteReport, period: str, top: int = 3) -> str:
     out = [f"agentcap waste - {period} - {rep.sessions} sessions - ${rep.total_usd:,.2f} API-equivalent",
            "(local Claude Code / Codex logs, read-only; $ are estimates at API list prices)", ""]
-    out.append(f"SUBAGENTS            {_m(rep.subagent_usd):>10}  {rep.subagent_share * 100:4.0f}% of spend"
-               f"  in {rep.subagent_threads} subagent/forked threads")
-    out.append(f"OPUS                 {_m(rep.opus_usd):>10}  {rep.opus_share * 100:4.0f}% of spend")
     cm = sum(m.usd for m in rep.cache_misses)
     out.append(f"CACHE MISSES         {_m(cm):>10}  {len(rep.cache_misses)} cache re-writes after the TTL ran out"
                " (5 min, or 1 h)")
     for m in rep.cache_misses[:top]:
         out.append(f"   {m.source:<6} {_sid(m.session):<8}  idle {m.gap_s / 60:5.0f} min  "
                    f"{m.tokens / 1000:7.1f}k tok rewritten  ${m.usd:.2f}")
+    if rep.cache_misses:
+        out.append(f"   Tip: you resumed {len(rep.cache_misses)}x after the cache expired and paid ~{_m(cm)} to"
+                   " re-write it. Start a new session (or /clear) instead of resuming after a break.")
+    out.append(f"SUBAGENTS            {_m(rep.subagent_usd):>10}  {rep.subagent_share * 100:4.0f}% of spend"
+               f"  in {rep.subagent_threads} subagent/forked threads")
+    out.append(f"OPUS                 {_m(rep.opus_usd):>10}  {rep.opus_share * 100:4.0f}% of spend")
     rp = sum(s.usd for s in rep.repeat_streaks)
     out.append(f"REPEATED TOOL CALLS  {_m(rp):>10}  {len(rep.repeat_streaks)} streaks of >= {REPEAT_MIN}"
                " identical calls in a row")
