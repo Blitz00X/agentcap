@@ -47,7 +47,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     wst.add_argument("--top", type=int, default=3)
     wst.add_argument("--json", action="store_true")
 
-    bud = subparsers.add_parser("budget", help="set task/hour/day $ caps and per-job quota % in one place")
+    bud = subparsers.add_parser("budget", help="set task/hour/day $ caps and per-job quota %% in one place")
     bsub = bud.add_subparsers(dest="budget_action")
     bset = bsub.add_parser("set", help="set or change budget values (others are kept)")
     bset.add_argument("--task-usd", help="per run/session cap in API $ (default for run --cap)")

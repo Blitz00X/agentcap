@@ -238,7 +238,7 @@ No pip install: the plugin is stdlib Python (`python3` on PATH). How it works:
 - Plugin hooks: `PreToolUse` warns at 80% and, on **Pro**, denies tool calls at the limit;
   `Stop` prints a receipt (`session 4.2% / 5% (weekly)`). **Free:** live meter + one notice
   at the limit (`Pro would stop the agent here`). Pro is read from the licence the `agentcap`
-  CLI stores after `agentcap activate`.
+  CLI stores after `agentcap license activate <KEY>`.
 - Loop breaker (works with or without `/agentcap:quota`): `PreToolUse` hashes each tool call
   (name + input, per session and per subagent; polling tools like `TaskOutput`/`BashOutput`
   are ignored). The 4th identical call in a row is denied with `continue: false` on **Pro**;

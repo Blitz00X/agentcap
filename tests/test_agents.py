@@ -151,3 +151,12 @@ def test_polling_tools_are_not_loops(tmp_path):
     (d / "rollout-y.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
     w = waste.scan(home=tmp_path, codex_dir=d, claude_dir=tmp_path / "none")
     assert w.repeat_streaks == []
+
+
+def test_top_level_and_subcommand_help_render(capsys):
+    import pytest as _p
+    from agentcap.cli import main
+    for argv in (["--help"], ["budget", "--help"], ["waste", "--help"], ["report", "--help"], ["run", "--help"]):
+        with _p.raises(SystemExit) as e:
+            main(argv)
+        assert e.value.code == 0
