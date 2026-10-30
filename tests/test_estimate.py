@@ -424,7 +424,7 @@ def test_invalid_n_is_treated_as_one(store):
 
 def test_unknown_provider_rejected(store):
     with pytest.raises(ValueError):
-        max_output_tokens("anthropic", {}, store.get("openai/gpt-4o"))
+        max_output_tokens("mistral", {}, store.get("openai/gpt-4o"))
 
 
 def test_estimate_request_is_consistent(store):

@@ -31,11 +31,13 @@ def test_bundled_prices_are_verified_with_sources(store):
     assert store.verified is True
     assert store.note
     assert store.version == "2026.10.25"
-    assert set(store.sources) == {"openai", "google"}
+    assert set(store.sources) == {"openai", "google", "anthropic"}
     for key in store.keys():
         price = store.get(key)
         assert price.verified is True, key
-        assert price.verified_at == "2026-10-25", key
+        # anthropic/* entries were added and verified on 2026-10-30 (0.1.5).
+        expected = "2026-10-30" if key.startswith("anthropic/") else "2026-10-25"
+        assert price.verified_at == expected, key
         assert price.source.startswith("https://"), key
 
 

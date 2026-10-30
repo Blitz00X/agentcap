@@ -358,8 +358,10 @@ def test_hour_and_day_caps_respect_feature_gating(tmp_path):
     free_response, free_upstream = run_with(
         Caps(hour_usd=D("0.001")), FREE_FEATURES, "free.db"
     )
-    assert free_response.status_code == 200
-    assert free_upstream.calls == 1
+    # 0.1.5: hour/day caps are Free features, so Free enforces them too.
+    assert free_response.status_code == 429
+    assert "scope=hour" in json.loads(free_response.content)["error"]["message"]
+    assert free_upstream.calls == 0
 
     pro_response, pro_upstream = run_with(
         Caps(hour_usd=D("0.001")), features("pro"), "pro-hour.db"

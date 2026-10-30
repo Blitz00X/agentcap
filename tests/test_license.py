@@ -189,7 +189,7 @@ def write_cached(tmp_path, key: str, clock: FakeClock):
 
 
 def test_feature_gating():
-    assert features("free") == {"run_cap", "terminal_alerts"}
+    assert features("free") == {"run_cap", "hour_cap", "day_cap", "terminal_alerts"}
     assert features("pro") == {
         "run_cap",
         "terminal_alerts",
@@ -198,6 +198,7 @@ def test_feature_gating():
         "loop_detection",
         "webhook_alerts",
         "telegram_alerts",
+        "spend_receipt",  # 0.1.5 Pro unattended pack
     }
     assert features("free") < features("pro")
     assert features("unknown-tier") == features("free")

@@ -455,7 +455,7 @@ def test_zero_request_hint_for_unknown_cli_names_supported_tools(tmp_path):
     assert runner.run() == 0
     output = stderr.getvalue()
     assert "hint: agentcap saw no API requests." in output
-    assert "hint: supported: codex, gemini" in output
+    assert "hint: supported: claude, codex, gemini" in output
     assert "OPENAI_BASE_URL / GOOGLE_GEMINI_BASE_URL" in output
     assert "agentcap run --cap 1 -- python your_script.py" in output
     # The no-traffic hint comes first, then the supported-CLI hint.
