@@ -64,3 +64,10 @@ def body(model="claude-sonnet-5-5", max_tokens=1000, text="hello world " * 50, *
     data = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": text}]}
     data.update(extra)
     return data
+
+
+@pytest.fixture(autouse=True)
+def _isolated_budget_config(tmp_path, monkeypatch):
+    """Never let a developer's real budget.json leak into the suite."""
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))

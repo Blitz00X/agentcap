@@ -154,12 +154,15 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--quota",
         default=None,
+        nargs="?",
+        const="budget",
         help="subscription quota mode (Pro): stop this job after it used this "
-        "share of your Claude Pro/Max or ChatGPT quota, e.g. 5%% (claude/codex only)",
+        "share of your Claude Pro/Max or ChatGPT quota, e.g. 5%% (claude/codex only; "
+        "bare --quota uses `agentcap budget`)",
     )
     run.add_argument(
-        "--window", default="week", choices=("week", "5h"),
-        help="quota window for --quota (default: week)",
+        "--window", default=None, choices=("week", "5h"),
+        help="quota window for --quota (default: budget window or week)",
     )
     run.add_argument("--port", type=int, default=0, help="proxy port (default: random free)")
     run.add_argument(
@@ -445,8 +448,14 @@ def _run(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"agentcap: {exc}", file=sys.stderr)
         return 2
+    from . import budget as budget_mod
+
+    plan = budget_mod.load()
     if cap is None:
-        cap = cap_from_env()
+        if plan.task_usd is not None and not os.environ.get("AGENTCAP_CAP"):
+            cap = plan.task_usd
+        else:
+            cap = cap_from_env()
 
     overrides = _upstream_overrides()
     if overrides is None:
@@ -460,6 +469,22 @@ def _run(args: argparse.Namespace) -> int:
         print(PRO_CAP_MESSAGE, file=sys.stderr)
         print(PRO_HINT, file=sys.stderr)
         return 2
+    ignored = []
+    if hour_cap is None and plan.hour_usd is not None:
+        if "hour_cap" in active_features:
+            hour_cap = plan.hour_usd
+        else:
+            ignored.append("hour")
+    if day_cap is None and plan.day_usd is not None:
+        if "day_cap" in active_features:
+            day_cap = plan.day_usd
+        else:
+            ignored.append("day")
+    if ignored:
+        print(
+            f"agentcap: budget {'/'.join(ignored)} cap ignored: hour/day caps need Pro.",
+            file=sys.stderr,
+        )
     _warn_alerts_need_pro(active_features)
 
     try:
@@ -504,8 +529,21 @@ def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
     if args.cap is not None or args.hour_cap is not None or args.day_cap is not None:
         print(QUOTA_CONFLICT, file=sys.stderr)
         return 2
+    from . import budget as budget_mod
+
+    plan = budget_mod.load()
+    raw_quota = args.quota
+    if raw_quota == "budget":
+        if plan.task_quota is None:
+            print(
+                "agentcap: bare --quota needs a budget: agentcap budget set --task-quota 5%",
+                file=sys.stderr,
+            )
+            return 2
+        raw_quota = f"{plan.task_quota:g}%"
+    window = args.window or plan.window or "week"
     try:
-        quota = parse_quota(args.quota)
+        quota = parse_quota(raw_quota)
     except ValueError as exc:
         print(f"agentcap: {exc}", file=sys.stderr)
         return 2
@@ -526,7 +564,7 @@ def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
         runner = QuotaRunner(
             argv,
             quota=quota,
-            window=args.window,
+            window=window,
             enforce=enforce,
             alerts=alerts.emit if enforce else None,
             quiet=args.quiet,
@@ -558,8 +596,14 @@ def _serve(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"agentcap: {exc}", file=sys.stderr)
         return 2
+    from . import budget as budget_mod
+
+    plan = budget_mod.load()
     if cap is None:
-        cap = cap_from_env()
+        if plan.task_usd is not None and not os.environ.get("AGENTCAP_CAP"):
+            cap = plan.task_usd
+        else:
+            cap = cap_from_env()
 
     overrides = _upstream_overrides()
     if overrides is None:

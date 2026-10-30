@@ -39,6 +39,7 @@ TERMINAL_EVENTS = frozenset(
         "quota_exceeded",
         "quota_parallel",
         "quota_receipt",
+        "cap_eta",
     }
 )
 
@@ -54,7 +55,7 @@ PRICING_URL = "https://agentcap.launchbench.studio/#pricing"
 # budget-clamp notice, no matter how many later requests are rejected).
 ONCE_EVENTS = frozenset(
     {"cap_exceeded", "loop_detected", "output_clamped", "loop_nudge", "run_receipt",
-     "quota_threshold", "quota_exceeded", "quota_parallel", "quota_receipt"}
+     "quota_threshold", "quota_exceeded", "quota_parallel", "quota_receipt", "cap_eta"}
 )
 
 # Only these fields may appear in an alert payload.  Anything else is dropped.
@@ -83,6 +84,7 @@ ALLOWED_FIELDS = frozenset(
         "window",
         "quota_pct",
         "share_pct",
+        "eta_minutes",
     }
 )
 
@@ -127,6 +129,12 @@ def format_alert(event: Mapping[str, Any]) -> str:
     run = event.get("run_id")
     prefix = "agentcap" + (f" [{redact(str(run))}]" if run else "")
 
+    if kind == "cap_eta":
+        return (
+            f"{prefix}: at the current burn rate the ${event.get('cap_usd', '?')} "
+            f"{event.get('scope', 'run')} cap is hit in ~{event.get('eta_minutes', '?')} min "
+            f"(${event.get('spent_usd', '?')} spent)."
+        )
     if kind == "cap_threshold":
         threshold = event.get("threshold", "?")
         return (
@@ -258,7 +266,7 @@ class AlertDispatcher:
         message = format_alert(event)
         color = (
             YELLOW
-            if kind in {"output_clamped", "request_too_large", "loop_nudge", "quota_threshold", "quota_parallel"}
+            if kind in {"output_clamped", "request_too_large", "loop_nudge", "quota_threshold", "quota_parallel", "cap_eta"}
             else RED
         )
         if kind not in REMOTE_ONLY_EVENTS:

@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import history, report
+from . import budget, history, report
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -25,6 +25,19 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     fmt = rep.add_mutually_exclusive_group()
     fmt.add_argument("--json", action="store_true")
     fmt.add_argument("--csv", action="store_true")
+
+    bud = subparsers.add_parser("budget", help="set task/hour/day $ caps and per-job quota % in one place")
+    bsub = bud.add_subparsers(dest="budget_action")
+    bset = bsub.add_parser("set", help="set or change budget values (others are kept)")
+    bset.add_argument("--task-usd", help="per run/session cap in API $ (default for run --cap)")
+    bset.add_argument("--session-usd", dest="task_usd_alias",
+                      help="alias of --task-usd: one agentcap run is one agent session")
+    bset.add_argument("--hour-usd", help="rolling hour cap across runs (Pro)")
+    bset.add_argument("--day-usd", help="rolling day cap across runs (Pro)")
+    bset.add_argument("--task-quota", help="per job share of subscription quota, e.g. 5%% (Pro stops)")
+    bset.add_argument("--window", choices=("week", "5h"), help="quota window for --task-quota")
+    bsub.add_parser("show", help="print the current budget")
+    bsub.add_parser("clear", help="delete the budget file")
 
 
 def _do_import(args: argparse.Namespace, store: history.HistoryStore, quiet: bool = False) -> history.ImportStats:
@@ -45,7 +58,40 @@ def _do_import(args: argparse.Namespace, store: history.HistoryStore, quiet: boo
     return stats
 
 
+def _budget(args: argparse.Namespace) -> int:
+    action = args.budget_action or "show"
+    if action == "clear":
+        budget.clear()
+        print("agentcap: budget cleared.")
+        return 0
+    if action == "set":
+        current = budget.load()
+        data = {k: getattr(current, k) for k in ("task_usd", "hour_usd", "day_usd", "task_quota", "window")}
+        try:
+            task = args.task_usd or args.task_usd_alias
+            if task is not None:
+                data["task_usd"] = budget.parse_usd(task, "--task-usd")
+            if args.hour_usd is not None:
+                data["hour_usd"] = budget.parse_usd(args.hour_usd, "--hour-usd")
+            if args.day_usd is not None:
+                data["day_usd"] = budget.parse_usd(args.day_usd, "--day-usd")
+            if args.task_quota is not None:
+                data["task_quota"] = budget.parse_pct(args.task_quota, "--task-quota")
+            if args.window is not None:
+                data["window"] = args.window
+        except ValueError as exc:
+            print(f"agentcap: {exc}", file=sys.stderr)
+            return 2
+        path = budget.save(budget.Budget(**data))
+        print(f"agentcap: budget saved to {path}")
+    for line in budget.describe(budget.load()):
+        print(line)
+    return 0
+
+
 def dispatch(args: argparse.Namespace) -> int | None:
+    if args.subcommand == "budget":
+        return _budget(args)
     if args.subcommand == "import":
         _do_import(args, history.HistoryStore(args.db))
         return 0

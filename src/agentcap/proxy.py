@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import ROUND_CEILING, Decimal
@@ -1477,6 +1478,23 @@ class _Proxy:
         if cap is None or cap <= 0:
             return
         spent = self.ledger.spent(self.config.run_id)
+        warner = getattr(self, "_eta_warner", None)
+        if warner is None or warner.cap != float(cap):
+            from .eta import EtaWarner
+
+            clock = getattr(self, "_eta_clock", None) or time.monotonic
+            warner = self._eta_warner = EtaWarner(cap, clock=clock)
+        eta = warner.observe(spent)
+        if eta is not None:
+            self._emit(
+                {
+                    "type": "cap_eta",
+                    "scope": "run",
+                    "eta_minutes": max(int(round(eta)), 0),
+                    "spent_usd": str(spent),
+                    "cap_usd": str(cap),
+                }
+            )
         for threshold in (50, 80, 100):
             if threshold in self._thresholds_emitted:
                 continue
