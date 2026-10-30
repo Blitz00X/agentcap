@@ -1,3 +1,4 @@
+import json
 import shutil
 import sqlite3
 from decimal import Decimal
@@ -169,3 +170,31 @@ def test_statusline_appends_sample_only_on_change(tmp_path, monkeypatch):
     quota.statusline_main(job, io.StringIO(_json.dumps(payload)), io.StringIO(), now=3.0)
     lines = (tmp_path / "st" / "claude_samples.jsonl").read_text().splitlines()
     assert len(lines) == 2
+
+
+def test_codex_cache_write_and_token_usage_record_lines(store, tmp_path):
+    d = tmp_path / "sessions" / "2026" / "10" / "30"
+    d.mkdir(parents=True)
+    usage = {"input_tokens": 10000, "cached_input_tokens": 6000, "cache_write_input_tokens": 1000,
+             "output_tokens": 300, "reasoning_output_tokens": 100, "total_tokens": 10300}
+    lines = [
+        {"timestamp": "2026-10-30T10:00:00Z", "type": "session_meta",
+         "payload": {"id": "sess-r", "cwd": "/w", "history_mode": "x", "base_instructions": {"text": "REDACTED"}}},
+        {"timestamp": "2026-10-30T10:00:01Z", "type": "turn_context", "payload": {"model": "gpt-5.4"}},
+        {"timestamp": "2026-10-30T10:00:02Z", "ordinal": 1, "type": "token_usage_record",
+         "payload": {"session_id": "sess-r", "usage": usage, "turn_token_usage": usage, "thread_token_usage": usage}},
+        {"timestamp": "2026-10-30T10:00:03Z", "type": "event_msg", "payload": {"type": "token_count",
+         "info": {"last_token_usage": usage, "total_token_usage": usage, "model_context_window": 1,
+                  "last_usage_includes_reasoning": True},
+         "rate_limits": {"limit_id": "codex", "plan_type": "plus", "credits": None,
+                         "primary": {"used_percent": 5.0, "window_minutes": 300, "resets_at": 1793376000},
+                         "secondary": {"used_percent": 1.0, "window_minutes": 10080, "resets_at": 1793900000}}}},
+    ]
+    (d / "rollout-2026-10-30T10-00-00-sess-r.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    stats = history.import_codex(store, tmp_path / "sessions")
+    assert stats.imported == 1  # token_usage_record is not double counted
+    row = store.events()[0]
+    assert row["cache_read_tokens"] == 6000
+    assert row["cache_write_tokens"] == 1000
+    assert row["input_tokens"] == 3000
+    assert row["output_tokens"] == 300

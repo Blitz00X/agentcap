@@ -82,9 +82,9 @@ def test_calibration_trend_shows_shrinking_limit(store):
         r = base + week
         qs(store, base, 10.0, resets=r)
         ev(store, f"e{i}", base + 5, inp=tok, usd="0.10")
-        qs(store, base + 10, 11.0, resets=r)
+        qs(store, base + 10, 20.0, resets=r)
     rows = analytics.calibration(store, "codex", "week")
-    assert [round(x.tokens_per_pct) for x in rows] == [10000, 5000]
+    assert [round(x.tokens_per_pct) for x in rows] == [1000, 500]
     text = analytics.render_calibration(rows, "codex", "week")
     assert "1% of week quota" in text
     assert "-50%" in text
@@ -197,3 +197,59 @@ def test_pro_receipts_csv(cli_env, capsys):
     ev(s, "1", T0, project="/r/api", usd="1.00")
     assert cli.main(["report", "receipts", "--by", "repo", "--csv", "--no-import", "--since", "all"]) == 0
     assert capsys.readouterr().out.startswith("repo,")
+
+
+# ---------------- real-log quirks (redacted shapes from a real Codex install)
+def test_calibration_ignores_sawtooth_from_parallel_sessions(store):
+    # two sessions report the same account; one lags behind with stale %
+    r = T0 + 5 * H
+    seq = [(0, 10), (60, 12), (61, 10), (120, 14), (121, 12), (180, 16)]
+    for i, (dt, pct) in enumerate(seq):
+        qs(store, T0 + dt, pct, window="5h", resets=r)
+        ev(store, f"x{i}", T0 + dt + 1, inp=1000, usd="0.01")
+    rows = analytics.calibration(store, "codex", "5h")
+    assert len(rows) == 1
+    assert rows[0].pct == pytest.approx(6.0)  # 10 -> 16, not the sawtooth sum
+
+
+def test_calibration_period_survives_small_resets_at_jitter(store):
+    base = T0 + 5 * H
+    qs(store, T0, 10.0, window="5h", resets=base)
+    ev(store, "a", T0 + 1, inp=5000, usd="0.01")
+    qs(store, T0 + 60, 15.0, window="5h", resets=base + 900)  # jitter, same window
+    assert len(analytics.calibration(store, "codex", "5h")) == 1
+
+
+def test_calibration_never_reports_more_than_100_pct_in_one_period(store):
+    r = T0 + 5 * H
+    for i in range(30):
+        qs(store, T0 + i * 60, (i * 7) % 100, window="5h", resets=r)
+        ev(store, f"z{i}", T0 + i * 60 + 1, inp=1000)
+    assert all(row.pct <= 100 for row in analytics.calibration(store, "codex", "5h"))
+
+
+def test_forecast_at_limit_says_limit_reached(store):
+    qs(store, T0, 90.0, window="5h", resets=T0 + 2 * H)
+    qs(store, T0 + 600, 100.0, window="5h", resets=T0 + 2 * H)
+    f = analytics.forecast(store, "codex", "5h", now=T0 + 600)
+    assert "limit reached" in analytics.render_forecast([f], now=T0 + 600)
+
+
+def test_forecast_rate_uses_running_max_not_stale_samples(store):
+    r = T0 + 7 * 24 * H
+    for dt, pct in ((0, 10), (1800, 12), (1801, 9), (3600, 14)):
+        qs(store, T0 + dt, pct, resets=r)
+    f = analytics.forecast(store, "codex", "week", now=T0 + 3600)
+    assert f.used_percent == 14.0
+    assert f.rate_per_hour == pytest.approx(4.0)
+
+
+def test_calibration_trend_uses_only_substantial_periods(store):
+    week = 7 * 24 * H
+    for i, (pct, tok) in enumerate(((1.0, 500), (20.0, 200000), (20.0, 100000))):
+        base = T0 + i * week
+        qs(store, base, 10.0, resets=base + week)
+        ev(store, f"t{i}", base + 5, inp=tok)
+        qs(store, base + 10, 10.0 + pct, resets=base + week)
+    text = analytics.render_calibration(analytics.calibration(store, "codex", "week"), "codex", "week")
+    assert "-50%" in text  # compared with the first period that has >= 5%

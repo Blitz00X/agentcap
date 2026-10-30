@@ -209,8 +209,8 @@ class _Pricer:
                 value = cost(
                     price, inp + cread + cwrite, cread, out, cache_write_tokens=cwrite
                 )
-            else:
-                value = cost(price, inp + cread, cread, out)
+            else:  # OpenAI: cache writes bill as ordinary input
+                value = cost(price, inp + cread + cwrite, cread, out)
         except (PricingError, ValueError):
             return None
         return str(value.quantize(Decimal("0.000001")))
@@ -345,16 +345,18 @@ def import_codex(store: HistoryStore, root: Path, pricer: _Pricer | None = None)
             last_total = marker
             inp_all = _int(last.get("input_tokens"))
             cread = min(_int(last.get("cached_input_tokens")), inp_all)
+            # newer Codex logs carry cache_write_input_tokens (part of input_tokens)
+            cwrite = min(_int(last.get("cache_write_input_tokens")), inp_all - cread)
             out = _int(last.get("output_tokens"))
-            usd = pricer.usd(model, inp_all - cread, cread, 0, out)
+            usd = pricer.usd(model, inp_all - cread - cwrite, cread, cwrite, out)
             if usd is None:
                 stats.unpriced += 1
             rows.append(
                 {
                     "dedupe_key": f"codex:{session or path.name}:{_int(total.get('total_tokens'))}:{ts}",
                     "source": "codex", "ts": ts, "session_id": session, "project": cwd,
-                    "branch": branch, "model": model, "input_tokens": inp_all - cread,
-                    "cache_read_tokens": cread, "cache_write_tokens": 0,
+                    "branch": branch, "model": model, "input_tokens": inp_all - cread - cwrite,
+                    "cache_read_tokens": cread, "cache_write_tokens": cwrite,
                     "output_tokens": out, "usd": usd,
                 }
             )

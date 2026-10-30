@@ -26,13 +26,22 @@ class Plan:
 
 
 PLANS: tuple[Plan, ...] = (
-    # https://claude.com/pricing  (Pro $20/mo billed monthly; Max from $100; Max 20x $200)
+    # https://claude.com/pricing (checked 2026-10-30): Pro $20 billed monthly ($17/mo annual),
+    # Max "from $100" (5x); Max 20x $200 (same page: Max 20x includes $200/mo API credits)
     Plan("Claude Pro", "claude", Decimal("20"), "https://claude.com/pricing"),
     Plan("Claude Max 5x", "claude", Decimal("100"), "https://claude.com/pricing"),
     Plan("Claude Max 20x", "claude", Decimal("200"), "https://claude.com/pricing"),
-    # https://chatgpt.com/pricing  (Plus $20/mo; Pro $200/mo) - Codex is included
-    Plan("ChatGPT Plus", "codex", Decimal("20"), "https://chatgpt.com/pricing"),
-    Plan("ChatGPT Pro", "codex", Decimal("200"), "https://chatgpt.com/pricing"),
+    # Plus $20/mo: https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus
+    Plan("ChatGPT Plus", "codex", Decimal("20"),
+         "https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus"),
+    # Pro tiers $100 / $200 / $500 per month (monthly only):
+    # https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers
+    Plan("ChatGPT Pro 100", "codex", Decimal("100"),
+         "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers"),
+    Plan("ChatGPT Pro 200", "codex", Decimal("200"),
+         "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers"),
+    Plan("ChatGPT Pro 500", "codex", Decimal("500"),
+         "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers"),
 )
 
 

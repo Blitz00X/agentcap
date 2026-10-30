@@ -29,6 +29,57 @@ def _same_period(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return abs(ra - rb) <= RESET_TOLERANCE_S
 
 
+PERIOD_TOLERANCE_S = {"5h": 1800.0, "week": 6 * 3600.0}
+MIN_TREND_PCT = 5.0
+
+
+def _periods(samples: list[dict[str, Any]], window: str) -> list[list[dict[str, Any]]]:
+    """Split samples into quota periods (one per reset).
+
+    ``resets_at`` jitters by minutes between readings, so a new period starts
+    only when it moves by more than the tolerance (or when no reset time is
+    known and the percentage drops sharply).
+    """
+
+    tol = PERIOD_TOLERANCE_S.get(window, RESET_TOLERANCE_S)
+    out: list[list[dict[str, Any]]] = []
+    anchor: float | None = None
+    peak = 0.0
+    for s in samples:
+        r = s.get("resets_at")
+        new = not out
+        if not new and r is not None and anchor is not None and abs(r - anchor) > tol:
+            new = True
+        if not new and r is None and s["used_percent"] < peak - 20:
+            new = True
+        if new:
+            out.append([])
+            peak = 0.0
+            anchor = r
+        elif anchor is None:
+            anchor = r
+        out[-1].append(s)
+        peak = max(peak, s["used_percent"])
+    return out
+
+
+def _rises(period: list[dict[str, Any]]) -> list[tuple[float, float, float]]:
+    """(from_ts, to_ts, delta) for every new running maximum.
+
+    Parallel sessions report the same account with lagging values; only a new
+    high-water mark is real progress, so stale lower readings are ignored.
+    """
+
+    rises = []
+    peak = period[0]["used_percent"]
+    peak_ts = period[0]["ts"]
+    for s in period[1:]:
+        if s["used_percent"] > peak:
+            rises.append((peak_ts, s["ts"], s["used_percent"] - peak))
+            peak, peak_ts = s["used_percent"], s["ts"]
+    return rises
+
+
 def _samples(store: HistoryStore, source: str, window: str) -> list[dict[str, Any]]:
     return [s for s in store.quota_samples(source) if s["window"] == window]
 
@@ -61,17 +112,21 @@ def forecast(store: HistoryStore, source: str, window: str, *, now: float) -> Fo
     samples = _samples(store, source, window)
     if not samples:
         return None
-    last = samples[-1]
+    period = _periods(samples, window)[-1]
+    last = period[-1]
     lookback = FORECAST_LOOKBACK_S.get(window, 24 * 3600.0)
-    period = [s for s in samples if _same_period(s, last) and last["ts"] - s["ts"] <= lookback]
-    first = period[0]
-    hours = (last["ts"] - first["ts"]) / 3600.0
-    rate = (last["used_percent"] - first["used_percent"]) / hours if hours > 0 else 0.0
+    recent = [s for s in period if last["ts"] - s["ts"] <= lookback]
+    first = recent[0]
+    top = max(recent, key=lambda s: (s["used_percent"], -s["ts"]))
+    used = top["used_percent"]
+    hours = (top["ts"] - first["ts"]) / 3600.0
+    rate = (used - first["used_percent"]) / hours if hours > 0 else 0.0
     hits = None
-    if rate > 0 and last["used_percent"] < 100:
-        hits = last["ts"] + (100.0 - last["used_percent"]) / rate * 3600.0
-    resets = last.get("resets_at")
+    if rate > 0 and used < 100:
+        hits = top["ts"] + (100.0 - used) / rate * 3600.0
+    resets = max((s["resets_at"] for s in period if s.get("resets_at")), default=None)
     before = hits is not None and (resets is None or hits < resets)
+    last = {**last, "used_percent": used}
     return Forecast(source, window, last["used_percent"], max(rate, 0.0), hits, resets, before, last["ts"])
 
 
@@ -79,7 +134,10 @@ def render_forecast(items: Iterable[Forecast], *, now: float, warn_hours: float 
     lines = []
     for f in items:
         head = f"{f.source} {f.window:>4}: {f.used_percent:5.1f}% used, +{f.rate_per_hour:.1f}%/h"
-        if f.before_reset and f.hits_at is not None:
+        if f.used_percent >= 100:
+            reset = f", resets {_when(f.resets_at)}" if f.resets_at else ""
+            lines.append(f"{head} -> limit reached{reset}  !! BLOCKED")
+        elif f.before_reset and f.hits_at is not None:
             left_h = (f.hits_at - now) / 3600.0
             mark = "  !! EARLY WARNING" if left_h <= warn_hours else ""
             lines.append(f"{head} -> limit hits at {_when(f.hits_at)} (~{max(left_h, 0):.1f}h){mark}")
@@ -115,47 +173,52 @@ class Calibration:
 def calibration(store: HistoryStore, source: str, window: str) -> list[Calibration]:
     samples = _samples(store, source, window)
     events = [e for e in store.events() if e["source"] == source]
-    periods: dict[Any, Calibration] = {}
-    for a, b in zip(samples, samples[1:]):
-        delta = b["used_percent"] - a["used_percent"]
-        if delta <= 0 or not _same_period(a, b):
-            continue
-        inside = [e for e in events if a["ts"] < e["ts"] <= b["ts"]]
-        tokens = sum(e["input_tokens"] + e["output_tokens"] + e["cache_read_tokens"] + e["cache_write_tokens"] for e in inside)
-        if tokens <= 0:
-            continue
-        usd = sum((Decimal(e["usd"]) for e in inside if e["usd"] is not None), Decimal(0))
-        key = round(b["resets_at"] / RESET_TOLERANCE_S) if b.get("resets_at") else ("ts", int(a["ts"] // 604800))
-        cal = periods.get(key)
-        if cal is None:
-            cal = periods[key] = Calibration(a["ts"], b.get("resets_at"), 0.0, 0, Decimal(0))
-        cal.pct += delta
-        cal.tokens += tokens
-        cal.usd += usd
-        cal.unpriced += sum(1 for e in inside if e["usd"] is None)
-    return sorted(periods.values(), key=lambda c: c.period_start)
+    out: list[Calibration] = []
+    for period in _periods(samples, window):
+        cal = None
+        for t0, t1, delta in _rises(period):
+            inside = [e for e in events if t0 < e["ts"] <= t1]
+            tokens = sum(e["input_tokens"] + e["output_tokens"] + e["cache_read_tokens"]
+                         + e["cache_write_tokens"] for e in inside)
+            if tokens <= 0:
+                continue  # quota moved by usage we cannot see (web, other machine)
+            if cal is None:
+                cal = Calibration(t0, period[-1].get("resets_at"), 0.0, 0, Decimal(0))
+            cal.pct += delta
+            cal.tokens += tokens
+            cal.usd += sum((Decimal(e["usd"]) for e in inside if e["usd"] is not None), Decimal(0))
+            cal.unpriced += sum(1 for e in inside if e["usd"] is None)
+        if cal is not None:
+            out.append(cal)
+    return out
 
 
 def render_calibration(rows: list[Calibration], source: str, window: str) -> str:
     if not rows:
         return (f"{source} {window}: not enough paired samples yet (need quota % to move while"
                 " tokens are logged). Keep using the agent and re-run `agentcap report calibration`.")
-    cur = rows[-1]
+    solid = [r for r in rows if r.pct >= MIN_TREND_PCT] or rows
+    cur = solid[-1]
     out = [
         f"  {source.upper()} - this {window}:  1% of {window} quota = {_tok(cur.tokens_per_pct)} tokens"
         f"  ~ ${cur.usd_per_pct:.2f} API-equivalent",
         "",
         f"  {'period from':<18}{'% seen':>8}{'tokens/1%':>12}{'$/1%':>9}{'vs first':>10}",
     ]
-    base = rows[0].tokens_per_pct
+    base = solid[0].tokens_per_pct
     for r in rows:
-        change = (r.tokens_per_pct / base - 1) * 100 if base else 0.0
+        if r.pct < MIN_TREND_PCT:
+            change = "      n/a"
+        else:
+            change = f"{(r.tokens_per_pct / base - 1) * 100:>+9.0f}%"
         out.append(
             f"  {_when(r.period_start):<18}{r.pct:>7.1f}%{_tok(r.tokens_per_pct):>12}"
-            f"{'$' + format(r.usd_per_pct, '.2f'):>9}{change:>+9.0f}%"
+            f"{'$' + format(r.usd_per_pct, '.2f'):>9}{change:>10}"
         )
-    if len(rows) > 1 and rows[-1].tokens_per_pct < base * 0.85:
+    if len(solid) > 1 and solid[-1].tokens_per_pct < base * 0.85:
         out.append("  ! your quota buys fewer tokens than before: the limit may have shrunk.")
+    out.append(f"  trend uses periods with >= {MIN_TREND_PCT:g}% observed; quota used outside these logs"
+               " (web app, other machines) makes tokens/1% look smaller.")
     out.append("  tokens include cache reads; $ uses list API prices. Small % samples are noisy.")
     return "\n".join(out)
 
