@@ -100,7 +100,7 @@ pipx install .
 
 ## Install in VS Code / Cursor
 
-The **AgentCap** editor extension (0.1.2) starts Claude Code or Codex in an
+The **AgentCap** editor extension (0.2.0) starts Claude Code or Codex in an
 integrated terminal behind `agentcap run --cap`, shows live run spend in the
 status bar, warns at 80% / 95%, and shows a modal when the cap (exit 3) or Pro's
 loop breaker (exit 4) stops the run. It needs the `agentcap` CLI above.
@@ -109,8 +109,8 @@ It is **not on the VS Code Marketplace or Open VSX yet**. Install the `.vsix`
 attached to the [GitHub release](https://github.com/Blitz00X/agentcap/releases):
 
 ```bash
-code --install-extension agentcap-0.1.2.vsix     # VS Code
-cursor --install-extension agentcap-0.1.2.vsix   # Cursor
+code --install-extension agentcap-0.2.0.vsix     # VS Code
+cursor --install-extension agentcap-0.2.0.vsix   # Cursor
 ```
 
 or *Extensions → … → Install from VSIX…*. Then run **AgentCap: Start Codex
@@ -244,7 +244,8 @@ No pip install: the plugin is stdlib Python (`python3` on PATH). How it works:
   are ignored). The 4th identical call in a row is denied with `continue: false` on **Pro**;
   **Free** gets one notice per streak. `PostToolUse` / `PostToolUseFailure` count failing
   tool calls: 8 in a row stops the agent on Pro (`continue: false`), Free gets a notice.
-  Tool input and output are never stored, only a 16-char hash and counts.
+  Tool input and output are never stored, only a 16-char hash and counts; these per-session
+  files are deleted after 7 days (on `SessionStart`).
 - Read-only: no OAuth token, credentials file or API traffic is touched.
 
 Honest limits: the % is account-level (parallel sessions count), the stop can be one request

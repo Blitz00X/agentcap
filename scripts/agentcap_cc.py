@@ -172,6 +172,23 @@ def _emit(stdout: TextIO, obj: Mapping[str, Any]) -> None:
     stdout.write("\n")
 
 
+LOOP_STATE_TTL_S = 7 * 86400
+
+
+def prune_loop_state(now: float) -> None:
+    """Delete per-session loop counters older than 7 days (only our *.json files)."""
+
+    try:
+        for f in (cc_dir() / "loops").glob("*.json"):
+            try:
+                if now - f.stat().st_mtime > LOOP_STATE_TTL_S:
+                    f.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def hook_start(payload: Mapping[str, Any], stdout: TextIO, *, now: float) -> int:
     sid = payload.get("session_id")
     if not isinstance(sid, str) or not sid:
@@ -179,6 +196,7 @@ def hook_start(payload: Mapping[str, Any], stdout: TextIO, *, now: float) -> int
     cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else os.getcwd()
     _atomic_write(cc_dir() / "by_cwd" / f"{cwd_key(cwd)}.json", {"session_id": sid, "ts": now})
     _atomic_write(cc_dir() / "plugin_root.json", {"root": str(ROOT), "ts": now})
+    prune_loop_state(now)
     if not (_read_json(cc_dir() / "statusline.json") or {}).get("installed"):
         _emit(stdout, {"systemMessage": "agentcap: run /agentcap:setup once so it can read your subscription quota (statusLine)."})
     return 0

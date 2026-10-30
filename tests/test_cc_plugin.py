@@ -227,3 +227,18 @@ def test_error_streak_free_nudges(env):
 def test_hooks_json_registers_post_hooks():
     h = json.loads((Path(SCRIPT).parent.parent / "hooks" / "hooks.json").read_text())["hooks"]
     assert "PostToolUse" in h and "PostToolUseFailure" in h
+
+
+def test_session_start_prunes_old_loop_state(env):
+    import os as _os
+    import time as _t
+    loops = cc.cc_dir() / "loops"
+    loops.mkdir(parents=True)
+    old, fresh, other = loops / "old.json", loops / "fresh.json", loops / "keep.txt"
+    for f in (old, fresh, other):
+        f.write_text("{}")
+    week = 8 * 86400
+    _os.utime(old, (_t.time() - week, _t.time() - week))
+    _os.utime(other, (_t.time() - week, _t.time() - week))
+    hook("start", {"session_id": SID, "cwd": "/w", "hook_event_name": "SessionStart"})
+    assert not old.exists() and fresh.exists() and other.exists()
