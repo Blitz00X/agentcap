@@ -33,12 +33,24 @@ TERMINAL_EVENTS = frozenset(
         "overshoot",
         "output_clamped",
         "request_too_large",
+        "loop_nudge",
+        "run_receipt",
     }
 )
 
+#: Free-tier hint: shown in the terminal only, never sent anywhere.
+LOCAL_ONLY_EVENTS = frozenset({"loop_nudge"})
+#: The end-of-run receipt is already printed as the run summary; it only goes
+#: to the Pro channels (webhook / Telegram).
+REMOTE_ONLY_EVENTS = frozenset({"run_receipt"})
+
+PRICING_URL = "https://agentcap.launchbench.studio/#pricing"
+
 # Alerts that must never be repeated for one run (a run has one kill and one
 # budget-clamp notice, no matter how many later requests are rejected).
-ONCE_EVENTS = frozenset({"cap_exceeded", "loop_detected", "output_clamped"})
+ONCE_EVENTS = frozenset(
+    {"cap_exceeded", "loop_detected", "output_clamped", "loop_nudge", "run_receipt"}
+)
 
 # Only these fields may appear in an alert payload.  Anything else is dropped.
 ALLOWED_FIELDS = frozenset(
@@ -61,6 +73,8 @@ ALLOWED_FIELDS = frozenset(
         "run_id",
         "allowed_output_tokens",
         "remaining_usd",
+        "requests",
+        "exit_code",
     }
 )
 
@@ -122,6 +136,31 @@ def format_alert(event: Mapping[str, Any]) -> str:
             f"{prefix}: runaway loop detected (identical request "
             f"{event.get('threshold', '?')} times within "
             f"{event.get('window_s', '?')}s). Stopping the agent."
+        )
+    if kind == "loop_nudge":
+        spent = event.get("spent_usd")
+        try:
+            amount = f"${float(spent):.2f}"
+        except (TypeError, ValueError):
+            amount = "$?"
+        return (
+            f"{prefix}: this looks like a runaway loop (identical request "
+            f"{event.get('threshold', '?')} times within "
+            f"{event.get('window_s', '?')}s). Pro's loop breaker would have "
+            f"stopped this at {amount}. {PRICING_URL}"
+        )
+    if kind == "run_receipt":
+        spent = event.get("spent_usd")
+        try:
+            amount = f"${float(spent):.4f}"
+        except (TypeError, ValueError):
+            amount = "$?"
+        cap = event.get("cap_usd")
+        return (
+            f"{prefix}: run finished ({event.get('reason', '?')}, exit "
+            f"{event.get('exit_code', '?')}): spent {amount}"
+            + (f" of ${cap} cap" if cap not in (None, "None") else "")
+            + f", {event.get('requests', '?')} requests."
         )
     if kind == "usage_missing":
         return (
@@ -199,8 +238,15 @@ class AlertDispatcher:
                     return
                 self._seen_once.add(key)
         message = format_alert(event)
-        color = YELLOW if kind in {"output_clamped", "request_too_large"} else RED
-        self._terminal(message, color=color)
+        color = (
+            YELLOW
+            if kind in {"output_clamped", "request_too_large", "loop_nudge"}
+            else RED
+        )
+        if kind not in REMOTE_ONLY_EVENTS:
+            self._terminal(message, color=color)
+        if kind in LOCAL_ONLY_EVENTS:
+            return
 
         clean = sanitize(event)
         clean.setdefault("run_id", None)

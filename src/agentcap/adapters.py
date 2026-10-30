@@ -34,6 +34,22 @@ from typing import Callable, Mapping, Sequence
 
 CODEX_PACKAGE = "@openai/codex"
 GEMINI_PACKAGE = "@google/gemini-cli"
+CLAUDE_PACKAGE = "@anthropic-ai/claude-code"
+
+#: Claude Code switches that send traffic to a cloud other than the Anthropic
+#: API (Bedrock / Vertex / Foundry).  AgentCap cannot meter those.
+CLAUDE_BYPASS_ENV = (
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+)
+_CLAUDE_ROUTING_ENV = ("ANTHROPIC_BASE_URL",) + CLAUDE_BYPASS_ENV
+
+CLAUDE_CONFLICT_MESSAGE = (
+    "refusing to run Claude Code: {what} would send its requests around "
+    "AgentCap (Bedrock/Vertex/Foundry or a custom ANTHROPIC_BASE_URL). "
+    "Remove it for this run and try again."
+)
 
 # Config keys the user may not set themselves: AgentCap owns the provider
 # routing, and a conflicting override would silently bypass the proxy.
@@ -116,6 +132,8 @@ def detect_agent(argv: Sequence[str]) -> tuple[str, int] | None:
         return "codex", 1
     if name == "gemini":
         return "gemini", 1
+    if name == "claude":
+        return "claude", 1
     package = _npx_package(argv)
     if package is not None:
         package_name, index = package
@@ -123,7 +141,80 @@ def detect_agent(argv: Sequence[str]) -> tuple[str, int] | None:
             return "codex", index + 1
         if package_name == GEMINI_PACKAGE:
             return "gemini", index + 1
+        if package_name == CLAUDE_PACKAGE:
+            return "claude", index + 1
     return None
+
+
+# --------------------------------------------------------------- Claude Code
+def _truthy(value: object) -> bool:
+    return str(value).strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _claude_settings_files(env: Mapping[str, str], cwd: Path) -> list[Path]:
+    home = Path(env.get("HOME") or Path.home())
+    config_dir = env.get("CLAUDE_CONFIG_DIR")
+    user_dir = Path(config_dir) if config_dir else home / ".claude"
+    return [
+        user_dir / "settings.json",
+        cwd / ".claude" / "settings.json",
+        cwd / ".claude" / "settings.local.json",
+    ]
+
+
+def claude_conflicts(
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    *,
+    cwd: Path | None = None,
+) -> list[str]:
+    """Settings that would route Claude Code around the proxy.
+
+    The process environment is checked for the Bedrock/Vertex/Foundry
+    switches (AgentCap sets ``ANTHROPIC_BASE_URL`` itself).  Claude Code also
+    applies an ``env`` block from its settings files, which wins over the
+    process environment, so those files are checked for any routing key.
+    Only key names are reported, never values.
+    """
+
+    detection = detect_agent(argv)
+    if detection is None or detection[0] != "claude":
+        return []
+    found: list[str] = []
+    for name in CLAUDE_BYPASS_ENV:
+        if _truthy(env.get(name, "")):
+            found.append(f"environment variable {name}")
+    for path in _claude_settings_files(env, cwd or Path.cwd()):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        block = data.get("env") if isinstance(data, dict) else None
+        if not isinstance(block, dict):
+            continue
+        for name in _CLAUDE_ROUTING_ENV:
+            if name in block and (
+                name == "ANTHROPIC_BASE_URL" or _truthy(block[name])
+            ):
+                found.append(f"{name} in {path}")
+    return found
+
+
+def ensure_claude_routing_is_safe(
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    *,
+    cwd: Path | None = None,
+) -> None:
+    conflicts = claude_conflicts(argv, env, cwd=cwd)
+    if conflicts:
+        raise AdapterConflict(
+            CLAUDE_CONFLICT_MESSAGE.format(what=", ".join(conflicts))
+        )
+
+
+def claude_base_url(port: int) -> str:
+    return f"http://127.0.0.1:{int(port)}/anthropic"
 
 
 # --------------------------------------------------------------------- Codex
@@ -393,6 +484,13 @@ def prepare_child(
         ensure_codex_routing_is_safe(prepared_argv)
         prepared_argv[index:index] = codex_config_arguments(port)
         return PreparedChild(prepared_argv, prepared_env)
+    if kind == "claude":
+        # Claude Code honours ANTHROPIC_BASE_URL; the bypass switches are
+        # refused up front by ``ensure_claude_routing_is_safe``.
+        prepared_env["ANTHROPIC_BASE_URL"] = claude_base_url(port)
+        for name in CLAUDE_BYPASS_ENV:
+            prepared_env.pop(name, None)
+        return PreparedChild(prepared_argv, prepared_env)
 
     real_gemini = gemini_home(prepared_env) / ".gemini"
     root = Path(tempdir_factory(prefix="agentcap-gemini-"))
@@ -419,6 +517,9 @@ __all__ = [
     "GEMINI_SETTINGS",
     "GEMINI_SETTINGS_FILENAME",
     "PreparedChild",
+    "claude_base_url",
+    "claude_conflicts",
+    "ensure_claude_routing_is_safe",
     "codex_config_arguments",
     "codex_conflicts",
     "detect_agent",

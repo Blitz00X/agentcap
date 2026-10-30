@@ -5,6 +5,7 @@ experiments the upstream base URLs can be overridden with:
 
 * ``AGENTCAP_OPENAI_UPSTREAM``
 * ``AGENTCAP_GEMINI_UPSTREAM``
+* ``AGENTCAP_ANTHROPIC_UPSTREAM``
 
 Safety rule: an override is only accepted when it is ``https://`` or when it is
 ``http://`` and the host is a loopback address (``127.0.0.1``, ``localhost`` or
@@ -24,6 +25,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 OPENAI_UPSTREAM_ENV = "AGENTCAP_OPENAI_UPSTREAM"
 GEMINI_UPSTREAM_ENV = "AGENTCAP_GEMINI_UPSTREAM"
+ANTHROPIC_UPSTREAM_ENV = "AGENTCAP_ANTHROPIC_UPSTREAM"
 
 _LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -108,6 +110,7 @@ def resolve_upstreams(
     for env_name, provider in (
         (OPENAI_UPSTREAM_ENV, "openai"),
         (GEMINI_UPSTREAM_ENV, "gemini"),
+        (ANTHROPIC_UPSTREAM_ENV, "anthropic"),
     ):
         raw = env.get(env_name)
         if raw is None or not raw.strip():
@@ -124,6 +127,7 @@ def resolve_upstreams(
 
 __all__ = [
     "GEMINI_UPSTREAM_ENV",
+    "ANTHROPIC_UPSTREAM_ENV",
     "OPENAI_UPSTREAM_ENV",
     "UpstreamConfigError",
     "UpstreamOverride",

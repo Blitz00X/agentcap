@@ -75,7 +75,9 @@ def fit_output(
     input_rate, _cached_rate, output_rate = effective_rates(
         model_price, input_tokens, now=now
     )
-    if cache_write and model_price.cache_write_per_mtok is not None:
+    if cache_write and model_price.provider == "anthropic":
+        input_rate = input_rate * Decimal("2")
+    elif cache_write and model_price.cache_write_per_mtok is not None:
         input_rate = max(input_rate, model_price.cache_write_per_mtok)
 
     input_cost = (
@@ -148,6 +150,9 @@ def apply_output_clamp(
     if provider == "gemini":
         _apply_gemini_clamp(body, allowed, model_price)
         return
+    if provider == "anthropic":
+        _apply_anthropic_clamp(body, allowed)
+        return
 
     normalised = path.strip("/")
     if normalised == "v1/responses":
@@ -170,6 +175,32 @@ def apply_output_clamp(
             body["max_completion_tokens"] = min(allowed, modern)
         return
     body["max_completion_tokens"] = min(allowed, modern) if modern else allowed
+
+
+ANTHROPIC_MIN_THINKING_BUDGET = 1024
+
+
+def _apply_anthropic_clamp(body: dict[str, Any], allowed: int) -> None:
+    """Lower ``max_tokens`` (which already includes thinking) to ``allowed``.
+
+    Manual extended thinking requires ``budget_tokens < max_tokens`` and
+    ``budget_tokens >= 1024``; the budget is lowered to fit, and dropped when
+    no valid budget fits.  Adaptive thinking needs no change.
+    """
+
+    current = _positive_int(body.get("max_tokens"))
+    new_max = min(allowed, current) if current else allowed
+    body["max_tokens"] = new_max
+    thinking = body.get("thinking")
+    if not isinstance(thinking, dict):
+        return
+    budget = _positive_int(thinking.get("budget_tokens"))
+    if budget is None or budget < new_max:
+        return
+    if new_max - 1 >= ANTHROPIC_MIN_THINKING_BUDGET:
+        thinking["budget_tokens"] = new_max - 1
+    else:
+        body.pop("thinking", None)
 
 
 def _generation_config_key(body: Mapping[str, Any]) -> str:

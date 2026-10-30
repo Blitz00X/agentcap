@@ -97,6 +97,9 @@ class ModelPrice:
     long_context: LongContextPrice | None = None
     schedule: tuple[ScheduleEntry, ...] = ()
     cache_write_per_mtok: Decimal | None = None
+    #: Anthropic fast mode ("speed": "fast") price multiplier.  ``None`` means
+    #: fast mode is not priced for this model and must fail closed.
+    fast_multiplier: Decimal | None = None
 
     @property
     def is_verified(self) -> bool:
@@ -292,6 +295,7 @@ def _parse_model_price(key: str, raw: Any) -> ModelPrice:
         )
     verified, verified_at = _parse_verified(raw.get("verified", False), key=key)
     cache_write = raw.get("cache_write_per_mtok")
+    fast = raw.get("fast_multiplier")
     provider, model = key.split("/", 1)
     return ModelPrice(
         key=key,
@@ -315,6 +319,11 @@ def _parse_model_price(key: str, raw: Any) -> ModelPrice:
         cache_write_per_mtok=(
             _to_decimal(cache_write, field="cache_write_per_mtok", key=key)
             if cache_write is not None
+            else None
+        ),
+        fast_multiplier=(
+            _to_decimal(fast, field="fast_multiplier", key=key)
+            if fast is not None
             else None
         ),
     )
@@ -400,6 +409,18 @@ def _read_json(path: Path) -> Any:
         raise InvalidPricingError(f"{path}: invalid JSON: {exc}") from exc
     except OSError as exc:
         raise InvalidPricingError(f"{path}: cannot read pricing file: {exc}") from exc
+
+
+def _is_anthropic_boundary(rest: str) -> bool:
+    """Anthropic IDs only accept an exact match or a ``-YYYYMMDD`` snapshot.
+
+    ``claude-sonnet-5`` must never price an unknown ``claude-sonnet-5-7``:
+    unknown Claude models fail closed instead of borrowing a family price.
+    """
+
+    if rest == "" or rest[0] in "@:":
+        return True
+    return len(rest) == 9 and rest[0] == "-" and rest[1:].isdigit()
 
 
 def _is_prefix_boundary(rest: str) -> bool:
@@ -505,7 +526,11 @@ class PricingStore:
                 for prefix in (key, price.model):
                     if not candidate.startswith(prefix):
                         continue
-                    if not _is_prefix_boundary(candidate[len(prefix):]):
+                    rest = candidate[len(prefix):]
+                    if price.provider == "anthropic":
+                        if not _is_anthropic_boundary(rest):
+                            continue
+                    elif not _is_prefix_boundary(rest):
                         continue
                     if len(prefix) > best_len:
                         best = price
@@ -579,6 +604,10 @@ def effective_rates(
     return input_rate, cached_rate, output_rate
 
 
+ANTHROPIC_WRITE_5M = Decimal("1.25")
+ANTHROPIC_WRITE_1H = Decimal("2")
+
+
 def cost(
     model_price: ModelPrice,
     input_tokens: int,
@@ -586,8 +615,14 @@ def cost(
     output_tokens: int = 0,
     now: datetime | date | None = None,
     cache_write: bool = False,
+    cache_write_tokens: int = 0,
+    cache_write_1h_tokens: int = 0,
 ) -> Decimal:
     """Cost in USD for a completed request.
+
+    Anthropic models price prompt-cache writes per token instead of via the
+    ``cache_write`` flag: 5-minute writes at 1.25x and 1-hour writes at 2x the
+    (tier-effective) input rate, per Anthropic's published multipliers.
 
     ``input_tokens`` includes cached tokens; ``cached_input_tokens`` is billed
     at the discounted cached rate.  When the prompt crosses a long-context
@@ -600,6 +635,8 @@ def cost(
         ("input_tokens", input_tokens),
         ("cached_input_tokens", cached_input_tokens),
         ("output_tokens", output_tokens),
+        ("cache_write_tokens", cache_write_tokens),
+        ("cache_write_1h_tokens", cache_write_1h_tokens),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"{name} must be a non-negative integer")
@@ -609,6 +646,19 @@ def cost(
     input_rate, cached_rate, output_rate = effective_rates(
         model_price, input_tokens, now=now
     )
+    if model_price.provider == "anthropic":
+        writes = min(cache_write_tokens, uncached)
+        writes_1h = min(cache_write_1h_tokens, writes)
+        writes_5m = writes - writes_1h
+        plain = uncached - writes
+        total = (
+            Decimal(plain) * input_rate
+            + Decimal(writes_5m) * input_rate * ANTHROPIC_WRITE_5M
+            + Decimal(writes_1h) * input_rate * ANTHROPIC_WRITE_1H
+            + Decimal(cached) * cached_rate
+            + Decimal(output_tokens) * output_rate
+        ) / ONE_MILLION
+        return total
     if cache_write and model_price.cache_write_per_mtok is not None:
         input_rate = max(input_rate, model_price.cache_write_per_mtok)
 

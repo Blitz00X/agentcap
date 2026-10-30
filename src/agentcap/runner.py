@@ -17,9 +17,11 @@ import subprocess
 import sys
 import threading
 import time
+import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from decimal import Decimal, ROUND_CEILING
 from typing import Any, Callable, Iterable, Mapping, Sequence, TextIO
 
@@ -28,7 +30,9 @@ import uvicorn
 
 from .adapters import (
     AdapterConflict,
+    claude_base_url,
     detect_agent,
+    ensure_claude_routing_is_safe,
     ensure_codex_routing_is_safe,
     prepare_child,
 )
@@ -38,6 +42,7 @@ from .license import features as license_features
 from .license import status_from_environment
 from .pricing import PricingStore
 from .proxy import (
+    DEFAULT_ANTHROPIC_UPSTREAM,
     DEFAULT_GEMINI_UPSTREAM,
     DEFAULT_OPENAI_UPSTREAM,
     ProxyConfig,
@@ -64,11 +69,12 @@ ZERO_REQUEST_HINT = (
     "hint: agentcap saw no API requests. The wrapped CLI may be using a "
     "subscription/OAuth login (not metered) or a base URL agentcap does not "
     "set. For Codex use an API key (OPENAI_API_KEY); for Gemini use "
-    "GEMINI_API_KEY. See README 'Supported'."
+    "GEMINI_API_KEY; for Claude Code use ANTHROPIC_API_KEY. See README "
+    "'Supported'."
 )
 UNSUPPORTED_CLI_HINT = (
-    "hint: supported: codex, gemini, or any SDK script that honours "
-    "OPENAI_BASE_URL / GOOGLE_GEMINI_BASE_URL. Run `agentcap run --cap 1 -- "
+    "hint: supported: claude, codex, gemini, or any SDK script that honours "
+    "OPENAI_BASE_URL / GOOGLE_GEMINI_BASE_URL / ANTHROPIC_BASE_URL. Run `agentcap run --cap 1 -- "
     "python your_script.py`."
 )
 FIRST_REQUEST_HINT = (
@@ -78,6 +84,15 @@ FIRST_REQUEST_HINT = (
 )
 YELLOW = "\033[33m"
 RESET = "\033[0m"
+
+RECEIPT_DIR_ENV = "AGENTCAP_RECEIPT_DIR"
+
+
+def default_receipt_dir() -> Path:
+    env_path = os.environ.get(RECEIPT_DIR_ENV)
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path.home() / ".local" / "state" / "agentcap" / "receipts"
 
 
 def _hint_usd(value: Decimal) -> str:
@@ -181,6 +196,8 @@ class Runner:
         openai_upstream: str | None = None,
         gemini_upstream: str | None = None,
         trust_workspace: bool = False,
+        anthropic_upstream: str | None = None,
+        receipt_dir: str | os.PathLike[str] | None = None,
     ) -> None:
         if not argv:
             raise ValueError("argv must contain the command to run")
@@ -218,6 +235,10 @@ class Runner:
         self.quiet = quiet
         self.openai_upstream = openai_upstream
         self.gemini_upstream = gemini_upstream
+        self.anthropic_upstream = anthropic_upstream
+        self.receipt_dir = Path(receipt_dir) if receipt_dir is not None else None
+        self.receipt_path: Path | None = None
+        self.started_at = datetime.now(timezone.utc)
         self.trust_workspace = bool(trust_workspace)
 
         self.port: int | None = None
@@ -250,6 +271,8 @@ class Runner:
                 config.openai_upstream = openai_upstream.rstrip("/")
             if gemini_upstream:
                 config.gemini_upstream = gemini_upstream.rstrip("/")
+            if anthropic_upstream:
+                config.anthropic_upstream = anthropic_upstream.rstrip("/")
             self.config = config
             self.run_id = config.run_id
             if config.caps.run_usd is not None:
@@ -277,6 +300,7 @@ class Runner:
                 on_loop_detected=self._on_loop_detected,
                 openai_upstream=openai_upstream or DEFAULT_OPENAI_UPSTREAM,
                 gemini_upstream=gemini_upstream or DEFAULT_GEMINI_UPSTREAM,
+                anthropic_upstream=anthropic_upstream or DEFAULT_ANTHROPIC_UPSTREAM,
             )
         self.clamped_requests = 0
 
@@ -393,6 +417,7 @@ class Runner:
                 "OPENAI_BASE_URL": f"{base}/openai/v1",
                 "GOOGLE_GEMINI_BASE_URL": f"{base}/gemini",
                 "GEMINI_API_BASE_URL": f"{base}/gemini",
+                "ANTHROPIC_BASE_URL": claude_base_url(self.port),
                 "AGENTCAP_RUN_ID": self.run_id,
                 "AGENTCAP_PROXY": base,
             }
@@ -475,6 +500,10 @@ class Runner:
         # started: the user's override would bypass AgentCap entirely.
         try:
             ensure_codex_routing_is_safe(self.argv)
+            ensure_claude_routing_is_safe(
+                self.argv,
+                self.env if self.env is not None else os.environ,
+            )
         except AdapterConflict as exc:
             print(f"agentcap: {exc}", file=self.stderr, flush=True)
             return 2
@@ -532,7 +561,78 @@ class Runner:
                 self._warn_no_requests()
                 self._hint_no_requests()
             self._hint_first_request_refused(self.summary)
+            self._repeat_loop_nudge()
+            self._spend_receipt(self.summary)
         return exit_code
+
+    # ------------------------------------------------------------ 0.1.5 extras
+    def _repeat_loop_nudge(self) -> None:
+        """Free tier: repeat the loop hint under the summary so it is seen."""
+
+        nudge = getattr(self._proxy, "loop_nudge", None) if self._proxy else None
+        if not nudge:
+            return
+        from .alerts import format_alert
+
+        self._print_hint(format_alert({**nudge, "run_id": self.run_id}))
+
+    def receipt_payload(self, summary: RunSummary) -> dict[str, Any]:
+        """Spend receipt: numbers only, never prompts, args or credentials."""
+
+        nudge = getattr(self._proxy, "loop_nudge", None) if self._proxy else None
+        command = os.path.basename(str(self.argv[0])) if self.argv else ""
+        return {
+            "type": "agentcap_receipt",
+            "version": 1,
+            "run_id": summary.run_id,
+            "command": command,
+            "started_at": self.started_at.isoformat(),
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "requests": summary.requests,
+            "refused_requests": summary.refused_requests,
+            "clamped_requests": summary.clamped_requests,
+            "spent_usd": str(summary.spent_usd),
+            "cap_usd": None if summary.cap_usd is None else str(summary.cap_usd),
+            "hour_cap_usd": None if self.hour_cap is None else str(self.hour_cap),
+            "day_cap_usd": None if self.day_cap is None else str(self.day_cap),
+            "reserved_unsettled_usd": str(summary.reserved_usd),
+            "reason": summary.reason,
+            "exit_code": summary.exit_code,
+            "loop_detected": summary.reason == "loop_detected" or bool(nudge),
+            "note": "estimated from provider-reported usage and AgentCap's "
+            "price table; your provider invoice is authoritative",
+        }
+
+    def _spend_receipt(self, summary: RunSummary) -> None:
+        """Pro: save a JSON receipt and send a one-line receipt alert."""
+
+        if "spend_receipt" not in self.features or self.child is None:
+            return
+        payload = self.receipt_payload(summary)
+        directory = self.receipt_dir or default_receipt_dir()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"{summary.run_id}.json"
+            path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            self.receipt_path = path
+            self._print_hint(f"agentcap: spend receipt saved: {path}")
+        except OSError:
+            self._print_hint("agentcap: could not save the spend receipt.")
+        try:
+            self.alerts.emit(
+                {
+                    "type": "run_receipt",
+                    "run_id": summary.run_id,
+                    "spent_usd": str(summary.spent_usd),
+                    "cap_usd": payload["cap_usd"],
+                    "requests": summary.requests,
+                    "reason": summary.reason,
+                    "exit_code": summary.exit_code,
+                }
+            )
+            self.alerts.wait(timeout=5.0)
+        except Exception:
+            pass
 
     def _build_summary(self, reason: str, exit_code: int) -> RunSummary:
         try:

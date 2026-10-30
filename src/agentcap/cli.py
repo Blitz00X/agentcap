@@ -24,6 +24,7 @@ from .license import (
 )
 from .pricing import PricingError, load_pricing
 from .proxy import (
+    DEFAULT_ANTHROPIC_UPSTREAM,
     DEFAULT_GEMINI_UPSTREAM,
     DEFAULT_OPENAI_UPSTREAM,
     ProxyConfig,
@@ -44,7 +45,7 @@ PRO_CAP_MESSAGE = (
     '`agentcap license activate "YOUR_LICENSE_KEY"`.'
 )
 PRO_HINT = (
-    "hint: Pro is $12 one-time: https://agentcap.launchbench.studio/#pricing — "
+    "hint: Pro (loop breaker, phone alerts, spend receipt) is $12 one-time: https://agentcap.launchbench.studio/#pricing — "
     'then `agentcap license activate "YOUR_LICENSE_KEY"`.'
 )
 PRO_ALERTS_MESSAGE = (
@@ -130,8 +131,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"run cap in USD (default: ${DEFAULT_CAP} or $AGENTCAP_CAP)",
     )
-    run.add_argument("--hour-cap", default=None, help="hourly cap in USD (Pro)")
-    run.add_argument("--day-cap", default=None, help="daily cap in USD (Pro)")
+    run.add_argument("--hour-cap", default=None, help="hourly cap in USD across runs")
+    run.add_argument("--day-cap", default=None, help="daily cap in USD across runs")
     run.add_argument(
         "--allow-unmetered",
         action="store_true",
@@ -447,6 +448,7 @@ def _run(args: argparse.Namespace) -> int:
             quiet=args.quiet,
             openai_upstream=overrides.get("openai"),
             gemini_upstream=overrides.get("gemini"),
+            anthropic_upstream=overrides.get("anthropic"),
             trust_workspace=args.trust_workspace,
         )
         return runner.run()
@@ -487,6 +489,7 @@ def _serve(args: argparse.Namespace) -> int:
         clamp_output=args.clamp_output,
         openai_upstream=overrides.get("openai") or DEFAULT_OPENAI_UPSTREAM,
         gemini_upstream=overrides.get("gemini") or DEFAULT_GEMINI_UPSTREAM,
+        anthropic_upstream=overrides.get("anthropic") or DEFAULT_ANTHROPIC_UPSTREAM,
         on_cap_exceeded=lambda payload: None,
         on_loop_detected=lambda payload: None,
     )
@@ -497,6 +500,7 @@ def _serve(args: argparse.Namespace) -> int:
         print(f"export OPENAI_BASE_URL={base}/openai/v1")
         print(f"export GOOGLE_GEMINI_BASE_URL={base}/gemini")
         print(f"export GEMINI_API_BASE_URL={base}/gemini")
+        print(f"export ANTHROPIC_BASE_URL={base}/anthropic")
         print(f"# run id: {run_id}, cap: ${cap:.2f}")
         sys.stdout.flush()
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")

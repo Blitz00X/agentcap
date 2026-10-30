@@ -18,6 +18,15 @@ metering, streaming and output clamping:
 * ``POST /v1beta/models/<model>:generateContent`` (JSON with ``usageMetadata``)
 * ``POST /v1beta/models/<model>:streamGenerateContent`` (SSE when ``alt=sse``,
   otherwise a JSON array; final ``usageMetadata``)
+* ``POST /v1/messages`` (Anthropic Messages: JSON, or the real SSE event
+  sequence ``message_start`` ... ``message_delta`` ... ``message_stop`` when
+  ``stream`` is true), plus ``POST /v1/messages/count_tokens`` and
+  ``GET /v1/models``.  Like the real API it requires an ``x-api-key`` (or
+  ``Authorization``) header and ``max_tokens``, and rejects a manual thinking
+  ``budget_tokens`` that is below 1024 or not below ``max_tokens``.  When the
+  body carries ``cache_control`` half the prompt is reported as a cache write
+  (1-hour TTL when any ``ttl`` is ``"1h"``); the ``x-fake-cache-hit`` request
+  header reports a quarter of the prompt as a cache read instead.
 
 Prompt usage is realistic rather than fixed: ``max(1, ceil(text characters /
 4))`` where the text characters are the concatenated ``content``, ``input``,
@@ -430,6 +439,149 @@ async def gemini_model(request: Request) -> Response:
     return _not_found("Gemini action")
 
 
+# ---------------------------------------------------------------- Anthropic
+def _anthropic_error(status: int, kind: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        {"type": "error", "error": {"type": kind, "message": message}},
+        status_code=status,
+    )
+
+
+def _has_cache_control(value: Any) -> tuple[bool, bool]:
+    """``(any cache_control, any 1h ttl)`` anywhere in the body."""
+
+    found = False
+    one_hour = False
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, Mapping):
+            control = item.get("cache_control")
+            if isinstance(control, Mapping):
+                found = True
+                if control.get("ttl") == "1h":
+                    one_hour = True
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return found, one_hour
+
+
+def _anthropic_usage(
+    payload: Mapping[str, Any], request: Request, output: int
+) -> dict[str, Any]:
+    prompt = _prompt_tokens(payload)
+    cached, one_hour = _has_cache_control(payload)
+    read = prompt // 4 if request.headers.get("x-fake-cache-hit") else 0
+    write = 0 if read else (prompt // 2 if cached else 0)
+    uncached = max(prompt - read - write, 0)
+    return {
+        "input_tokens": uncached,
+        "cache_creation_input_tokens": write,
+        "cache_read_input_tokens": read,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 0 if one_hour else write,
+            "ephemeral_1h_input_tokens": write if one_hour else 0,
+        },
+        "output_tokens": output,
+    }
+
+
+async def anthropic_messages(request: Request) -> Response:
+    if not (request.headers.get("x-api-key") or request.headers.get("authorization")):
+        return _anthropic_error(
+            401, "authentication_error", "x-api-key header is required"
+        )
+    payload = await _json_body(request)
+    if payload is None:
+        return _anthropic_error(400, "invalid_request_error", "invalid JSON body")
+    limit = _positive_int(payload.get("max_tokens"))
+    if limit is None:
+        return _anthropic_error(
+            400, "invalid_request_error", "max_tokens: Field required"
+        )
+    thinking = _mapping(payload.get("thinking"))
+    budget = _positive_int(thinking.get("budget_tokens")) if thinking else None
+    if thinking.get("type") == "enabled":
+        if budget is None or budget < 1024 or budget >= limit:
+            return _anthropic_error(
+                400,
+                "invalid_request_error",
+                "thinking.budget_tokens must be >= 1024 and less than max_tokens",
+            )
+    output = _completion_tokens(limit)
+    usage = _anthropic_usage(payload, request, output)
+    model = str(payload.get("model") or "claude-fake")
+    headers = _limit_header(limit)
+    message = {
+        "id": "msg_fake",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "max_tokens" if output >= limit else "end_turn",
+        "stop_sequence": None,
+        "usage": usage,
+    }
+    if payload.get("stream") is not True:
+        return JSONResponse(message, headers=headers)
+
+    async def events() -> AsyncIterator[bytes]:
+        def send(kind: str, data: Mapping[str, Any]) -> bytes:
+            return (
+                f"event: {kind}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+            )
+
+        start_usage = dict(usage)
+        start_usage["output_tokens"] = 1
+        start = dict(message, content=[], stop_reason=None, usage=start_usage)
+        yield send("message_start", {"type": "message_start", "message": start})
+        yield send(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        )
+        yield send("ping", {"type": "ping"})
+        yield send(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "ok"},
+            },
+        )
+        yield send("content_block_stop", {"type": "content_block_stop", "index": 0})
+        yield send(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": message["stop_reason"], "stop_sequence": None},
+                "usage": {"output_tokens": output},
+            },
+        )
+        yield send("message_stop", {"type": "message_stop"})
+
+    return StreamingResponse(
+        events(), media_type="text/event-stream", headers=headers
+    )
+
+
+async def anthropic_count_tokens(request: Request) -> Response:
+    payload = await _json_body(request)
+    if payload is None:
+        return _anthropic_error(400, "invalid_request_error", "invalid JSON body")
+    return JSONResponse({"input_tokens": _prompt_tokens(payload)})
+
+
+async def anthropic_models(_request: Request) -> Response:
+    return JSONResponse(
+        {"data": [{"id": "claude-sonnet-5-5", "type": "model"}], "has_more": False}
+    )
+
+
 # ------------------------------------------------------------------- routes
 async def healthz(_request: Request) -> Response:
     return JSONResponse({"status": "ok"})
@@ -447,6 +599,13 @@ def create_app() -> Starlette:
                 methods=["POST"],
             ),
             Route("/v1/responses", openai_responses, methods=["POST"]),
+            Route("/v1/messages", anthropic_messages, methods=["POST"]),
+            Route(
+                "/v1/messages/count_tokens",
+                anthropic_count_tokens,
+                methods=["POST"],
+            ),
+            Route("/v1/models", anthropic_models, methods=["GET"]),
             Route(
                 "/v1beta/models/{rest:path}",
                 gemini_model,

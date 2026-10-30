@@ -55,14 +55,15 @@ NOT_FOUND_REASON = "license key not found, revoked, disabled, or expired"
 
 CACHE_SOURCE = "polar"
 
-FREE_FEATURES = frozenset({"run_cap", "terminal_alerts"})
+# 0.1.5: every spend cap is free.  Pro is the "unattended pack": the loop
+# breaker, phone/webhook alerts and the spend receipt for runs nobody watches.
+FREE_FEATURES = frozenset({"run_cap", "hour_cap", "day_cap", "terminal_alerts"})
 PRO_FEATURES = FREE_FEATURES | frozenset(
     {
-        "hour_cap",
-        "day_cap",
         "loop_detection",
         "webhook_alerts",
         "telegram_alerts",
+        "spend_receipt",
     }
 )
 

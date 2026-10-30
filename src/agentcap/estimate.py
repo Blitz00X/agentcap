@@ -212,6 +212,8 @@ def _normalise_provider(provider: str) -> str:
         return "openai"
     if normalised in {"google", "gemini", "google-gemini", "google_genai"}:
         return "gemini"
+    if normalised in {"anthropic", "claude"}:
+        return "anthropic"
     raise ValueError(f"Unsupported provider for token estimation: {provider!r}")
 
 
@@ -367,8 +369,12 @@ def explicit_output_tokens(
     """
 
     body = _as_mapping(body)
-    if _normalise_provider(provider) == "openai":
+    normalised = _normalise_provider(provider)
+    if normalised == "openai":
         return _openai_max_tokens(body)
+    if normalised == "anthropic":
+        # ``max_tokens`` is a hard limit that already includes thinking.
+        return _positive_int(body.get("max_tokens"))
     requested = _gemini_max_tokens(body)
     if model_price is not None:
         thinking = gemini_thinking_budget(body, model_price)
@@ -383,8 +389,11 @@ def candidate_count(provider: str, body: Mapping[str, Any]) -> int:
     """How many completions/candidates one request can produce (>= 1)."""
 
     body = _as_mapping(body)
-    if _normalise_provider(provider) == "openai":
+    normalised = _normalise_provider(provider)
+    if normalised == "openai":
         return _openai_candidates(body)
+    if normalised == "anthropic":
+        return 1
     return _gemini_candidates(body)
 
 
@@ -396,6 +405,12 @@ def max_output_tokens(
     body = _as_mapping(body)
     normalised = _normalise_provider(provider)
 
+    if normalised == "anthropic":
+        # Anthropic: one completion; thinking is counted inside max_tokens.
+        requested = _positive_int(body.get("max_tokens"))
+        if requested is None:
+            return model_price.max_output_tokens
+        return requested
     if normalised == "openai":
         requested = _openai_max_tokens(body)
         candidates = _openai_candidates(body)
@@ -437,7 +452,11 @@ def reservation_usd(
     input_rate, _cached_rate, output_rate = effective_rates(
         model_price, input_tokens, now=now
     )
-    if cache_write and model_price.cache_write_per_mtok is not None:
+    if cache_write and model_price.provider == "anthropic":
+        # Worst case: every prompt token is a 1-hour cache write (2x input at
+        # the tier in effect, so Haiku's >100k tier is covered too).
+        input_rate = input_rate * Decimal("2")
+    elif cache_write and model_price.cache_write_per_mtok is not None:
         input_rate = max(input_rate, model_price.cache_write_per_mtok)
     total = (
         Decimal(input_tokens) * input_rate + Decimal(output_tokens) * output_rate

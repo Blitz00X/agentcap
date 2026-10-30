@@ -37,6 +37,9 @@ __all__ = [
     "parse_openai_chat_usage",
     "parse_openai_responses_usage",
     "parse_gemini_usage",
+    "AnthropicStreamUsage",
+    "anthropic_usage",
+    "parse_anthropic_stream",
 ]
 
 
@@ -67,9 +70,19 @@ class Usage:
     input_tokens: int
     cached_input_tokens: int = 0
     output_tokens: int = 0
+    #: Anthropic only: prompt tokens written to the prompt cache (all TTLs,
+    #: included in ``input_tokens``) and the 1-hour-TTL part of them.
+    cache_write_input_tokens: int = 0
+    cache_write_1h_input_tokens: int = 0
 
     def __post_init__(self) -> None:
-        for name in ("input_tokens", "cached_input_tokens", "output_tokens"):
+        for name in (
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "cache_write_input_tokens",
+            "cache_write_1h_input_tokens",
+        ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
@@ -79,11 +92,16 @@ class Usage:
         return max(self.input_tokens - self.cached_input_tokens, 0)
 
     def as_dict(self) -> dict[str, int]:
-        return {
+        result = {
             "input_tokens": self.input_tokens,
             "cached_input_tokens": self.cached_input_tokens,
             "output_tokens": self.output_tokens,
         }
+        if self.cache_write_input_tokens:
+            result["cache_write_input_tokens"] = self.cache_write_input_tokens
+        if self.cache_write_1h_input_tokens:
+            result["cache_write_1h_input_tokens"] = self.cache_write_1h_input_tokens
+        return result
 
 
 # --------------------------------------------------------------------- OpenAI
@@ -183,6 +201,111 @@ def gemini_usage(payload: Mapping[str, Any] | None) -> Usage | None:
         cached_input_tokens=pick("cachedContentTokenCount", "cached_content_token_count"),
         output_tokens=candidates + thoughts,
     )
+
+
+# ------------------------------------------------------------------ Anthropic
+
+_ANTHROPIC_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation",
+)
+
+
+def _anthropic_from_fields(fields: Mapping[str, Any]) -> Usage | None:
+    if not any(key in fields for key in _ANTHROPIC_KEYS):
+        return None
+    uncached = _token(fields.get("input_tokens"))
+    read = _token(fields.get("cache_read_input_tokens"))
+    breakdown = _mapping(fields.get("cache_creation")) or {}
+    write_5m = _token(breakdown.get("ephemeral_5m_input_tokens"))
+    write_1h = _token(breakdown.get("ephemeral_1h_input_tokens"))
+    write = _token(fields.get("cache_creation_input_tokens"))
+    if write < write_5m + write_1h:
+        write = write_5m + write_1h
+    write_1h = min(write_1h, write)
+    return Usage(
+        input_tokens=uncached + read + write,
+        cached_input_tokens=read,
+        output_tokens=_token(fields.get("output_tokens")),
+        cache_write_input_tokens=write,
+        cache_write_1h_input_tokens=write_1h,
+    )
+
+
+def anthropic_usage(payload: Mapping[str, Any] | None) -> Usage | None:
+    """Usage from an Anthropic Messages response.
+
+    Anthropic reports ``input_tokens`` *excluding* cache reads and writes, so
+    the normalised ``input_tokens`` is ``input + cache_read + cache_creation``.
+    Thinking tokens are already part of ``output_tokens``.
+    """
+
+    payload = _mapping(payload)
+    if payload is None:
+        return None
+    usage = _mapping(payload.get("usage"))
+    if usage is None:
+        return None
+    return _anthropic_from_fields(usage)
+
+
+class AnthropicStreamUsage:
+    """Accumulate usage from an Anthropic Messages SSE stream.
+
+    ``message_start`` carries the prompt-side counts in ``message.usage``;
+    each ``message_delta`` carries cumulative counts (at least
+    ``output_tokens``).  Later values override earlier ones field by field.
+    """
+
+    def __init__(self) -> None:
+        self._decoder = SSEDecoder()
+        self._fields: dict[str, Any] = {}
+        self._finished = False
+
+    @property
+    def usage(self) -> Usage | None:
+        return _anthropic_from_fields(self._fields) if self._fields else None
+
+    def feed(self, chunk: bytes | str) -> Usage | None:
+        for data in self._decoder.feed(chunk):
+            self._consume(data)
+        return self.usage
+
+    def finish(self) -> Usage | None:
+        if not self._finished:
+            self._finished = True
+            for data in self._decoder.finish():
+                self._consume(data)
+        return self.usage
+
+    def _merge(self, usage: Mapping[str, Any] | None) -> None:
+        if usage is None:
+            return
+        for key in _ANTHROPIC_KEYS:
+            if key in usage and usage[key] is not None:
+                self._fields[key] = usage[key]
+
+    def _consume(self, data: str) -> None:
+        text = data.strip()
+        if not text:
+            return
+        try:
+            payload: Any = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return
+        payload = _mapping(payload)
+        if payload is None:
+            return
+        kind = payload.get("type")
+        if kind == "message_start":
+            message = _mapping(payload.get("message"))
+            if message is not None:
+                self._merge(_mapping(message.get("usage")))
+        elif kind == "message_delta":
+            self._merge(_mapping(payload.get("usage")))
 
 
 # ------------------------------------------------------------------ SSE helper
@@ -417,6 +540,13 @@ def parse_openai_responses_stream(chunks: Iterable[bytes | str]) -> Usage | None
 
 def parse_gemini_stream(chunks: Iterable[bytes | str]) -> Usage | None:
     parser = GeminiStreamUsage()
+    for chunk in chunks:
+        parser.feed(chunk)
+    return parser.finish()
+
+
+def parse_anthropic_stream(chunks: Iterable[bytes | str]) -> Usage | None:
+    parser = AnthropicStreamUsage()
     for chunk in chunks:
         parser.feed(chunk)
     return parser.finish()

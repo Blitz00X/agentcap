@@ -61,9 +61,11 @@ from .pricing import (
     load_pricing,
 )
 from .usage import (
+    AnthropicStreamUsage,
     GeminiStreamUsage,
     OpenAIStreamUsage,
     Usage,
+    anthropic_usage,
     gemini_usage,
     openai_chat_usage,
     openai_responses_usage,
@@ -73,6 +75,13 @@ __all__ = ["ProxyConfig", "create_app"]
 
 DEFAULT_OPENAI_UPSTREAM = "https://api.openai.com"
 DEFAULT_GEMINI_UPSTREAM = "https://generativelanguage.googleapis.com"
+DEFAULT_ANTHROPIC_UPSTREAM = "https://api.anthropic.com"
+
+#: Anthropic Messages API (Claude Code, Anthropic SDKs).
+_ANTHROPIC_METERED = {"v1/messages": "anthropic"}
+_ANTHROPIC_FREE = frozenset({"v1/messages/count_tokens"})
+#: ``inference_geo`` values with a published price multiplier.
+_ANTHROPIC_GEO_MULTIPLIERS = {"global": Decimal("1"), "us": Decimal("1.1")}
 
 _OPENAI_METERED = {
     "v1/chat/completions": ("openai_chat", "chat"),
@@ -141,6 +150,7 @@ class ProxyConfig:
     loop_window_s: float = 120.0
     openai_upstream: str = DEFAULT_OPENAI_UPSTREAM
     gemini_upstream: str = DEFAULT_GEMINI_UPSTREAM
+    anthropic_upstream: str = DEFAULT_ANTHROPIC_UPSTREAM
     inject_openai_stream_usage: bool = True
     clamp_output: bool = True
     min_clamp_output: int = MIN_CLAMP_OUTPUT
@@ -186,6 +196,8 @@ class ProxyConfig:
             self.openai_upstream = self.openai_upstream.rstrip("/")
         if self.gemini_upstream:
             self.gemini_upstream = self.gemini_upstream.rstrip("/")
+        if self.anthropic_upstream:
+            self.anthropic_upstream = self.anthropic_upstream.rstrip("/")
 
     # Convenience for callers that only care about booleans.
     def has(self, feature: str) -> bool:
@@ -234,6 +246,8 @@ def _parse_usage(
         return openai_responses_usage(payload)
     if kind == "gemini":
         return gemini_usage(payload)
+    if kind == "anthropic":
+        return anthropic_usage(payload)
     # chat, legacy completions and embeddings all carry prompt/completion keys.
     return openai_chat_usage(payload)
 
@@ -255,8 +269,16 @@ class _Proxy:
         self.events = events
         self.pricing = config.pricing if config.pricing is not None else load_pricing()
         self.loop: LoopDetector | None = None
+        #: Free tier: a detector that only *observes*.  It never blocks; it
+        #: lets the run say what Pro's loop breaker would have saved.
+        self.shadow_loop: LoopDetector | None = None
+        self.loop_nudge: dict[str, Any] | None = None
         if config.has("loop_detection"):
             self.loop = LoopDetector(
+                threshold=config.loop_threshold, window_s=config.loop_window_s
+            )
+        else:
+            self.shadow_loop = LoopDetector(
                 threshold=config.loop_threshold, window_s=config.loop_window_s
             )
         self.blocked_count = 0
@@ -293,6 +315,11 @@ class _Proxy:
                 ),
                 Route(
                     "/gemini/{path:path}", self._handle_gemini, methods=methods
+                ),
+                Route(
+                    "/anthropic/{path:path}",
+                    self._handle_anthropic,
+                    methods=methods,
                 ),
                 Route("/_agentcap/status", self._status, methods=["GET"]),
             ],
@@ -381,6 +408,9 @@ class _Proxy:
     async def _handle_gemini(self, request: Request) -> Response:
         return await self._handle(request, "gemini")
 
+    async def _handle_anthropic(self, request: Request) -> Response:
+        return await self._handle(request, "anthropic")
+
     async def _handle(self, request: Request, provider: str) -> Response:
         path = request.path_params["path"]
         # Codex can fall back to a websocket transport.  The proxy cannot meter
@@ -436,6 +466,17 @@ class _Proxy:
             if entry is not None:
                 kind, action = entry
                 return (kind, "", action)
+            return "allowed_unmetered" if self.config.allow_unmetered else "blocked"
+
+        if provider == "anthropic":
+            if method != "POST":
+                return None  # GET /v1/models is a free passthrough
+            normalised = path.strip("/")
+            kind = _ANTHROPIC_METERED.get(normalised)
+            if kind is not None:
+                return (kind, "", "messages")
+            if normalised in _ANTHROPIC_FREE:
+                return None  # token counting is free
             return "allowed_unmetered" if self.config.allow_unmetered else "blocked"
 
         if method != "POST":
@@ -608,9 +649,63 @@ class _Proxy:
             headers={"x-agentcap-blocked": "size"},
         )
 
+    def _anthropic_multiplier(
+        self, parsed: Mapping[str, Any], price: ModelPrice
+    ) -> Decimal | Response:
+        """Price multiplier for Anthropic request options (fail closed).
+
+        * ``inference_geo: "us"`` is billed at 1.1x.
+        * ``speed: "fast"`` (fast mode) is billed at a premium; it is only
+          allowed when the price table lists a ``fast_multiplier``.
+        """
+
+        multiplier = Decimal("1")
+        geo = parsed.get("inference_geo")
+        if geo is not None:
+            geo_rate = (
+                _ANTHROPIC_GEO_MULTIPLIERS.get(geo.strip().lower())
+                if isinstance(geo, str)
+                else None
+            )
+            if geo_rate is None:
+                if not self.config.allow_unmetered:
+                    return _unknown_service_tier_error(f"inference_geo={geo}")
+                geo_rate = Decimal("1")
+            multiplier *= geo_rate
+        speed = parsed.get("speed")
+        if speed is not None and speed != "standard":
+            if speed == "fast" and price.fast_multiplier is not None:
+                multiplier *= price.fast_multiplier
+            elif not self.config.allow_unmetered:
+                return _unknown_service_tier_error(f"speed={speed}")
+        return multiplier
+
+    def _loop_nudge(self, model: str, provider: str) -> None:
+        """Free tier: record (once) what Pro's loop breaker would have done."""
+
+        spent = self._run_spent()
+        self.loop_nudge = {
+            "type": "loop_nudge",
+            "model": model,
+            "provider": provider,
+            "spent_usd": spent,
+            "threshold": self.config.loop_threshold,
+            "window_s": self.config.loop_window_s,
+        }
+        self._emit(dict(self.loop_nudge))
+
     def _lookup_price(self, provider: str, model: str) -> ModelPrice:
         if provider == "gemini" and not model.startswith("google/"):
             return self.pricing.get(f"google/{model}")
+        if provider == "anthropic":
+            # Provider-qualified, so a Claude ID can never borrow another
+            # provider's price (and vice versa).
+            price = self.pricing.get(
+                model if model.startswith("anthropic/") else f"anthropic/{model}"
+            )
+            if price.provider != "anthropic":
+                raise UnknownModelError(model)
+            return price
         return self.pricing.get(model)
 
     async def _metered(
@@ -634,7 +729,7 @@ class _Proxy:
             self._count_blocked()
             return _agentcap_error(400, _INVALID_BODY_MESSAGE, "agentcap_invalid_body")
 
-        if provider == "openai":
+        if provider in ("openai", "anthropic"):
             raw_model = parsed.get("model")
             model = raw_model.strip() if isinstance(raw_model, str) else ""
         if not model:
@@ -672,8 +767,19 @@ class _Proxy:
                         return _unknown_service_tier_error(requested_tier)
                     tier_multiplier = Decimal("1")
 
+        if provider == "anthropic":
+            anthropic_multiplier = self._anthropic_multiplier(parsed, price)
+            if isinstance(anthropic_multiplier, Response):
+                self._count_blocked()
+                return anthropic_multiplier
+            tier_multiplier = anthropic_multiplier
+
         now = self._now()
         cache_write = cache_write_requested(parsed)
+
+        if self.shadow_loop is not None and self.loop_nudge is None:
+            if self.shadow_loop.record_request(parsed):
+                self._loop_nudge(model, provider)
 
         # Loop detection happens before money is reserved.
         if self.loop is not None:
@@ -722,7 +828,9 @@ class _Proxy:
         input_tokens = apply_input_safety_factor(
             estimate_input_tokens(parsed), self.config.input_safety_factor
         )
-        estimate_provider = "gemini" if provider == "gemini" else "openai"
+        estimate_provider = (
+            provider if provider in ("gemini", "anthropic") else "openai"
+        )
         if kind == "openai_embeddings":
             output_tokens = 0
         else:
@@ -784,7 +892,9 @@ class _Proxy:
         try:
             reservation_id = self.ledger.reserve(
                 self.config.run_id,
-                "google" if provider == "gemini" else "openai",
+                {"gemini": "google", "anthropic": "anthropic"}.get(
+                    provider, "openai"
+                ),
                 model,
                 reserved,
                 caps,
@@ -853,6 +963,8 @@ class _Proxy:
                 options["include_usage"] = True
                 parsed["stream_options"] = options
                 body_changed = True
+        elif provider == "anthropic":
+            streaming = parsed.get("stream") is True
         else:
             streaming = action == "streamGenerateContent"
         if body_changed:
@@ -890,11 +1002,11 @@ class _Proxy:
 
     # ----------------------------------------------------------- forwarding
     def _upstream_base(self, provider: str) -> str:
-        return (
-            self.config.openai_upstream
-            if provider == "openai"
-            else self.config.gemini_upstream
-        )
+        if provider == "openai":
+            return self.config.openai_upstream
+        if provider == "anthropic":
+            return self.config.anthropic_upstream
+        return self.config.gemini_upstream
 
     def _build_request(
         self, request: Request, provider: str, path: str, body: bytes
@@ -1076,9 +1188,12 @@ class _Proxy:
                 headers=dict(self._response_headers(response)),
             )
 
-        parser = (
-            GeminiStreamUsage() if provider == "gemini" else OpenAIStreamUsage()
-        )
+        if provider == "gemini":
+            parser = GeminiStreamUsage()
+        elif provider == "anthropic":
+            parser = AnthropicStreamUsage()
+        else:
+            parser = OpenAIStreamUsage()
         finalized = False
         response_tier: str | None = None
 
@@ -1164,6 +1279,14 @@ class _Proxy:
                 0,
                 now=settlement.now,
                 cache_write=settlement.cache_write,
+                # Anthropic: assume the worst case, all input written to the
+                # 1-hour cache.
+                cache_write_tokens=(
+                    settlement.input_tokens if settlement.cache_write else 0
+                ),
+                cache_write_1h_tokens=(
+                    settlement.input_tokens if settlement.cache_write else 0
+                ),
             )
             if settlement.multiplier != 1:
                 charged = (charged * settlement.multiplier).quantize(
@@ -1228,10 +1351,16 @@ class _Proxy:
                 usage.output_tokens,
                 now=settlement.now,
                 cache_write=settlement.cache_write,
+                cache_write_tokens=usage.cache_write_input_tokens,
+                cache_write_1h_tokens=usage.cache_write_1h_input_tokens,
             )
-            tier = response_tier or settlement.requested_tier
+            tier = (
+                (response_tier or settlement.requested_tier)
+                if provider == "openai"
+                else None
+            )
+            multiplier = settlement.multiplier
             if tier is not None:
-                multiplier = settlement.multiplier
                 try:
                     multiplier = self.pricing.service_tier_multiplier(
                         "openai", tier
@@ -1240,6 +1369,7 @@ class _Proxy:
                     # An unexpected tier in the response cannot be blocked any
                     # more; charge with the requested (or default) multiplier.
                     pass
+            if True:
                 if multiplier != 1:
                     actual = (actual * multiplier).quantize(
                         MICRO_USD, rounding=ROUND_CEILING
