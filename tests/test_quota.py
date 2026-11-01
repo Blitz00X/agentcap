@@ -719,3 +719,24 @@ def test_loop_digest_ignores_bash_description():
     b = _digest("Bash", {"command": "pwd", "description": "Print working directory (call 2 of 6)"})
     c = _digest("Bash", {"command": "ls", "description": "Print working directory (call 2 of 6)"})
     assert a == b and a != c
+
+
+def test_parallel_batch_failures_counted_by_post_hooks(tmp_path):
+    import io, json as _j
+    from agentcap import quota as q
+    (tmp_path / "job.json").write_text(_j.dumps({"enforce": True}))
+    for _ in range(q.LOOP_ERRORS):
+        q.post_main(tmp_path, io.StringIO(_j.dumps({"hook_event_name": "PostToolUseFailure"})))
+    out = io.StringIO()
+    q.hook_main(tmp_path, io.StringIO(_j.dumps({"tool_name": "Bash", "tool_input": {"command": "cat /x9"}})), out)
+    assert "error breaker" in out.getvalue()
+    q.post_main(tmp_path, io.StringIO(_j.dumps({"hook_event_name": "PostToolUse"})))
+    assert _j.loads((tmp_path / "post_errors.json").read_text())["errors"] == 0
+
+
+def test_claude_settings_register_post_hooks(tmp_path):
+    from agentcap import quota as q
+    import inspect
+    fn = [f for n, f in inspect.getmembers(q, inspect.isfunction) if "PostToolUseFailure" in inspect.getsource(f) and n != "post_main"][0]
+    src = inspect.getsource(fn)
+    assert "post --job" in src

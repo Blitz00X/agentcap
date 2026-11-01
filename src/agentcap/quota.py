@@ -359,7 +359,17 @@ def claude_settings(job_dir: Path, python: str | None = None) -> dict[str, Any]:
                         {"type": "command", "command": f"{base} hook --job {job}", "timeout": 10}
                     ],
                 }
-            ]
+            ],
+            # Parallel tool batches: results reach the transcript only after the
+            # batch, so failures are also counted as they happen.
+            "PostToolUse": [
+                {"matcher": "*", "hooks": [
+                    {"type": "command", "command": f"{base} post --job {job}", "timeout": 10}]}
+            ],
+            "PostToolUseFailure": [
+                {"matcher": "*", "hooks": [
+                    {"type": "command", "command": f"{base} post --job {job}", "timeout": 10}]}
+            ],
         },
     }
 
@@ -559,7 +569,8 @@ def transcript_error_streak(path: Any) -> int:
 def _error_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
     """Error breaker: 8 failing tool calls in a row, read from the transcript."""
 
-    errors = transcript_error_streak(payload.get("transcript_path"))
+    errors = max(transcript_error_streak(payload.get("transcript_path")),
+                 int((_read_json(job_dir / "post_errors.json") or {}).get("errors") or 0))
     name = str(payload.get("tool_name") or "")[:40]
     _atomic_write(job_dir / "errors.json", {"errors": errors, "tool": name})
     if errors < LOOP_ERRORS:
@@ -574,6 +585,27 @@ def _error_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
     _note_deny(job_dir)
     return (f"agentcap error breaker: {detail}. Stop now: do not call more tools; "
             "summarise what failed and what is left.")
+
+
+def post_main(job_dir: Path, stdin: TextIO) -> int:
+    """PostToolUse / PostToolUseFailure: live failing-call streak (fail-open)."""
+
+    try:
+        payload = json.loads(stdin.read() or "{}")
+    except Exception:
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    event = payload.get("hook_event_name")
+    path = job_dir / "post_errors.json"
+    if event == "PostToolUseFailure":
+        errors = int((_read_json(path) or {}).get("errors") or 0) + 1
+    elif event == "PostToolUse":
+        errors = 0
+    else:
+        return 0
+    _atomic_write(path, {"errors": errors})
+    return 0
 
 
 def _note_deny(job_dir: Path) -> None:
@@ -1141,6 +1173,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args[0] == "hook":
             try:
                 return hook_main(job, sys.stdin, sys.stdout)
+            except Exception:
+                return 0
+        if args[0] == "post":
+            try:
+                return post_main(job, sys.stdin)
             except Exception:
                 return 0
     print("usage: python -m agentcap.quota statusline|hook --job DIR", file=sys.stderr)
