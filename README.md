@@ -390,8 +390,8 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 
 | Harness + auth | Loop breaker (4x same call, exit 4) | Error breaker (8 failures, exit 4) | Quota % stop (exit 3) | $ / token cap |
 | --- | --- | --- | --- | --- |
-| Claude Code, Pro/Max sub, interactive | ✅¹ | ✅¹ | ✅¹ whole-% steps; `agentcap approve` ✅¹ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
-| Claude Code, Pro/Max sub, headless `claude -p` | ✅¹ | ✅¹ | ❌ interactive only (warns at start) | ❌ by design (refused) |
+| Claude Code, Pro/Max sub, interactive | ✅¹ | ✅¹ | ✅ whole-% steps (deny keeps the session); `agentcap approve` ✅ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
+| Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ❌ interactive only (warns at start) | ❌ by design (refused) |
 | Codex, ChatGPT sub | ✅ | ✅ | ✅ (whole %; warns under 1%) | ❌ by design (no proxy on a subscription) |
 | opencode Go | ✅ | ✅ | ❌ opencode exposes no quota % | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
 | agy, Google sub | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
@@ -402,9 +402,9 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 | agy + Gemini API | **needs a paid Gemini key**: free key's 5 RPM limit | **needs a paid Gemini key** | n/a | ✅ $ block |
 | Claude Code + `ANTHROPIC_API_KEY` | **needs an Anthropic API key** (proxy path; only a local fake API so far) | **needs an Anthropic API key** | n/a | **needs an Anthropic API key** |
 
-¹ Claude Code 2.1.316 on a real Claude Pro login (Haiku), 1 Nov 2026. The **stop** itself
-was proven with an enforcement driver (enforcement forced on in a dev harness), not yet through
-the CLI with an activated Pro license. On Free the CLI observes and reports only.
+Tested with Claude Code 2.1.316 on a real Claude Pro login (Haiku) and an activated AgentCap Pro
+license, through the CLI, 1 Nov 2026. ¹ Interactive loop/error stops were proven with an enforcement
+driver only; they use the same hooks as the headless stops above. On Free the CLI observes and reports only.
 
 Known limits: quota % is account-level (parallel sessions count); Claude/Codex report whole
 percents; interactive Claude turns with no tool calls can't be denied, so after a 30 s grace
