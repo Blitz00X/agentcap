@@ -397,7 +397,7 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 | agy, Google sub | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
 | opencode + OpenRouter (free model) | ✅ | ✅ | n/a | ✅ $ cap |
 | opencode + Ollama Cloud | ✅ | ✅ | n/a | ⚠️ needs a user price (`AGENTCAP_PRICING_FILE`): Ollama publishes none |
-| Codex + Ollama | **needs a re-run** (only error and cap were tested) | ✅ | n/a | ✅ $ cap (user price) |
+| Codex + Ollama | ✅ (exit 4 on 4th identical exec) | ✅ | n/a | ✅ $ cap (user price) |
 | Codex + OpenRouter | **needs paid OpenRouter credit (~$2-3)**: free tier returned 429 | **needs paid OpenRouter credit** | n/a | ✅ $ cap stop (earlier release run, free model) |
 | agy + Gemini API | **needs a paid Gemini key**: free key's 5 RPM limit | **needs a paid Gemini key** | n/a | ✅ $ block |
 | Claude Code + `ANTHROPIC_API_KEY` | **needs an Anthropic API key** (proxy path; only a local fake API so far) | **needs an Anthropic API key** | n/a | **needs an Anthropic API key** |
@@ -408,8 +408,9 @@ the CLI with an activated Pro license. On Free the CLI observes and reports only
 
 Known limits: quota % is account-level (parallel sessions count); Claude/Codex report whole
 percents; interactive Claude turns with no tool calls can't be denied, so after a 30 s grace
-period AgentCap sends SIGINT and the session ends; plain `agentcap run -- agy` asks for
-GEMINI_API_KEY; Codex sandbox can't run commands (bwrap userns) on this Linux box.
+period AgentCap sends SIGINT and the session ends; Codex's sandbox can't run commands on Ubuntu 24.04 by default:
+`kernel.apparmor_restrict_unprivileged_userns=1` blocks bubblewrap's user namespace
+(host setting, not AgentCap; Codex falls back or needs an AppArmor profile for bwrap).
 
 **Platforms:** Linux and macOS. Windows: not yet (use WSL2).
 

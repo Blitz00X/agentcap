@@ -145,3 +145,31 @@ def test_codex_responses_exec_loop_with_random_chunk_ids():
         if trip:
             break
     assert trip and trip["kind"] == "repeat" and i == 3
+
+
+def test_codex_loop_ignores_reworded_justification():
+    from agentcap.loop import RunawayDetector
+    det = RunawayDetector(max_burn_per_min=None)
+    history = [{"role": "user", "content": "go"}]
+    trips = []
+    for i in range(4):
+        history = history + [
+            {"type": "function_call", "name": "exec_command", "call_id": f"call_{i}x",
+             "arguments": '{"cmd":"pwd","justification":"Running pwd, attempt %d","sandbox_permissions":"use_default"}' % i},
+            {"type": "function_call_output", "call_id": f"call_{i}x", "output": "Output:\n/w\n"},
+        ]
+        trips.append(det.check({"model": "m", "input": history}))
+    assert trips[-1] and trips[-1]["kind"] == "repeat" and not any(trips[:-1])
+
+
+def test_codex_loop_still_distinguishes_different_commands():
+    from agentcap.loop import RunawayDetector
+    det = RunawayDetector(max_burn_per_min=None)
+    history = [{"role": "user", "content": "go"}]
+    for i in range(5):
+        history = history + [
+            {"type": "function_call", "name": "exec_command", "call_id": f"call_{i}x",
+             "arguments": '{"cmd":"ls dir%s","justification":"x"}' % "abcde"[i]},
+            {"type": "function_call_output", "call_id": f"call_{i}x", "output": "ok"},
+        ]
+        assert det.check({"model": "m", "input": history}) is None

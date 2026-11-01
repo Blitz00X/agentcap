@@ -200,6 +200,25 @@ def _role(item: Any) -> str:
     return ""
 
 
+# Free-text labels the model rewrites every call; the step is the same.
+_FREE_TEXT_ARGS = ("justification",)
+
+
+def _strip_free_text_args(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    args = item.get("arguments")
+    if not isinstance(args, str):
+        return item
+    try:
+        parsed = json.loads(args)
+    except ValueError:
+        return item
+    if not isinstance(parsed, dict) or not any(k in parsed for k in _FREE_TEXT_ARGS):
+        return item
+    for key in _FREE_TEXT_ARGS:
+        parsed.pop(key, None)
+    return {**item, "arguments": json.dumps(parsed, sort_keys=True)}
+
+
 def tail_hash(body: Mapping[str, Any], depth: int = 2) -> str | None:
     """Hash of model + the last ``depth`` turns, normalised.  None if empty."""
 
@@ -220,6 +239,8 @@ def tail_hash(body: Mapping[str, Any], depth: int = 2) -> str | None:
                 if isinstance(item.get("content") or item.get("parts"), list)
             )
         )
+        if isinstance(item, Mapping) and item.get("type") == "function_call":
+            item = _strip_free_text_args(item)
         if isinstance(item, Mapping):
             parts.append(_normalise(_text_of(item.get("content", item.get("parts", item))), output))
             if item.get("tool_calls"):
