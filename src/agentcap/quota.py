@@ -880,12 +880,13 @@ class QuotaRunner:
 
         env = dict(os.environ)
         env["AGENTCAP_QUOTA_JOB"] = str(self.job_dir)
-        self._say(
-            f"agentcap: quota mode ({self.agent}, {self.window}): "
-            + (f"stopping this job at {self.quota:g}% of the account quota" if self.enforce
-               else f"observe only (Free); Pro would stop it at {self.quota:g}%")
-            + ". Read-only; your login and traffic are untouched."
-        )
+        if not (self.agent == "claude" and self.headless):  # headless: see the warning below
+            self._say(
+                f"agentcap: quota mode ({self.agent}, {self.window}): "
+                + (f"stopping this job at {self.quota:g}% of the account quota" if self.enforce
+                   else f"observe only (Free); Pro would stop it at {self.quota:g}%")
+                + ". Read-only; your login and traffic are untouched."
+            )
         if self.agent == "codex" and self.quota < 1:
             self._say(f"agentcap: WARNING: Codex reports quota in whole percent, so a {self.quota:g}% cap "
                       "cannot trigger until the job has used a full 1%. Use --quota 1% or more for Codex.")

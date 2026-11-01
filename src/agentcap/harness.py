@@ -242,6 +242,7 @@ class HarnessRunner:
         home: Path | None = None,
         quiet: bool = False,
         quota_fetch: Callable[[], Mapping[str, Any] | None] | None = None,
+        breakers_only: bool = False,
     ) -> None:
         kind = detect_harness(argv)
         if kind is None:
@@ -253,7 +254,7 @@ class HarnessRunner:
                 f"{kind} does not expose subscription quota %; use --tokens N (token cap from its "
                 "own logs) or --log-cap USD (its own cost field) instead"
             )
-        if tokens is None and usd is None and quota is None:
+        if tokens is None and usd is None and quota is None and not breakers_only:
             raise ValueError("give --tokens, --log-cap or --quota")
         self.argv = self.adapter.argv(argv)
         self.tokens_cap, self.usd_cap, self.quota = tokens, usd, quota

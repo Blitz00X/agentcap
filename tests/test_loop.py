@@ -124,3 +124,24 @@ def test_velocity_guard_uses_window_spend(tmp_path):
 def test_velocity_guard_rejects_float_money():
     with pytest.raises(TypeError):
         VelocityGuard(5.0, 3600, ledger=None)
+
+
+def test_codex_responses_exec_loop_with_random_chunk_ids():
+    from agentcap.loop import RunawayDetector
+    import secrets
+    det = RunawayDetector(max_burn_per_min=None)
+    history = [{"role": "user", "content": "run pwd 6 times"}]
+    trip = None
+    for i in range(6):
+        history = history + [
+            {"type": "reasoning", "summary": [], "encrypted_content": None},
+            {"type": "function_call", "name": "exec_command", "call_id": f"call_{secrets.token_hex(8)}",
+             "arguments": '{"cmd":"pwd","justification":"Running pwd","sandbox_permissions":"use_default"}'},
+            {"type": "function_call_output", "call_id": f"call_{secrets.token_hex(8)}",
+             "output": f"Chunk ID: {secrets.token_hex(3)}\nWall time: 0.00{i} seconds\n"
+                       "Process exited with code 0\nOriginal token count: 4\nOutput:\n/home/u/w\n"},
+        ]
+        trip = det.check({"model": "gpt-oss:20b", "input": history})
+        if trip:
+            break
+    assert trip and trip["kind"] == "repeat" and i == 3

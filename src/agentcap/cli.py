@@ -489,6 +489,10 @@ def _run(args: argparse.Namespace) -> int:
         return _run_harness(args, argv)
     if getattr(args, "quota", None) is not None:
         return _run_quota(args, argv)
+    if _agy_subscription_run(args, argv):
+        # agy on its Google login: no $ to meter (the proxy route needs
+        # GEMINI_API_KEY), so run the loop/error breakers from its own log.
+        return _run_harness(args, argv, breakers_only=True)
 
     try:
         cap = _decimal_cap(args.cap, "--cap")
@@ -603,7 +607,8 @@ def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
         return 2
     active_features = set(features(status_from_environment().tier))
     enforce = "quota_mode" in active_features
-    if not enforce:
+    from .quota import is_headless_claude
+    if not enforce and not (detect_quota_agent(argv) == "claude" and is_headless_claude(argv)):
         print(
             "agentcap: quota mode stopping is Pro; this Free run only observes "
             "and reports the job's share.",
@@ -632,7 +637,18 @@ def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
     return code
 
 
-def _run_harness(args: argparse.Namespace, argv: list[str]) -> int:
+def _agy_subscription_run(args: argparse.Namespace, argv: list[str]) -> bool:
+    from .harness import detect_harness
+
+    if detect_harness(argv) != "agy":
+        return False
+    if args.cap is not None or args.hour_cap is not None or args.day_cap is not None:
+        return False
+    return not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+                or os.environ.get("AGENTCAP_CAP"))
+
+
+def _run_harness(args: argparse.Namespace, argv: list[str], *, breakers_only: bool = False) -> int:
     from .harness import HarnessRunner, detect_harness
     from .quota import parse_quota
     from .runner import default_receipt_dir
@@ -669,7 +685,12 @@ def _run_harness(args: argparse.Namespace, argv: list[str]) -> int:
             enforce=enforce, alerts=alerts.emit if enforce else None, quiet=args.quiet,
             quota_poll_s=float(os.environ.get("AGENTCAP_HARNESS_QUOTA_POLL_S", "20")),
             receipt_dir=default_receipt_dir() if "spend_receipt" in active_features else None,
+            breakers_only=breakers_only,
         )
+        if breakers_only:
+            print("agentcap: agy on its Google login: loop/error breakers only (no $ to meter; "
+                  "add --quota N% for a quota cap, or set GEMINI_API_KEY and --cap for API spend).",
+                  file=sys.stderr)
         code = runner.run()
     except OSError as exc:
         print(f"agentcap: could not start the command ({exc.strerror or exc})", file=sys.stderr)

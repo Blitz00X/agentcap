@@ -150,6 +150,10 @@ _VOLATILE_RE = re.compile(
 )
 # Tool *output* also carries counters/timings ("took 1.3s", "attempt 4").
 _DIGITS_RE = re.compile(r"\d+(\.\d+)?")
+# Codex exec_command output carries a random "Chunk ID: 1f3a9c" and hex ids.
+_OUTPUT_IDS_RE = re.compile(
+    r"chunk id:\s*\S+|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{6,}\b", re.IGNORECASE
+)
 
 
 def _text_of(content: Any) -> str:
@@ -174,6 +178,7 @@ def _text_of(content: Any) -> str:
 def _normalise(text: str, output: bool = False) -> str:
     text = _VOLATILE_RE.sub("#", text)
     if output:
+        text = _OUTPUT_IDS_RE.sub("#", text)
         text = _DIGITS_RE.sub("#", text)
     return " ".join(text.split())[:4000]
 

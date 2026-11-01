@@ -704,3 +704,10 @@ def test_interactive_claude_sub_one_percent_warning(fakebin, tmp_path):
     r, events, err = make_runner(["claude", "fix"], tmp_path, quota=0.5, grace=0.3)
     r.run()
     assert "whole percent" in err.getvalue() and "interactive Claude Code" not in err.getvalue()
+
+
+def test_headless_claude_quota_hides_pro_would_stop_line(fakebin, tmp_path):
+    r, events, err = make_runner(["claude", "-p", "fix"], tmp_path, quota=2.0, enforce=False)
+    r.run()
+    assert "Pro would stop it" not in err.getvalue()
+    assert "only supported in interactive" in err.getvalue()

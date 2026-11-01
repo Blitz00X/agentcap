@@ -348,3 +348,29 @@ def test_proxy_loop_breaker_ignores_hyphenated_and_uuid_tool_call_ids():
         ]
         trip = d.check({"model": "nvidia/x:free", "messages": msgs}) or trip
     assert trip and trip["kind"] == "repeat"
+
+
+def test_plain_agy_run_without_key_uses_breakers_only(monkeypatch):
+    import argparse
+    from agentcap import cli
+    for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "AGENTCAP_CAP"):
+        monkeypatch.delenv(k, raising=False)
+    ns = argparse.Namespace(cap=None, hour_cap=None, day_cap=None)
+    assert cli._agy_subscription_run(ns, ["agy", "-p", "hi"])
+    assert not cli._agy_subscription_run(argparse.Namespace(cap="1", hour_cap=None, day_cap=None), ["agy", "-p", "x"])
+    assert not cli._agy_subscription_run(ns, ["opencode", "run", "x"])
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    assert not cli._agy_subscription_run(ns, ["agy", "-p", "hi"])
+    seen = {}
+    monkeypatch.delenv("GEMINI_API_KEY")
+    monkeypatch.setattr(cli, "_run_harness", lambda a, argv, breakers_only=False: seen.setdefault("b", breakers_only) and 0)
+    cli.main(["run", "--", "agy", "-p", "hi"])
+    assert seen["b"] is True
+
+
+def test_harness_runner_breakers_only_allowed():
+    from agentcap.harness import HarnessRunner
+    import pytest
+    with pytest.raises(ValueError):
+        HarnessRunner(["agy", "-p", "x"])
+    HarnessRunner(["agy", "-p", "x"], breakers_only=True, home=None)
