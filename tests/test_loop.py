@@ -173,3 +173,25 @@ def test_codex_loop_still_distinguishes_different_commands():
             {"type": "function_call_output", "call_id": f"call_{i}x", "output": "ok"},
         ]
         assert det.check({"model": "m", "input": history}) is None
+
+
+def test_429_retries_not_counted_as_loop_or_errors():
+    from agentcap.loop import RunawayDetector
+    det = RunawayDetector(max_burn_per_min=None, tool_error_threshold=2, repeat_threshold=50)
+    body = {"model": "gemini-x", "contents": [
+        {"role": "user", "parts": [{"text": "go"}]},
+        {"role": "model", "parts": [{"functionCall": {"name": "run", "args": {"c": "ls"}}}]},
+        {"role": "user", "parts": [{"functionResponse": {"name": "run", "response": {"error": "command not found"}}}]},
+    ]}
+    assert det.check(body) is None          # one real failing result
+    for _ in range(10):                     # same body retried after 429s
+        assert det.check(body) is None
+        det.forgive_last()
+    assert det._error_streak == 1 and det._tail_streak == 1
+
+
+def test_proxy_forgives_detector_on_429():
+    import inspect
+    from agentcap import proxy
+    assert 429 in proxy.RETRYABLE_STATUSES
+    assert "forgive_last" in inspect.getsource(proxy)

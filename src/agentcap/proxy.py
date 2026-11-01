@@ -51,6 +51,7 @@ from .estimate import (
 )
 from .ledger import CapExceeded, Caps, Ledger
 from .license import FREE_FEATURES
+RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504, 529})
 from .loop import LoopDetector, RunawayDetector, describe_trip, request_hash
 from .pricing import (
     MICRO_USD,
@@ -1008,17 +1009,8 @@ class _Proxy:
             input_tokens=input_tokens,
         )
 
-        if streaming:
-            return await self._stream(
-                upstream_request,
-                reservation_id=reservation_id,
-                reserved=reserved,
-                settlement=settlement,
-                model=model,
-                kind=kind,
-                provider=provider,
-            )
-        return await self._non_stream(
+        sender = self._stream if streaming else self._non_stream
+        result = await sender(
             upstream_request,
             reservation_id=reservation_id,
             reserved=reserved,
@@ -1027,6 +1019,13 @@ class _Proxy:
             kind=kind,
             provider=provider,
         )
+        if getattr(result, "status_code", 200) in RETRYABLE_STATUSES:
+            # A rate-limited/overloaded call is resent unchanged by the agent;
+            # that retry is not a stuck step and not a failing tool call.
+            for detector in (self.loop, self.shadow_loop):
+                if detector is not None:
+                    detector.forgive_last()
+        return result
 
     # ----------------------------------------------------------- forwarding
     def _upstream_base(self, provider: str) -> str:

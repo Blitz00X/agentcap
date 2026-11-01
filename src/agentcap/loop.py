@@ -320,6 +320,8 @@ class RunawayDetector:
         self._tail_streak = 0
         self._exact = LoopDetector(threshold=repeat_threshold, window_s=repeat_window_s, clock=self._clock)
         self._error_streak = 0
+        self._snapshot: tuple | None = None
+        self._last_exact: str | None = None
         self._spend: deque[tuple[float, Decimal]] = deque()
         self._lock = threading.Lock()
 
@@ -344,11 +346,34 @@ class RunawayDetector:
         return self.max_burn_per_min * Decimal(str(self.burn_window_s)) / Decimal(60)
 
     # -- requests ------------------------------------------------------
+    def forgive_last(self) -> None:
+        """Undo the last ``check`` (its call hit a 429/5xx and will be retried)."""
+
+        snap = self._snapshot
+        if snap is None:
+            return
+        with self._lock:
+            self._last_tail, self._last_tail_t, self._tail_streak, self._error_streak = snap[1:]
+        hits = self._exact._hits.get(snap[0])
+        if hits:
+            hits.pop()
+        self._snapshot = None
+
     def check(self, body: Mapping[str, Any]) -> dict[str, Any] | None:
         now = self._clock()
-        if self._exact.record_request(body):
+        exact = request_hash(body)
+        with self._lock:
+            resend = self._snapshot is not None and self._snapshot[0] == exact or self._last_exact == exact
+            self._last_exact = exact
+            self._snapshot = (exact, self._last_tail, self._last_tail_t,
+                              self._tail_streak, self._error_streak)
+        if self._exact.record(exact):
             return {"kind": "repeat", "count": self.repeat_threshold,
                     "window_s": self.repeat_window_s}
+        if resend:
+            # Byte-identical resend of the previous request = a client retry
+            # (429/5xx/timeout); real loops grow the history every turn.
+            return None
         digest = tail_hash(body)
         if digest is not None:
             # Same step *back to back* (normalised, history ignored).  A test
