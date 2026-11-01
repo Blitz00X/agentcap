@@ -294,8 +294,9 @@ agentcap quota                                 # read-only: last seen usage (Fre
   `used_percentage`, `resets_at`) and then runs **your own statusline command unchanged**,
   plus a `PreToolUse` hook that denies further tool calls with a clear reason once the job's
   share reaches the limit and ends the turn (`continue: false`). An interactive session stays open
-  (run `agentcap approve` to continue, or quit). Headless `claude -p` runs, and sessions where
-  the hook never fired, get SIGINT. Exit code 3.
+  (run `agentcap approve` to continue, or quit); a session where the hook never fired gets
+  SIGINT. Exit code 3. **Quota % is interactive-only:** headless `claude -p` exposes no usage %
+  to AgentCap, so `--quota` warns and only the loop/error breakers are active there.
 - **Codex CLI:** AgentCap tails the `token_count` events Codex writes to
   `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits.primary/secondary.used_percent`,
   `window_minutes`, `resets_at`) and sends SIGINT at the limit. Exit code 3.
@@ -311,9 +312,8 @@ use in the same window counts against the job (AgentCap warns when it sees anoth
 Values arrive once per model response, so a job **can overshoot by up to one request**.
 Claude Code only reports `rate_limits` for Pro/Max logins and only in interactive sessions
 (the statusline does not run in `claude -p`). Codex's rollout format is undocumented and may change. Codex reports `used_percent` in whole percent, so a Codex cap under 1% cannot trigger until the job has used a full 1% (AgentCap warns at start). Use `--quota 1%` or more for Codex.
-**Verified so far on fixtures and fake CLIs only** (plus real Claude Code 2.1.197: the `--settings`
-layer, the chained statusline and the `PreToolUse` deny were checked against a local fake API);
-a check on a real Max / ChatGPT account is still pending.
+Claude Code reports whole percents too: a cap under 1% trips at the next 1% step (AgentCap warns).
+Verified on real accounts: see the harness support matrix under "Supported & tested".
 
 ## opencode and agy (Antigravity CLI)
 
@@ -383,6 +383,33 @@ matched OpenRouter's reported usage exactly, cap stop with exit 3; not against O
 billing. Gemini CLI 0.58 and Codex CLI 0.163 are tested end-to-end against a local fake API only.
 
 Models without a bundled price (for example OpenRouter or Ollama ids) are blocked until you add a price via `AGENTCAP_PRICING_FILE`.
+
+### Harness support matrix (real runs)
+
+Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitation · ❌ not supported · **needs X** = untested, X blocks it.
+
+| Harness + auth | Loop breaker (4x same call, exit 4) | Error breaker (8 failures, exit 4) | Quota % stop (exit 3) | $ / token cap |
+| --- | --- | --- | --- | --- |
+| Claude Code, Pro/Max sub, interactive | ✅¹ | ✅¹ | ✅¹ whole-% steps; `agentcap approve` ✅¹ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
+| Claude Code, Pro/Max sub, headless `claude -p` | ✅¹ | ✅¹ | ❌ interactive only (warns at start) | ❌ by design (refused) |
+| Codex, ChatGPT sub | ✅ | ✅ | ✅ (whole %; warns under 1%) | ❌ by design (no proxy on a subscription) |
+| opencode Go | ✅ | ✅ | ❌ opencode exposes no quota % | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
+| agy, Google sub | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
+| opencode + OpenRouter (free model) | ✅ | ✅ | n/a | ✅ $ cap |
+| opencode + Ollama Cloud | ✅ | ✅ | n/a | ⚠️ needs a user price (`AGENTCAP_PRICING_FILE`): Ollama publishes none |
+| Codex + Ollama | **needs a re-run** (only error and cap were tested) | ✅ | n/a | ✅ $ cap (user price) |
+| Codex + OpenRouter | **needs paid OpenRouter credit (~$2-3)**: free tier returned 429 | **needs paid OpenRouter credit** | n/a | ✅ $ cap stop (earlier release run, free model) |
+| agy + Gemini API | **needs a paid Gemini key**: free key's 5 RPM limit | **needs a paid Gemini key** | n/a | ✅ $ block |
+| Claude Code + `ANTHROPIC_API_KEY` | **needs an Anthropic API key** (proxy path; only a local fake API so far) | **needs an Anthropic API key** | n/a | **needs an Anthropic API key** |
+
+¹ Claude Code 2.1.316 on a real Claude Pro login (Haiku), 1 Nov 2026. The **stop** itself
+was proven with an enforcement driver (enforcement forced on in a dev harness), not yet through
+the CLI with an activated Pro license. On Free the CLI observes and reports only.
+
+Known limits: quota % is account-level (parallel sessions count); Claude/Codex report whole
+percents; interactive Claude turns with no tool calls can't be denied, so after a 30 s grace
+period AgentCap sends SIGINT and the session ends; plain `agentcap run -- agy` asks for
+GEMINI_API_KEY; Codex sandbox can't run commands (bwrap userns) on this Linux box.
 
 **Platforms:** Linux and macOS. Windows: not yet (use WSL2).
 

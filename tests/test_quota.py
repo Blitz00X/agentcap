@@ -689,3 +689,18 @@ def test_approve_keeps_last_tool_name(tmp_path):
     assert "approved" in q.approve_job(tmp_path)
     t = json.loads((d / "tools.json").read_text())
     assert t["tool"] == "Bash" and t["count"] == 0 and not (d / "loop.json").exists()
+
+
+def test_headless_claude_quota_warns_interactive_only(fakebin, tmp_path):
+    r, events, err = make_runner(["claude", "-p", "fix"], tmp_path, quota=0.5)
+    r.run()
+    out = err.getvalue()
+    assert "only supported in interactive Claude Code sessions" in out
+    assert "loop and error breakers are still active" in out
+    assert "whole percent" not in out
+
+
+def test_interactive_claude_sub_one_percent_warning(fakebin, tmp_path):
+    r, events, err = make_runner(["claude", "fix"], tmp_path, quota=0.5, grace=0.3)
+    r.run()
+    assert "whole percent" in err.getvalue() and "interactive Claude Code" not in err.getvalue()

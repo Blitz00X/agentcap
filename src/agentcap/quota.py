@@ -47,6 +47,14 @@ APPROVE_FACTOR = 1.5
 APPROVE_MAX = 2
 
 
+HEADLESS_CLAUDE_QUOTA_WARNING = (
+    "agentcap: WARNING: quota % is only supported in interactive Claude Code sessions. "
+    "Headless `claude -p` exposes no usage % to AgentCap, so this job will NOT be stopped "
+    "at the quota; the loop and error breakers are still active. Run `claude` "
+    "interactively for quota mode."
+)
+
+
 def is_headless_claude(argv: Sequence[str]) -> bool:
     """``claude -p`` / ``--print`` runs non-interactively; nobody is there to approve."""
 
@@ -881,6 +889,12 @@ class QuotaRunner:
         if self.agent == "codex" and self.quota < 1:
             self._say(f"agentcap: WARNING: Codex reports quota in whole percent, so a {self.quota:g}% cap "
                       "cannot trigger until the job has used a full 1%. Use --quota 1% or more for Codex.")
+        if self.agent == "claude" and self.headless:
+            self._say(HEADLESS_CLAUDE_QUOTA_WARNING)
+        elif self.agent == "claude" and self.quota < 1:
+            self._say(f"agentcap: WARNING: Claude Code reports quota in whole percent, so a {self.quota:g}% "
+                      "cap trips at the next 1% step of the account (it may stop at once or overshoot). "
+                      "Use --quota 1% or more for Claude Code.")
         self.child = subprocess.Popen(argv, env=env, start_new_session=True, cwd=self.cwd)
 
         warned = hit = parallel = observed = no_data_warned = False
@@ -933,7 +947,8 @@ class QuotaRunner:
                     self._say("agentcap: WARNING: another session is using the same account; "
                               "quota % is account-level, so its usage counts against this job.")
                     self._event("quota_parallel", share)
-                if not observed and not no_data_warned and now - started > self.no_data_warn_s:
+                if (not observed and not no_data_warned and now - started > self.no_data_warn_s
+                        and not (self.agent == "claude" and self.headless)):
                     no_data_warned = True
                     self._say("agentcap: no quota data yet; protection not verified "
                               "(Claude: interactive mode with statusline; Codex: ChatGPT login).")
