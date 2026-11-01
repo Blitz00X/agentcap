@@ -534,8 +534,8 @@ def _loop_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
     if not enforce:
         return None
     _note_deny(job_dir)
-    return (f"agentcap loop breaker: {detail}. Stop now: do not call more tools; "
-            "summarise what is done and what is left.")
+    return (f"agentcap loop breaker: {detail}. "
+            f"{PAUSE_TEXT}")
 
 
 TRANSCRIPT_TAIL_BYTES = 1 << 20
@@ -592,8 +592,8 @@ def _error_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
     if not enforce:
         return None
     _note_deny(job_dir)
-    return (f"agentcap error breaker: {detail}. Stop now: do not call more tools; "
-            "summarise what failed and what is left.")
+    return (f"agentcap error breaker: {detail}. "
+            f"{PAUSE_TEXT}")
 
 
 def post_main(job_dir: Path, stdin: TextIO) -> int:
@@ -615,6 +615,11 @@ def post_main(job_dir: Path, stdin: TextIO) -> int:
         return 0
     _atomic_write(path, {"errors": errors})
     return 0
+
+
+PAUSE_TEXT = (
+    'Pause here: summarise what is done and what is left, then wait for the user. This is a pause, not a permanent stop: if the user runs `agentcap approve` or tells you to continue, carry on with tool calls as normal.'
+)
 
 
 def _note_deny(job_dir: Path) -> None:
@@ -668,8 +673,8 @@ def hook_main(job_dir: Path, stdin: TextIO, stdout: TextIO) -> int:
     reason = (
         f"agentcap quota mode: this job used {float(status.get('share', 0)):.1f}% of the "
         f"{'weekly' if status.get('window') == 'week' else '5-hour'} subscription quota "
-        f"(limit {float(status.get('quota', 0)):g}%). Stop now: do not call more tools; "
-        "summarise what is done and what is left. (The user can run `agentcap approve` to raise it.)"
+        f"(limit {float(status.get('quota', 0)):g}%) and the limit was hit. "
+        f"{PAUSE_TEXT}"
     )
     json.dump(
         {

@@ -750,3 +750,15 @@ def test_share_tracker_ignores_same_window_jitter():
     assert t.share == 1.0 and t.resets_seen == 0
     t.update(Reading(2.0, 1793566200.0 + 18000))  # real reset
     assert t.resets_seen == 1 and t.share == 3.0
+
+
+def test_deny_messages_invite_resume_after_approve(tmp_path):
+    import io, json as _j
+    from agentcap import quota as q
+    (tmp_path / "job.json").write_text(_j.dumps({"enforce": True}))
+    (tmp_path / "status.json").write_text(_j.dumps({"limit_hit": True, "share": 1.0, "quota": 1, "window": "5h"}))
+    out = io.StringIO()
+    q.hook_main(tmp_path, io.StringIO(_j.dumps({"tool_name": "Bash", "tool_input": {"command": "x"}})), out)
+    reason = _j.loads(out.getvalue())["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "agentcap approve" in reason and "continue" in reason
+    assert "Stop now" not in reason and "do not call more tools" not in reason
