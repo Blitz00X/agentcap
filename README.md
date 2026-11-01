@@ -390,21 +390,20 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 
 | Harness + auth | Loop breaker (4x same call, exit 4) | Error breaker (8 failures, exit 4) | Quota % stop (exit 3) | $ / token cap |
 | --- | --- | --- | --- | --- |
-| Claude Code, Pro/Max sub, interactive | ✅¹ | ✅¹ | ✅ whole-% steps (deny keeps the session); `agentcap approve` ✅ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
+| Claude Code, Pro/Max sub, interactive | ✅ (deny keeps the session; resumes after approve) | ✅ | ✅ whole-% steps (deny keeps the session); `agentcap approve` ✅ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
 | Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ❌ interactive only (warns at start) | ❌ by design (refused) |
 | Codex, ChatGPT sub | ✅ | ✅ | ✅ (whole %; warns under 1%) | ❌ by design (no proxy on a subscription) |
 | opencode Go | ✅ | ✅ | ❌ opencode exposes no quota % | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
-| agy, Google sub | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
+| agy, Google sub (plain `agentcap run -- agy` needs no key: breakers only) | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
 | opencode + OpenRouter (free model) | ✅ | ✅ | n/a | ✅ $ cap |
 | opencode + Ollama Cloud | ✅ | ✅ | n/a | ⚠️ needs a user price (`AGENTCAP_PRICING_FILE`): Ollama publishes none |
 | Codex + Ollama | ✅ (exit 4 on 4th identical exec) | ✅ | n/a | ✅ $ cap (user price) |
-| Codex + OpenRouter | **needs paid OpenRouter credit (~$2-3)**: free tier returned 429 | **needs paid OpenRouter credit** | n/a | ✅ $ cap stop (earlier release run, free model) |
-| agy + Gemini API | **needs a paid Gemini key**: free key's 5 RPM limit | **needs a paid Gemini key** | n/a | ✅ $ block |
+| Codex + OpenRouter | **not run**: test key expired (401) | **not run**: test key expired | n/a | ✅ $ cap stop (earlier release run, free model) |
+| agy + Gemini API | **not provable on a free key**: agy sends >5 req/min and exits on the first 429 (no retry); needs a paid key | same | n/a | ✅ $ cap (exit 3) |
 | Claude Code + `ANTHROPIC_API_KEY` | **needs an Anthropic API key** (proxy path; only a local fake API so far) | **needs an Anthropic API key** | n/a | **needs an Anthropic API key** |
 
 Tested with Claude Code 2.1.316 on a real Claude Pro login (Haiku) and an activated AgentCap Pro
-license, through the CLI, 1 Nov 2026. ¹ Interactive loop/error stops were proven with an enforcement
-driver only; they use the same hooks as the headless stops above. On Free the CLI observes and reports only.
+license, through the CLI, 1 Nov 2026. 429/5xx retries (identical resends) are counted neither as loops nor as failing tool calls.
 
 Known limits: quota % is account-level (parallel sessions count); Claude/Codex report whole
 percents; interactive Claude turns with no tool calls can't be denied, so after a 30 s grace
