@@ -162,3 +162,19 @@ def test_free_tier_never_sends_remote_alerts():
 
 def test_format_receipt_without_cap():
     assert "of $" not in format_alert({"type": "run_receipt", "spent_usd": "1", "cap_usd": None})
+
+
+def test_proxy_refuses_claude_subscription_login(tmp_path, monkeypatch):
+    from agentcap.adapters import claude_subscription_login
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / ".credentials.json").write_text("{}")
+    env = {"HOME": str(tmp_path)}
+    assert claude_subscription_login(env)
+    with pytest.raises(AdapterConflict) as exc:
+        ensure_claude_routing_is_safe(["claude", "-p", "hi"], env, cwd=tmp_path)
+    assert "--quota" in str(exc.value)
+    assert claude_subscription_login({**env, "ANTHROPIC_API_KEY": "k"}) is None
+    ensure_claude_routing_is_safe(["claude"], {**env, "ANTHROPIC_API_KEY": "k"}, cwd=tmp_path)
+    assert claude_subscription_login({"HOME": str(tmp_path / "none"), "CLAUDE_CODE_OAUTH_TOKEN": "t"})
+    assert claude_subscription_login({"HOME": str(tmp_path / "none")}) is None

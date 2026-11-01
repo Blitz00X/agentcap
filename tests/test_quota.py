@@ -536,13 +536,13 @@ def _job(tmp_path, **kw):
 
 def test_approve_raises_quota_50pct_at_most_twice(tmp_path):
     root, d = _job(tmp_path)
-    (d / "loop.json").write_text("{}"); (d / "tools.json").write_text("{}")
+    (d / "loop.json").write_text("{}"); (d / "tools.json").write_text(json.dumps({"digest": "x", "count": 4, "tool": "Bash"}))
     msg = q.approve_job(root)
     assert "6%" in msg and "1/2" in msg
     job = json.loads((d / "job.json").read_text())
     assert job["quota"] == 6.0 and job["approvals"] == 1
     assert json.loads((d / "status.json").read_text())["limit_hit"] is False
-    assert not (d / "loop.json").exists() and not (d / "tools.json").exists()
+    assert not (d / "loop.json").exists() and json.loads((d / "tools.json").read_text())["count"] == 0
     assert "9%" in q.approve_job(root)
     assert "already approved twice" in q.approve_job(root)
     assert json.loads((d / "job.json").read_text())["quota"] == 9.0
@@ -625,3 +625,67 @@ def test_codex_1pct_quota_no_whole_percent_warning(fakebin, tmp_path, monkeypatc
     r, events, err = make_runner(["codex"], tmp_path, quota=1.0)
     r.run()
     assert "whole percent" not in err.getvalue()
+
+
+def _transcript(path, results):
+    lines = []
+    for i, err in enumerate(results):
+        lines.append(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {"command": f"ls /x{i}"}}]}}))
+        lines.append(json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}", "content": "no", "is_error": err}]}}))
+    path.write_text("\n".join(lines) + "\nnot json\n")
+    return str(path)
+
+
+def _pre(job, transcript, n):
+    out = io.StringIO()
+    q.hook_main(job, io.StringIO(json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                             "tool_input": {"command": f"ls /y{n}"},
+                                             "transcript_path": transcript})), out)
+    return out.getvalue()
+
+
+def test_transcript_error_streak(tmp_path):
+    assert q.transcript_error_streak(_transcript(tmp_path / "t.jsonl", [True, False, True, True])) == 2
+    assert q.transcript_error_streak(str(tmp_path / "missing.jsonl")) == 0
+    assert q.transcript_error_streak(None) == 0
+
+
+def test_claude_error_breaker_denies_after_8_failures(tmp_path):
+    job = tmp_path / "job"
+    q._atomic_write(job / "job.json", {"enforce": True, "quota": 100, "window": "5h"})
+    t = _transcript(tmp_path / "t.jsonl", [True] * 7)
+    assert _pre(job, t, 1) == ""
+    t = _transcript(tmp_path / "t.jsonl", [False] + [True] * 8)
+    out = json.loads(_pre(job, t, 2))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "error breaker" in out["stopReason"]
+    lj = json.loads((job / "loop.json").read_text())
+    assert lj["kind"] == "errors" and "8 failing tool calls" in lj["detail"]
+
+
+def test_claude_error_breaker_observe_only_on_free(tmp_path):
+    job = tmp_path / "job"
+    q._atomic_write(job / "job.json", {"enforce": False})
+    t = _transcript(tmp_path / "t.jsonl", [True] * 9)
+    assert _pre(job, t, 1) == ""
+    assert "9 failing" in json.loads((job / "loop.json").read_text())["detail"]
+
+
+def test_statusline_marks_api_calls_seen(tmp_path):
+    q._atomic_write(tmp_path / "job.json", {"enforce": True, "quota": 5, "window": "5h"})
+    q.statusline_main(tmp_path, io.StringIO(json.dumps({"cost": {"total_api_duration_ms": 0}})), io.StringIO())
+    assert json.loads((tmp_path / "status.json").read_text())["api_calls_seen"] is False
+    q.statusline_main(tmp_path, io.StringIO(json.dumps({"cost": {"total_api_duration_ms": 12}})), io.StringIO())
+    assert json.loads((tmp_path / "status.json").read_text())["api_calls_seen"] is True
+
+
+def test_approve_keeps_last_tool_name(tmp_path):
+    d = tmp_path / "jobs" / "q1"
+    q._atomic_write(d / "job.json", {"enforce": True, "quota": 2, "window": "5h"})
+    q._atomic_write(d / "tools.json", {"digest": "x", "count": 4, "tool": "Bash"})
+    q._atomic_write(d / "loop.json", {"detail": "d"})
+    assert "approved" in q.approve_job(tmp_path)
+    t = json.loads((d / "tools.json").read_text())
+    assert t["tool"] == "Bash" and t["count"] == 0 and not (d / "loop.json").exists()

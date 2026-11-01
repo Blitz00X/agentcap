@@ -51,6 +51,14 @@ CLAUDE_CONFLICT_MESSAGE = (
     "Remove it for this run and try again."
 )
 
+CLAUDE_SUBSCRIPTION_MESSAGE = (
+    "refusing to route Claude Code through the proxy: it is logged in with a "
+    "Claude Pro/Max subscription ({what}) and no ANTHROPIC_API_KEY is set. "
+    "AgentCap never proxies subscription traffic. Use quota mode instead "
+    "(`agentcap run --quota 5% --window 5h -- claude`, loop/error breakers "
+    "included), or set ANTHROPIC_API_KEY to meter API spend with --cap."
+)
+
 # Config keys the user may not set themselves: AgentCap owns the provider
 # routing, and a conflicting override would silently bypass the proxy.
 _CODEX_CONFLICT_KEYS = frozenset({"model_provider", "model_providers", "openai_base_url"})
@@ -202,6 +210,35 @@ def claude_conflicts(
     return found
 
 
+def claude_subscription_login(env: Mapping[str, str]) -> str | None:
+    """Why Claude Code would use a subscription login (OAuth), or ``None``.
+
+    Existence checks only: the credentials file is never opened.  An API key
+    (env or ``apiKeyHelper``/``env`` in settings) wins over the login.
+    """
+
+    if env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN"):
+        return None
+    home = Path(env.get("HOME") or Path.home())
+    config_dir = env.get("CLAUDE_CONFIG_DIR")
+    user_dir = Path(config_dir) if config_dir else home / ".claude"
+    for path in _claude_settings_files(env, Path.cwd()):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        block = data.get("env") if isinstance(data.get("env"), dict) else {}
+        if data.get("apiKeyHelper") or block.get("ANTHROPIC_API_KEY") or block.get("ANTHROPIC_AUTH_TOKEN"):
+            return None
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return "CLAUDE_CODE_OAUTH_TOKEN is set"
+    if (user_dir / ".credentials.json").exists():
+        return f"{user_dir / '.credentials.json'} exists"
+    return None
+
+
 def ensure_claude_routing_is_safe(
     argv: Sequence[str],
     env: Mapping[str, str],
@@ -213,6 +250,10 @@ def ensure_claude_routing_is_safe(
         raise AdapterConflict(
             CLAUDE_CONFLICT_MESSAGE.format(what=", ".join(conflicts))
         )
+    if detect_agent(argv) is not None and detect_agent(argv)[0] == "claude":
+        login = claude_subscription_login(env)
+        if login:
+            raise AdapterConflict(CLAUDE_SUBSCRIPTION_MESSAGE.format(what=login))
 
 
 def claude_base_url(port: int) -> str:
@@ -578,6 +619,7 @@ __all__ = [
     "claude_base_url",
     "claude_conflicts",
     "ensure_claude_routing_is_safe",
+    "claude_subscription_login",
     "codex_config_arguments",
     "codex_conflicts",
     "detect_agent",

@@ -88,11 +88,15 @@ def approve_job(root: Path | None = None) -> str:
         status["limit_hit"] = False
         status["quota"] = new
         _atomic_write(d / "status.json", status)
-    for name in ("loop.json", "tools.json", "denies.log"):
+    for name in ("loop.json", "errors.json", "denies.log"):
         try:
             (d / name).unlink()
         except OSError:
             pass
+    tools = _read_json(d / "tools.json")
+    if tools:  # keep the last tool name for the receipt; restart the streak
+        tools.update({"count": 0, "digest": None})
+        _atomic_write(d / "tools.json", tools)
     return (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g}% of the "
             f"{'weekly' if job.get('window') == 'week' else '5-hour'} quota; the run continues.")
 CLAUDE_KEYS = {"5h": "five_hour", "week": "seven_day"}
@@ -352,6 +356,16 @@ def claude_settings(job_dir: Path, python: str | None = None) -> dict[str, Any]:
     }
 
 
+def _api_calls_seen(payload: Any) -> bool:
+    cost = payload.get("cost") if isinstance(payload, Mapping) else None
+    if not isinstance(cost, Mapping):
+        return True  # unknown statusline schema: keep the warning
+    try:
+        return float(cost.get("total_api_duration_ms") or 0) > 0
+    except (TypeError, ValueError):
+        return True
+
+
 def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float | None = None) -> int:
     """Record rate_limits, then render the user's statusline unchanged."""
 
@@ -393,6 +407,7 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
             "used": readings[window].used if window in readings else None,
             "resets_at": readings[window].resets_at if window in readings else None,
             "has_rate_limits": bool(readings),
+            "api_calls_seen": _api_calls_seen(payload),
             "limit_hit": bool(enforce and window in readings and share >= quota),
             "sessions": sorted(sessions),
             "tracker": tracker.to_dict(),
@@ -496,6 +511,63 @@ def _loop_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
             "summarise what is done and what is left.")
 
 
+TRANSCRIPT_TAIL_BYTES = 1 << 20
+
+
+def transcript_error_streak(path: Any) -> int:
+    """Failing tool results in a row at the end of a Claude Code transcript.
+
+    Claude Code's own session log (``transcript_path`` in every hook payload)
+    records each ``tool_result`` with ``is_error``.  This also covers calls that
+    never ran (permission blocks), which fire no PostToolUse hook.
+    """
+
+    if not isinstance(path, str) or not path:
+        return 0
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+            data = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return 0
+    streak = 0
+    for line in data.splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        msg = obj.get("message") if isinstance(obj, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                streak = streak + 1 if block.get("is_error") is True else 0
+    return streak
+
+
+def _error_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
+    """Error breaker: 8 failing tool calls in a row, read from the transcript."""
+
+    errors = transcript_error_streak(payload.get("transcript_path"))
+    name = str(payload.get("tool_name") or "")[:40]
+    _atomic_write(job_dir / "errors.json", {"errors": errors, "tool": name})
+    if errors < LOOP_ERRORS:
+        return None
+    enforce = bool((_read_json(job_dir / "job.json") or {}).get("enforce"))
+    detail = f"{errors} failing tool calls in a row ({name})"
+    if not (job_dir / "loop.json").exists():
+        _atomic_write(job_dir / "loop.json", {"count": errors, "tool": name, "detail": detail,
+                                              "kind": "errors", "stopped": enforce, "ts": time.time()})
+    if not enforce:
+        return None
+    _note_deny(job_dir)
+    return (f"agentcap error breaker: {detail}. Stop now: do not call more tools; "
+            "summarise what failed and what is left.")
+
+
 def _note_deny(job_dir: Path) -> None:
     try:
         with open(job_dir / "denies.log", "a", encoding="utf-8") as fh:
@@ -534,6 +606,12 @@ def hook_main(job_dir: Path, stdin: TextIO, stdout: TextIO) -> int:
         loop_reason = None
     if loop_reason:
         return _deny(stdout, loop_reason)
+    try:
+        error_reason = _error_hook(job_dir, payload) if isinstance(payload, dict) else None
+    except Exception:
+        error_reason = None
+    if error_reason:
+        return _deny(stdout, error_reason)
     status = _read_json(job_dir / "status.json")
     if not status or not status.get("limit_hit"):
         return 0
@@ -834,7 +912,9 @@ class QuotaRunner:
                         observed = True
                         share = float(status.get("share") or 0.0)
                         tracker = ShareTracker.from_dict(status.get("tracker"))
-                    elif status and not no_data_warned:
+                    elif status and not no_data_warned and status.get("api_calls_seen", True):
+                        # the first statusline render precedes any API response,
+                        # so missing rate_limits before a model call is normal
                         no_data_warned = True
                         self._say("agentcap: Claude Code reports no subscription rate_limits "
                                   "(API-key login?). Quota mode needs a Pro/Max login; use --cap for API keys.")
