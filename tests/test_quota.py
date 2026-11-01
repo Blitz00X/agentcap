@@ -711,3 +711,11 @@ def test_headless_claude_quota_hides_pro_would_stop_line(fakebin, tmp_path):
     r.run()
     assert "Pro would stop it" not in err.getvalue()
     assert "only supported in interactive" in err.getvalue()
+
+
+def test_loop_digest_ignores_bash_description():
+    from agentcap.waste import _digest
+    a = _digest("Bash", {"command": "pwd", "description": "Print working directory (call 1 of 6)"})
+    b = _digest("Bash", {"command": "pwd", "description": "Print working directory (call 2 of 6)"})
+    c = _digest("Bash", {"command": "ls", "description": "Print working directory (call 2 of 6)"})
+    assert a == b and a != c

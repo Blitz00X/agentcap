@@ -201,7 +201,7 @@ def _role(item: Any) -> str:
 
 
 # Free-text labels the model rewrites every call; the step is the same.
-_FREE_TEXT_ARGS = ("justification",)
+_FREE_TEXT_ARGS = ("justification", "description")
 
 
 def _strip_free_text_args(item: Mapping[str, Any]) -> Mapping[str, Any]:

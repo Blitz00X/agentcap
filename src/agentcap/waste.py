@@ -117,8 +117,14 @@ def _digest(name: str, payload: Any) -> str:
             payload = json.loads(payload)
         except ValueError:
             pass
+    if isinstance(payload, dict):
+        # Free-text labels the model rewrites per call ("call 3 of 6").
+        payload = {k: v for k, v in payload.items() if k not in _FREE_TEXT_KEYS}
     canon = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(f"{name}\0{canon}".encode()).hexdigest()[:16]
+
+
+_FREE_TEXT_KEYS = frozenset({"description", "justification"})
 
 
 def _price(pricer: _Pricer, model: str):
