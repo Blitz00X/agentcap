@@ -33,6 +33,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -209,6 +210,121 @@ def codex_readings(event: Mapping[str, Any], *, now: float | None = None) -> dic
             if abs(minutes - expected) <= expected * 0.05:
                 out[window] = Reading(used, resets)
     return out
+
+
+def claude_stream_readings(event: Any) -> dict[str, Reading]:
+    """Parse a headless ``claude -p --output-format stream-json`` ``rate_limit_event``.
+
+    ``rate_limit_info.unifiedWindows.{five_hour,seven_day}.utilization`` is a
+    0-1 fraction (whole-percent steps in practice); converted to 0-100.
+    """
+
+    out: dict[str, Reading] = {}
+    if not isinstance(event, Mapping) or event.get("type") != "rate_limit_event":
+        return out
+    info = event.get("rate_limit_info")
+    if not isinstance(info, Mapping):
+        return out
+    windows = info.get("unifiedWindows")
+    if isinstance(windows, Mapping):
+        for window, key in CLAUDE_KEYS.items():
+            block = windows.get(key)
+            if not isinstance(block, Mapping):
+                continue
+            util = _num(block.get("utilization"))
+            if util is None:
+                continue
+            out[window] = Reading(round(util * 100, 4), _num(block.get("resetsAt")))
+    return out
+
+
+def is_claude_stream_json(argv: Sequence[str]) -> bool:
+    """Headless Claude Code with ``--output-format stream-json`` (rate_limit_event on stdout)."""
+
+    if not is_headless_claude(argv):
+        return False
+    args = list(argv[1:])
+    for i, a in enumerate(args):
+        if a == "--output-format" and i + 1 < len(args) and args[i + 1] == "stream-json":
+            return True
+        if a == "--output-format=stream-json":
+            return True
+    return False
+
+
+class ClaudeStreamTap:
+    """Pass the child's stdout through unchanged and record ``rate_limit_event`` readings."""
+
+    def __init__(self, window: str, sink: Any = None) -> None:
+        self.window = window
+        self.sink = sink
+        self.tracker = ShareTracker()
+        self.observed = False
+        self.events = 0
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def seed(self, reading: Reading) -> None:
+        self.tracker.seed(reading)
+
+    def feed_line(self, raw: bytes) -> None:
+        text = raw.decode("utf-8", "replace").strip()
+        if '"rate_limit_event"' not in text:
+            return
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            return
+        readings = claude_stream_readings(obj)
+        if not readings:
+            return
+        now = time.time()
+        with self._lock:
+            self.events += 1
+            if self.window in readings:
+                self.observed = True
+                self.tracker.update(readings[self.window])
+        try:
+            current = _readings_dict(readings)
+            previous = (_read_json(state_root() / "claude_last.json") or {}).get("readings")
+            _atomic_write(state_root() / "claude_last.json", {"ts": now, "readings": current})
+            if previous != current:
+                _append_sample({"ts": now, "readings": current, "source": "stream-json"})
+        except OSError:
+            pass
+
+    def snapshot(self) -> tuple[bool, float, ShareTracker]:
+        with self._lock:
+            return self.observed, self.tracker.share, ShareTracker.from_dict(self.tracker.to_dict())
+
+    def _pump(self, stream: Any) -> None:
+        sink = self.sink if self.sink is not None else getattr(sys.stdout, "buffer", None)
+        for raw in iter(stream.readline, b""):
+            try:
+                if sink is not None:
+                    sink.write(raw)
+                    sink.flush()
+                else:
+                    sys.stdout.write(raw.decode("utf-8", "replace"))
+                    sys.stdout.flush()
+            except (OSError, ValueError):
+                pass  # downstream closed; keep draining so the child never blocks
+            try:
+                self.feed_line(raw)
+            except Exception:
+                pass
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+    def start(self, stream: Any) -> None:
+        self._thread = threading.Thread(target=self._pump, args=(stream,), daemon=True)
+        self._thread.start()
+
+    def join(self, timeout: float = 5.0) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout)
 
 
 # ------------------------------------------------------------------- tracker
@@ -766,6 +882,7 @@ class QuotaRunner:
         receipt_dir: Path | None = None,
         cwd: Path | None = None,
         home: Path | None = None,
+        stdout_sink: Any = None,
     ) -> None:
         if window not in WINDOWS:
             raise ValueError("--window must be 'week' or '5h'")
@@ -788,6 +905,7 @@ class QuotaRunner:
         self.receipt_dir = receipt_dir
         self.cwd = cwd
         self.home = home
+        self.stdout_sink = stdout_sink
         self.job_id = f"q{int(time.time())}-{os.getpid()}"
         self.job_dir = self.job_root / "jobs" / self.job_id
         self.child: subprocess.Popen | None = None
@@ -881,7 +999,26 @@ class QuotaRunner:
         if self.agent == "codex" and self.quota < 1:
             self._say(f"agentcap: WARNING: Codex reports quota in whole percent, so a {self.quota:g}% cap "
                       "cannot trigger until the job has used a full 1%. Use --quota 1% or more for Codex.")
-        self.child = subprocess.Popen(argv, env=env, start_new_session=True, cwd=self.cwd)
+        if self.agent == "claude" and self.quota < 1:
+            self._say(f"agentcap: WARNING: Claude Code reports quota in whole percent, so a {self.quota:g}% "
+                      "cap trips at the next 1% step of the account (it may stop at once or overshoot). "
+                      "Use --quota 1% or more for Claude Code.")
+        tap: ClaudeStreamTap | None = None
+        if self.agent == "claude" and self.headless:
+            if is_claude_stream_json(self.argv):
+                tap = ClaudeStreamTap(self.window, sink=self.stdout_sink)
+                seed = baseline_from_last(_read_json(state_root() / "claude_last.json"),
+                                          self.window, now=started)
+                if seed is not None:
+                    tap.seed(seed)
+            else:
+                self._say("agentcap: headless claude -p: quota % is only visible with "
+                          "--output-format stream-json --verbose; loop/error breakers still work.")
+        self._tap = tap
+        self.child = subprocess.Popen(argv, env=env, start_new_session=True, cwd=self.cwd,
+                                      stdout=subprocess.PIPE if tap else None)
+        if tap is not None:
+            tap.start(self.child.stdout)
 
         warned = hit = parallel = observed = no_data_warned = False
         loop_detail: str | None = None
@@ -918,6 +1055,11 @@ class QuotaRunner:
                         no_data_warned = True
                         self._say("agentcap: Claude Code reports no subscription rate_limits "
                                   "(API-key login?). Quota mode needs a Pro/Max login; use --cap for API keys.")
+                    if tap is not None:
+                        t_obs, t_share, t_tracker = tap.snapshot()
+                        if t_obs:
+                            observed = True
+                            share, tracker = t_share, t_tracker
                     if len(status.get("sessions") or []) > 1 and not parallel:
                         parallel = True
                 else:
@@ -945,8 +1087,8 @@ class QuotaRunner:
                     hit_at = now
                     if self.enforce:
                         self._event("quota_exceeded", share)
-                        if self.agent == "codex":
-                            self._stop()
+                        if self.agent == "codex" or tap is not None:
+                            self._stop()  # headless: quota data arrives per API call; stop now
                             stopped = True
                 if (
                     hit and self.enforce and self.agent == "claude" and not stopped
@@ -989,6 +1131,13 @@ class QuotaRunner:
             self._stop()
             reason = "interrupted"
         code = self.child.wait()
+        if tap is not None:
+            tap.join()
+            t_obs, t_share, t_tracker = tap.snapshot()
+            if t_obs:
+                observed, share, tracker = True, t_share, t_tracker
+                if not hit and share >= self.quota:
+                    hit = True
         if loop_detail and self.enforce and not hit:
             reason = "loop_detected"
             code = EXIT_LOOP_DETECTED
