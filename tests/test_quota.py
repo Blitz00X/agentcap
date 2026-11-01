@@ -740,3 +740,13 @@ def test_claude_settings_register_post_hooks(tmp_path):
     fn = [f for n, f in inspect.getmembers(q, inspect.isfunction) if "PostToolUseFailure" in inspect.getsource(f) and n != "post_main"][0]
     src = inspect.getsource(fn)
     assert "post --job" in src
+
+
+def test_share_tracker_ignores_same_window_jitter():
+    from agentcap.quota import ShareTracker, Reading
+    t = ShareTracker()
+    for used in (12.0, 13.0, 12.0, 13.0):
+        t.update(Reading(used, 1793566200.0))
+    assert t.share == 1.0 and t.resets_seen == 0
+    t.update(Reading(2.0, 1793566200.0 + 18000))  # real reset
+    assert t.resets_seen == 1 and t.share == 3.0

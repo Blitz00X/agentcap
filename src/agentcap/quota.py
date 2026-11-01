@@ -250,8 +250,17 @@ class ShareTracker:
             and reading.resets_at > self.last_reset + 60
         ):
             new_window = True
-        elif self.last_used is not None and reading.used < self.last_used - 0.5:
+        elif (
+            self.last_used is not None
+            and reading.used < self.last_used - 0.5
+            and not (reading.resets_at is not None and self.last_reset is not None
+                     and abs(reading.resets_at - self.last_reset) <= 60)
+        ):
             new_window = True
+        elif self.last_used is not None and reading.used < self.last_used:
+            # Same window, lower %: whole-percent jitter between sources
+            # (seen live: 12 -> 13 -> 12).  Keep the high-water mark.
+            return self.share
         if new_window:
             self.carried += max(0.0, (self.last_used or 0.0) - self.baseline)
             self.baseline = 0.0
