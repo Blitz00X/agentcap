@@ -41,6 +41,7 @@ from .ledger import Caps, Ledger
 from .license import features as license_features
 from .license import status_from_environment
 from .pricing import PricingStore
+from .procstop import reap_group
 from .proxy import (
     DEFAULT_ANTHROPIC_UPSTREAM,
     DEFAULT_GEMINI_UPSTREAM,
@@ -542,6 +543,9 @@ class Runner:
             else:
                 reason = "child_exit"
         finally:
+            # No orphans: grandchildren left in the agent's process group after
+            # the leader exited (or was stopped) are terminated too.
+            reap_group(self._pgid)
             self._stop_proxy()
             cleanup = self._adapter_cleanup
             self._adapter_cleanup = None

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
+from .procstop import reap_group, stop_tree
 from .quota import LoopWatch, WARN_FRACTION, _atomic_write, state_root
 
 EXIT_CAP_EXCEEDED = 3
@@ -243,6 +244,8 @@ class HarnessRunner:
         quiet: bool = False,
         quota_fetch: Callable[[], Mapping[str, Any] | None] | None = None,
         breakers_only: bool = False,
+        int_timeout: float = 5.0,
+        term_timeout: float = 3.0,
     ) -> None:
         kind = detect_harness(argv)
         if kind is None:
@@ -267,11 +270,14 @@ class HarnessRunner:
         self.receipt_dir = receipt_dir
         self.home = home
         self.quiet = quiet
+        self.int_timeout = int_timeout
+        self.term_timeout = term_timeout
         self.model = agy_model(self.argv, home) if kind == "agy" else ""
         exe = self.argv[0]
         self.quota_fetch = quota_fetch or (lambda: agy_quota_payload(exe))
         self.job_id = f"h{int(time.time())}-{os.getpid()}"
         self.child: subprocess.Popen | None = None
+        self._pgid: int | None = None
         self.summary: HarnessSummary | None = None
         self._lock = threading.Lock()
         self._lines: list[str] = []
@@ -302,12 +308,9 @@ class HarnessRunner:
                 pass
 
     def _stop(self) -> None:
-        self._signal(signal.SIGINT)
-        deadline = time.time() + 5
-        while self.child and self.child.poll() is None and time.time() < deadline:
-            time.sleep(0.05)
-        if self.child and self.child.poll() is None:
-            self._signal(signal.SIGTERM)
+        if self.child is not None:
+            stop_tree(self.child, self._pgid, int_timeout=self.int_timeout,
+                      term_timeout=self.term_timeout, kill_timeout=2.0)
 
     def _reader(self) -> None:
         assert self.child is not None and self.child.stdout is not None
@@ -338,6 +341,10 @@ class HarnessRunner:
                           "not active (token/USD caps and breakers still are).")
         self.child = subprocess.Popen(self.argv, stdout=subprocess.PIPE, text=True, bufsize=1,
                                       start_new_session=True)
+        try:
+            self._pgid = os.getpgid(self.child.pid)
+        except OSError:
+            self._pgid = None
         reader = threading.Thread(target=self._reader, daemon=True)
         reader.start()
         loop = LoopWatch()
@@ -406,6 +413,8 @@ class HarnessRunner:
             self._stop()
             reason = "interrupted"
         code = self.child.wait()
+        if reap_group(self._pgid):
+            self._say('agentcap: killed leftover processes from the agent process group.')
         reader.join(timeout=2)
         if self.enforce and reason in ("token_cap", "usd_cap", "quota_exceeded"):
             code = EXIT_CAP_EXCEEDED

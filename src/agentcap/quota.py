@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence, TextIO
 
+from .procstop import reap_group, stop_tree
+
 WINDOWS = ("week", "5h")
 WARN_FRACTION = 0.8
 EXIT_QUOTA_EXCEEDED = 3
@@ -845,6 +847,7 @@ class QuotaRunner:
         self.job_id = f"q{int(time.time())}-{os.getpid()}"
         self.job_dir = self.job_root / "jobs" / self.job_id
         self.child: subprocess.Popen | None = None
+        self._pgid: int | None = None
         self.summary: QuotaSummary | None = None
 
     def _say(self, msg: str) -> None:
@@ -886,12 +889,8 @@ class QuotaRunner:
             _atomic_write(self.job_dir / "job.json", job)
         except OSError:
             pass
-        self._signal(signal.SIGINT)
-        deadline = time.time() + 5
-        while self.child and self.child.poll() is None and time.time() < deadline:
-            time.sleep(0.1)
-        if self.child and self.child.poll() is None:
-            self._signal(signal.SIGTERM)
+        if self.child is not None:
+            stop_tree(self.child, self._pgid, int_timeout=5.0, term_timeout=3.0, kill_timeout=2.0)
 
     def run(self) -> int:
         started = time.time()
@@ -943,6 +942,10 @@ class QuotaRunner:
                       "cap trips at the next 1% step of the account (it may stop at once or overshoot). "
                       "Use --quota 1% or more for Claude Code.")
         self.child = subprocess.Popen(argv, env=env, start_new_session=True, cwd=self.cwd)
+        try:
+            self._pgid = os.getpgid(self.child.pid)
+        except OSError:
+            self._pgid = None
 
         warned = hit = parallel = observed = no_data_warned = False
         loop_detail: str | None = None
@@ -1051,6 +1054,7 @@ class QuotaRunner:
             self._stop()
             reason = "interrupted"
         code = self.child.wait()
+        reap_group(self._pgid)
         if loop_detail and self.enforce and not hit:
             reason = "loop_detected"
             code = EXIT_LOOP_DETECTED

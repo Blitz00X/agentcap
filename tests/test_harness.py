@@ -374,3 +374,36 @@ def test_harness_runner_breakers_only_allowed():
     with pytest.raises(ValueError):
         HarnessRunner(["agy", "-p", "x"])
     HarnessRunner(["agy", "-p", "x"], breakers_only=True, home=None)
+
+
+def test_e2e_stop_leaves_no_orphan_processes(fakebin, tmp_path, monkeypatch):
+    """T3: a loop stop closes the whole process tree, including a grandchild that
+    ignores SIGINT/SIGTERM and keeps the stdout pipe open."""
+    pidfile = tmp_path / "gc.pid"
+    wrapper = fakebin / "opencode"
+    real = fakebin / "opencode-real"
+    wrapper.rename(real)
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, signal, subprocess, sys\n"
+        "gc = subprocess.Popen([sys.executable, '-c', 'import signal, time; "
+        "signal.signal(signal.SIGINT, signal.SIG_IGN); signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "time.sleep(120)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(gc.pid))\n"
+        f"os.execv(sys.executable, [sys.executable, {str(real)!r}] + sys.argv[1:])\n")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("FAKE_N", "20"); monkeypatch.setenv("FAKE_MODE", "loop")
+    r, code, err, *_ = run(["opencode", "run", "hi"], tmp_path, tokens=10**9,
+                           int_timeout=0.5, term_timeout=0.5)
+    assert code == h.EXIT_LOOP_DETECTED
+    gc = int(pidfile.read_text())
+    import time as _t
+    for _ in range(40):
+        try:
+            st = Path(f"/proc/{gc}/stat").read_text().split(")")[-1].split()[0]
+        except OSError:
+            st = "gone"
+        if st in ("gone", "Z"):
+            break
+        _t.sleep(0.05)
+    assert st in ("gone", "Z"), "grandchild survived the stop"
