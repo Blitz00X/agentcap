@@ -1,0 +1,1 @@
+{"session_id": "fixture", "model": {"id": "claude-sonnet", "display_name": "Sonnet"}, "cost": {"total_cost_usd": 0.0123}, "context_window": {"used_percentage": 8}, "rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": 1793400000}, "seven_day": {"used_percentage": 31, "resets_at": 1793900000}}}

@@ -519,6 +519,12 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   environment, edit AgentCap's state files or kill AgentCap. AgentCap guards cooperative
   workloads against accidents (loops, runaway spend), not a hostile agent; use a separate OS
   user or container for that.
+- **Log format changes.** AgentCap reads harness logs, and vendors change them. The fields it
+  reads are pinned per harness in `agentcap/logschema.py` (opencode, agy, Claude Code statusline
+  and PreToolUse, Codex rollout) and checked by `tests/test_log_contract.py` against recorded
+  fixtures; `AGENTCAP_LIVE_CONTRACT=1 pytest tests/test_log_contract_live.py` re-checks the
+  installed opencode/agy (one small model call). At run time an unknown schema fails closed
+  (above). Last live check: opencode 2.2.4 (3 Nov 2026).
 
 ## Privacy
 
