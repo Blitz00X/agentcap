@@ -359,7 +359,8 @@ class HarnessRunner:
                     self._say("agentcap: agy reported no quota for this model/window; quota cap is "
                               "not active (token/USD caps and breakers still are).")
             self.child = subprocess.Popen(self.argv, stdout=subprocess.PIPE, text=True, bufsize=1,
-                                          start_new_session=True)
+                                          start_new_session=True,
+                                          env={**os.environ, "AGENTCAP_GUARDED": "1"})
             try:
                 self._pgid = os.getpgid(self.child.pid)
             except OSError:

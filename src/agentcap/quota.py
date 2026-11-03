@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -110,6 +111,23 @@ def approve_job(root: Path | None = None) -> str:
         _atomic_write(d / "tools.json", tools)
     return (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g}% of the "
             f"{'weekly' if job.get('window') == 'week' else '5-hour'} quota; the run continues.")
+
+
+AGENT_ENV_MARKERS = ("AGENTCAP_QUOTA_JOB", "AGENTCAP_GUARDED", "CLAUDECODE")
+SELF_APPROVE_RE = re.compile(r"\bagentcap(?:\.cli)?\s+approve\b")
+
+
+def self_approve_refusal(env: Mapping[str, str]) -> str | None:
+    """Refuse an approve made from inside an agent session: only a human may raise a limit."""
+
+    for name in AGENT_ENV_MARKERS:
+        if env.get(name):
+            return (f"agentcap: approve refused: it was run from inside an agent session "
+                    f"(found {name} in the environment). Only a human may raise a limit: run "
+                    "`agentcap approve` in a separate terminal.")
+    return None
+
+
 CLAUDE_KEYS = {"5h": "five_hour", "week": "seven_day"}
 CODEX_MINUTES = {"5h": 300, "week": 10080}
 STATE_ENV = "AGENTCAP_QUOTA_DIR"
@@ -657,6 +675,25 @@ def hook_main(job_dir: Path, stdin: TextIO, stdout: TextIO) -> int:
         payload = json.loads(stdin.read() or "{}")
     except Exception:
         payload = {}
+    if isinstance(payload, dict) and payload.get("tool_name") == "Bash":
+        tool_input = payload.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, Mapping) else None
+        if isinstance(command, str) and SELF_APPROVE_RE.search(command):
+            json.dump(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            "agentcap: an agent may not approve its own limit; ask the user to run "
+                            "agentcap approve in their own terminal."
+                        ),
+                    },
+                },
+                stdout,
+            )
+            stdout.write("\n")
+            return 0
     try:
         loop_reason = _loop_hook(job_dir, payload) if isinstance(payload, dict) else None
     except Exception:

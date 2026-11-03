@@ -823,8 +823,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.subcommand == "quota":
         return _quota(args)
     if args.subcommand == "approve":
-        from .quota import approve_job
+        from .quota import approve_job, self_approve_refusal
 
+        refusal = self_approve_refusal(os.environ)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 2
         print(approve_job())
         return 0
     if args.subcommand == "demo":

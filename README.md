@@ -498,6 +498,28 @@ Request bodies are billed at price-book rates; embeddings are input-only.
 - The ledger lives at `~/.local/share/agentcap/ledger.sqlite3`
   (override with `$AGENTCAP_DB`).
 
+### Stopping, fail-closed and self-approval (0.3, Linux-verified)
+
+- **Whole process tree.** A stop sends SIGINT to the agent's process group, then SIGTERM, then
+  SIGKILL (5 s / 3 s / 2 s). Helpers the agent left behind in its group are also killed after a
+  normal exit, so a dev server started by the agent does not outlive the run. A process that
+  calls `setsid()` or daemonizes itself leaves the group and is not tracked. Interrupting a job
+  can leave its work half done (a migration, a deploy): that is the job's responsibility, so
+  commit before a guarded run.
+- **Fail-closed.** On Pro the agent is stopped with exit code 5 instead of running unguarded when
+  opencode/agy output matches no known log schema, the Codex session log becomes unreadable, or
+  AgentCap itself hits an internal error. Two quota jobs at once are refused (exit 2), since the
+  quota % is account-wide; `AGENTCAP_ALLOW_PARALLEL=1` turns that lock off. Free only warns.
+  Not covered yet: a stale Claude statusline (no fresh `rate_limits`) is reported, not stopped.
+- **Self-approval.** `agentcap approve` refuses (exit 2) when it runs inside an agent session
+  (`AGENTCAP_QUOTA_JOB`, `AGENTCAP_GUARDED` or `CLAUDECODE` in its environment), and the Claude
+  Code hook denies a Bash call that runs `agentcap approve`; `/agentcap:approve` cannot be invoked
+  by the model (`disable-model-invocation`). Run approve from your own terminal.
+  **Honest limit:** the agent runs as your OS user, so a determined agent can still clear the
+  environment, edit AgentCap's state files or kill AgentCap. AgentCap guards cooperative
+  workloads against accidents (loops, runaway spend), not a hostile agent; use a separate OS
+  user or container for that.
+
 ## Privacy
 
 Prompts and keys pass through the local proxy in memory; AgentCap never stores
