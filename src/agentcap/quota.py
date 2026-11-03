@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence, TextIO
 
+from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock
 from .procstop import reap_group, stop_tree
 
 WINDOWS = ("week", "5h")
@@ -709,6 +710,7 @@ class CodexTailer:
         self.own: Path | None = None
         self.others: set[Path] = set()
         self.loop = LoopWatch()
+        self.read_errors = 0
 
     def _files(self) -> list[Path]:
         if not self.dir.exists():
@@ -762,7 +764,9 @@ class CodexTailer:
                 fh.seek(offset)
                 chunk = fh.read()
         except OSError:
+            self.read_errors += 1
             return readings
+        self.read_errors = 0
         end = chunk.rfind(b"\n")
         if end < 0:
             return readings
@@ -893,187 +897,218 @@ class QuotaRunner:
             stop_tree(self.child, self._pgid, int_timeout=5.0, term_timeout=3.0, kill_timeout=2.0)
 
     def run(self) -> int:
-        started = time.time()
-        self.job_dir.mkdir(parents=True, exist_ok=True)
-        argv = list(self.argv)
-        tailer: CodexTailer | None = None
-        tracker = ShareTracker()
-        if self.agent == "claude":
-            job = {
-                "quota": self.quota,
-                "window": self.window,
-                "started_at": started,
-                "enforce": self.enforce,
-                "chain": user_statusline_command(self.cwd, self.home),
-            }
-            _atomic_write(self.job_dir / "job.json", job)
-            settings = self.job_dir / "settings.json"
-            _atomic_write(settings, claude_settings(self.job_dir))
-            argv = inject_claude_settings(argv, settings)
-        else:
-            _atomic_write(self.job_dir / "job.json", {
-                "quota": self.quota, "window": self.window, "started_at": started,
-                "enforce": self.enforce, "agent": "codex",
-            })
-            tailer = CodexTailer(self.sessions_dir, started)
-            self._tailer = tailer
-            prior = tailer.last_reading_before(self.window)
-            if prior and started - prior[0] <= BASELINE_MAX_AGE_S and (
-                prior[1].resets_at is None or prior[1].resets_at > started
-            ):
-                tracker.seed(prior[1])
-
-        env = dict(os.environ)
-        env["AGENTCAP_QUOTA_JOB"] = str(self.job_dir)
-        if not (self.agent == "claude" and self.headless):  # headless: see the warning below
-            self._say(
-                f"agentcap: quota mode ({self.agent}, {self.window}): "
-                + (f"stopping this job at {self.quota:g}% of the account quota" if self.enforce
-                   else f"observe only (Free); Pro would stop it at {self.quota:g}%")
-                + ". Read-only; your login and traffic are untouched."
-            )
-        if self.agent == "codex" and self.quota < 1:
-            self._say(f"agentcap: WARNING: Codex reports quota in whole percent, so a {self.quota:g}% cap "
-                      "cannot trigger until the job has used a full 1%. Use --quota 1% or more for Codex.")
-        if self.agent == "claude" and self.headless:
-            self._say(HEADLESS_CLAUDE_QUOTA_WARNING)
-        elif self.agent == "claude" and self.quota < 1:
-            self._say(f"agentcap: WARNING: Claude Code reports quota in whole percent, so a {self.quota:g}% "
-                      "cap trips at the next 1% step of the account (it may stop at once or overshoot). "
-                      "Use --quota 1% or more for Claude Code.")
-        self.child = subprocess.Popen(argv, env=env, start_new_session=True, cwd=self.cwd)
+        lock = JobLock(state_root() / "quota.lock")
         try:
-            self._pgid = os.getpgid(self.child.pid)
-        except OSError:
-            self._pgid = None
-
-        warned = hit = parallel = observed = no_data_warned = False
-        loop_detail: str | None = None
-        loop_at: float | None = None
-        hit_at: float | None = None
-        reason = "exited"
-        share = 0.0
-        stopped = False
-        open_said = False
-        approvals = 0
+            lock.acquire()
+        except GuardFailure as e:
+            self._say('agentcap: ' + str(e))
+            return 2
         try:
-            while True:
-                code = self.child.poll()
-                now = time.time()
-                jobnow = _read_json(self.job_dir / "job.json") or {}
-                if int(jobnow.get("approvals") or 0) > approvals and code is None:
-                    approvals = int(jobnow["approvals"])
-                    self.quota = float(jobnow.get("quota", self.quota))
-                    hit = warned = stopped = open_said = False
-                    hit_at = loop_at = None
-                    loop_detail = None
-                    self._say(f"agentcap: approved ({approvals}/{APPROVE_MAX}): limit is now "
-                              f"{self.quota:g}%; continuing.")
-                    self._event("quota_approved", share, approvals=approvals)
-                if self.agent == "claude":
-                    status = _read_json(self.job_dir / "status.json") or {}
-                    if status.get("has_rate_limits"):
-                        observed = True
-                        share = float(status.get("share") or 0.0)
-                        tracker = ShareTracker.from_dict(status.get("tracker"))
-                    elif status and not no_data_warned and status.get("api_calls_seen", True):
-                        # the first statusline render precedes any API response,
-                        # so missing rate_limits before a model call is normal
-                        no_data_warned = True
-                        self._say("agentcap: Claude Code reports no subscription rate_limits "
-                                  "(API-key login?). Quota mode needs a Pro/Max login; use --cap for API keys.")
-                    if len(status.get("sessions") or []) > 1 and not parallel:
-                        parallel = True
-                else:
-                    assert tailer is not None
-                    for reading in tailer.poll(self.window):
-                        observed = True
-                        tracker.update(reading)
-                    share = tracker.share
-                    if tailer.others and not parallel:
-                        parallel = True
-                if parallel and not getattr(self, "_par_said", False):
-                    self._par_said = True
-                    self._say("agentcap: WARNING: another session is using the same account; "
-                              "quota % is account-level, so its usage counts against this job.")
-                    self._event("quota_parallel", share)
-                if (not observed and not no_data_warned and now - started > self.no_data_warn_s
-                        and not (self.agent == "claude" and self.headless)):
-                    no_data_warned = True
-                    self._say("agentcap: no quota data yet; protection not verified "
-                              "(Claude: interactive mode with statusline; Codex: ChatGPT login).")
-                if observed and not warned and share >= self.quota * WARN_FRACTION:
-                    warned = True
-                    self._event("quota_threshold", share, threshold=80)
-                if observed and not hit and share >= self.quota:
-                    hit = True
-                    hit_at = now
-                    if self.enforce:
-                        self._event("quota_exceeded", share)
-                        if self.agent == "codex":
-                            self._stop()
-                            stopped = True
-                if (
-                    hit and self.enforce and self.agent == "claude" and not stopped
-                    and hit_at is not None and code is None
+            started = time.time()
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            argv = list(self.argv)
+            tailer: CodexTailer | None = None
+            tracker = ShareTracker()
+            if self.agent == "claude":
+                job = {
+                    "quota": self.quota,
+                    "window": self.window,
+                    "started_at": started,
+                    "enforce": self.enforce,
+                    "chain": user_statusline_command(self.cwd, self.home),
+                }
+                _atomic_write(self.job_dir / "job.json", job)
+                settings = self.job_dir / "settings.json"
+                _atomic_write(settings, claude_settings(self.job_dir))
+                argv = inject_claude_settings(argv, settings)
+            else:
+                _atomic_write(self.job_dir / "job.json", {
+                    "quota": self.quota, "window": self.window, "started_at": started,
+                    "enforce": self.enforce, "agent": "codex",
+                })
+                tailer = CodexTailer(self.sessions_dir, started)
+                self._tailer = tailer
+                prior = tailer.last_reading_before(self.window)
+                if prior and started - prior[0] <= BASELINE_MAX_AGE_S and (
+                    prior[1].resets_at is None or prior[1].resets_at > started
                 ):
-                    denies = (self.job_dir / "denies.log").exists()
-                    if not self.headless and denies:
-                        open_said = self._say_open(open_said, "the quota limit")
-                    elif now - hit_at >= (self.claude_grace_s if denies else self.claude_grace_s * 3):
-                        self._stop()  # headless, or the hook never ran (fallback)
-                        stopped = True
-                if loop_detail is None:
+                    tracker.seed(prior[1])
+
+            env = dict(os.environ)
+            env["AGENTCAP_QUOTA_JOB"] = str(self.job_dir)
+            if not (self.agent == "claude" and self.headless):  # headless: see the warning below
+                self._say(
+                    f"agentcap: quota mode ({self.agent}, {self.window}): "
+                    + (f"stopping this job at {self.quota:g}% of the account quota" if self.enforce
+                       else f"observe only (Free); Pro would stop it at {self.quota:g}%")
+                    + ". Read-only; your login and traffic are untouched."
+                )
+            if self.agent == "codex" and self.quota < 1:
+                self._say(f"agentcap: WARNING: Codex reports quota in whole percent, so a {self.quota:g}% cap "
+                          "cannot trigger until the job has used a full 1%. Use --quota 1% or more for Codex.")
+            if self.agent == "claude" and self.headless:
+                self._say(HEADLESS_CLAUDE_QUOTA_WARNING)
+            elif self.agent == "claude" and self.quota < 1:
+                self._say(f"agentcap: WARNING: Claude Code reports quota in whole percent, so a {self.quota:g}% "
+                          "cap trips at the next 1% step of the account (it may stop at once or overshoot). "
+                          "Use --quota 1% or more for Claude Code.")
+            self.child = subprocess.Popen(argv, env=env, start_new_session=True, cwd=self.cwd)
+            try:
+                self._pgid = os.getpgid(self.child.pid)
+            except OSError:
+                self._pgid = None
+
+            warned = hit = parallel = observed = no_data_warned = False
+            loop_detail: str | None = None
+            loop_at: float | None = None
+            hit_at: float | None = None
+            reason = "exited"
+            share = 0.0
+            stopped = False
+            open_said = False
+            approvals = 0
+            guard_msg: str | None = None
+            try:
+                while True:
+                    code = self.child.poll()
+                    now = time.time()
+                    jobnow = _read_json(self.job_dir / "job.json") or {}
+                    if int(jobnow.get("approvals") or 0) > approvals and code is None:
+                        approvals = int(jobnow["approvals"])
+                        self.quota = float(jobnow.get("quota", self.quota))
+                        hit = warned = stopped = open_said = False
+                        hit_at = loop_at = None
+                        loop_detail = None
+                        self._say(f"agentcap: approved ({approvals}/{APPROVE_MAX}): limit is now "
+                                  f"{self.quota:g}%; continuing.")
+                        self._event("quota_approved", share, approvals=approvals)
                     if self.agent == "claude":
-                        lj = _read_json(self.job_dir / "loop.json")
-                        loop_detail = lj.get("detail") if lj else None
-                    elif tailer is not None:
-                        loop_detail = tailer.loop.tripped
-                    if loop_detail:
-                        loop_at = now
+                        status = _read_json(self.job_dir / "status.json") or {}
+                        if status.get("has_rate_limits"):
+                            observed = True
+                            share = float(status.get("share") or 0.0)
+                            tracker = ShareTracker.from_dict(status.get("tracker"))
+                        elif status and not no_data_warned and status.get("api_calls_seen", True):
+                            # the first statusline render precedes any API response,
+                            # so missing rate_limits before a model call is normal
+                            no_data_warned = True
+                            self._say("agentcap: Claude Code reports no subscription rate_limits "
+                                      "(API-key login?). Quota mode needs a Pro/Max login; use --cap for API keys.")
+                        if len(status.get("sessions") or []) > 1 and not parallel:
+                            parallel = True
+                    else:
+                        assert tailer is not None
+                        for reading in tailer.poll(self.window):
+                            observed = True
+                            tracker.update(reading)
+                        share = tracker.share
+                        if tailer.read_errors >= 3 and guard_msg is None:
+                            guard_msg = ('Codex session log is unreadable; the guard cannot see '
+                                         'this run, stopping it (fail-closed).')
+                            if self.enforce:
+                                self._say('agentcap: ' + guard_msg)
+                                self._event('guard_failed', share, detail=guard_msg)
+                                self._stop()
+                                stopped = True
+                            else:
+                                self._say('agentcap: WARNING: ' + guard_msg.replace(
+                                    'stopping it (fail-closed)', 'Pro would stop it'))
+                        if tailer.others and not parallel:
+                            parallel = True
+                    if parallel and not getattr(self, "_par_said", False):
+                        self._par_said = True
+                        self._say("agentcap: WARNING: another session is using the same account; "
+                                  "quota % is account-level, so its usage counts against this job.")
+                        self._event("quota_parallel", share)
+                    if (not observed and not no_data_warned and now - started > self.no_data_warn_s
+                            and not (self.agent == "claude" and self.headless)):
+                        no_data_warned = True
+                        self._say("agentcap: no quota data yet; protection not verified "
+                                  "(Claude: interactive mode with statusline; Codex: ChatGPT login).")
+                    if observed and not warned and share >= self.quota * WARN_FRACTION:
+                        warned = True
+                        self._event("quota_threshold", share, threshold=80)
+                    if observed and not hit and share >= self.quota:
+                        hit = True
+                        hit_at = now
                         if self.enforce:
-                            self._say(f"agentcap: loop breaker: {loop_detail}. Stopping the agent.")
-                            self._event("loop_detected", share, detail=loop_detail)
+                            self._event("quota_exceeded", share)
                             if self.agent == "codex":
                                 self._stop()
                                 stopped = True
-                if (loop_detail and self.enforce and not stopped and code is None
-                        and loop_at is not None):
-                    denies = (self.job_dir / "denies.log").exists()
-                    if not self.headless and denies:
-                        open_said = self._say_open(open_said, "the loop breaker")
-                    elif now - loop_at >= (self.claude_grace_s if denies or self.headless
-                                           else self.claude_grace_s * 3):
-                        self._stop()
-                        stopped = True
-                self._live(share, observed, hit)
-                if code is not None:
-                    break
-                time.sleep(self.poll_s)
-        except KeyboardInterrupt:
-            self._stop()
-            reason = "interrupted"
-        code = self.child.wait()
-        reap_group(self._pgid)
-        if loop_detail and self.enforce and not hit:
-            reason = "loop_detected"
-            code = EXIT_LOOP_DETECTED
-        elif hit and self.enforce:
-            reason = "quota_exceeded"
-            code = EXIT_QUOTA_EXCEEDED
-        if loop_detail and not self.enforce:
-            self._say(f"agentcap: Pro's loop breaker would have stopped this job at {LOOP_REPEATS} repeats"
-                      f" ({loop_detail}). https://agentcap.launchbench.studio/#pricing")
-        self.summary = QuotaSummary(
-            self.agent, self.window, self.quota, share, code, reason,
-            tracker.baseline_exact, tracker.resets_seen, parallel, observed,
-        )
-        self._receipt(self.summary)
-        try:
-            _atomic_write(self.job_dir / "done.json", {"ts": time.time(), "exit_code": code})
-        except OSError:
-            pass
-        return code
+                    if (
+                        hit and self.enforce and self.agent == "claude" and not stopped
+                        and hit_at is not None and code is None
+                    ):
+                        denies = (self.job_dir / "denies.log").exists()
+                        if not self.headless and denies:
+                            open_said = self._say_open(open_said, "the quota limit")
+                        elif now - hit_at >= (self.claude_grace_s if denies else self.claude_grace_s * 3):
+                            self._stop()  # headless, or the hook never ran (fallback)
+                            stopped = True
+                    if loop_detail is None:
+                        if self.agent == "claude":
+                            lj = _read_json(self.job_dir / "loop.json")
+                            loop_detail = lj.get("detail") if lj else None
+                        elif tailer is not None:
+                            loop_detail = tailer.loop.tripped
+                        if loop_detail:
+                            loop_at = now
+                            if self.enforce:
+                                self._say(f"agentcap: loop breaker: {loop_detail}. Stopping the agent.")
+                                self._event("loop_detected", share, detail=loop_detail)
+                                if self.agent == "codex":
+                                    self._stop()
+                                    stopped = True
+                    if (loop_detail and self.enforce and not stopped and code is None
+                            and loop_at is not None):
+                        denies = (self.job_dir / "denies.log").exists()
+                        if not self.headless and denies:
+                            open_said = self._say_open(open_said, "the loop breaker")
+                        elif now - loop_at >= (self.claude_grace_s if denies or self.headless
+                                               else self.claude_grace_s * 3):
+                            self._stop()
+                            stopped = True
+                    self._live(share, observed, hit)
+                    if code is not None:
+                        break
+                    time.sleep(self.poll_s)
+            except KeyboardInterrupt:
+                self._stop()
+                reason = "interrupted"
+            except Exception as exc:
+                guard_msg = f'internal error ({type(exc).__name__}: {exc})'
+                if self.enforce:
+                    self._say(f'agentcap: {guard_msg}; stopping the agent so it does not run unguarded (fail-closed).')
+                    self._stop()
+                else:
+                    self._say(f'agentcap: {guard_msg}; observe-only run continues without AgentCap.')
+            code = self.child.wait()
+            reap_group(self._pgid)
+            if loop_detail and self.enforce and not hit:
+                reason = "loop_detected"
+                code = EXIT_LOOP_DETECTED
+            elif hit and self.enforce:
+                reason = "quota_exceeded"
+                code = EXIT_QUOTA_EXCEEDED
+            elif guard_msg and self.enforce:
+                reason = "guard_failed"
+                code = EXIT_GUARD_FAILED
+            if loop_detail and not self.enforce:
+                self._say(f"agentcap: Pro's loop breaker would have stopped this job at {LOOP_REPEATS} repeats"
+                          f" ({loop_detail}). https://agentcap.launchbench.studio/#pricing")
+            self.summary = QuotaSummary(
+                self.agent, self.window, self.quota, share, code, reason,
+                tracker.baseline_exact, tracker.resets_seen, parallel, observed,
+            )
+            self._receipt(self.summary)
+            try:
+                _atomic_write(self.job_dir / "done.json", {"ts": time.time(), "exit_code": code})
+            except OSError:
+                pass
+            return code
+        finally:
+            lock.release()
 
     def _say_open(self, said: bool, what: str) -> bool:
         if not said:

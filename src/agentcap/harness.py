@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
+from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock, SchemaWatch
 from .procstop import reap_group, stop_tree
 from .quota import LoopWatch, WARN_FRACTION, _atomic_write, state_root
 
@@ -92,6 +93,10 @@ class OpenCodeAdapter:
             argv[2:2] = ["--format", "json"]
         return argv
 
+    def envelope(self, obj: Any) -> bool:
+        return (isinstance(obj, dict) and isinstance(obj.get("type"), str)
+                and ("part" in obj or "error" in obj))
+
     def parse(self, obj: Any) -> list[Any]:
         if not isinstance(obj, dict):
             return []
@@ -130,6 +135,9 @@ class AgyAdapter:
         if "--output-format" not in argv:
             argv[1:1] = ["--output-format", "stream-json"]
         return argv
+
+    def envelope(self, obj: Any) -> bool:
+        return isinstance(obj, dict) and isinstance(obj.get("event"), str)
 
     def parse(self, obj: Any) -> list[Any]:
         if not isinstance(obj, dict):
@@ -278,6 +286,7 @@ class HarnessRunner:
         self.job_id = f"h{int(time.time())}-{os.getpid()}"
         self.child: subprocess.Popen | None = None
         self._pgid: int | None = None
+        self._joblock: JobLock | None = None
         self.summary: HarnessSummary | None = None
         self._lock = threading.Lock()
         self._lines: list[str] = []
@@ -332,97 +341,136 @@ class HarnessRunner:
 
     # ------------------------------------------------------------------ run
     def run(self) -> int:
-        baseline = None
+        lock: JobLock | None = None
         if self.quota is not None:
-            payload = self.quota_fetch()
-            baseline = agy_used_pct(payload, self.model, self.window) if payload else None
-            if baseline is None:
-                self._say("agentcap: agy reported no quota for this model/window; quota cap is "
-                          "not active (token/USD caps and breakers still are).")
-        self.child = subprocess.Popen(self.argv, stdout=subprocess.PIPE, text=True, bufsize=1,
-                                      start_new_session=True)
+            self._joblock = JobLock(state_root() / "quota.lock")
+            try:
+                self._joblock.acquire()
+            except GuardFailure as e:
+                self._say("agentcap: " + str(e))
+                return 2
+            lock = self._joblock
         try:
-            self._pgid = os.getpgid(self.child.pid)
-        except OSError:
-            self._pgid = None
-        reader = threading.Thread(target=self._reader, daemon=True)
-        reader.start()
-        loop = LoopWatch()
-        tokens, cost, share = 0, None, None
-        calls = errors = 0
-        last_tool: str | None = None
-        reason, hit, warned = "exited", None, False
-        next_quota = time.time() + self.quota_poll_s
-        try:
-            while True:
-                code = self.child.poll()
-                with self._lock:
-                    lines, self._lines = self._lines, []
-                for line in lines:
-                    try:
-                        obj = json.loads(line)
-                    except ValueError:
-                        continue
-                    for ev in self.adapter.parse(obj):
-                        if isinstance(ev, ToolCall):
-                            calls += 1
-                            errors += int(ev.error)
-                            last_tool = ev.name
-                            loop.call(ev.name, ev.args)
-                            loop.result(ev.error)
-                        elif isinstance(ev, Usage):
-                            tokens += ev.tokens
-                            if ev.cost is not None:
-                                cost = (cost or 0.0) + ev.cost
-                        elif isinstance(ev, ApiError):
-                            if hit is not None or loop.tripped:
-                                continue  # the agent reporting our own SIGINT
-                            self._say(f"agentcap: {self.kind} reported an API error ({ev.kind}).")
-                if self.quota is not None and baseline is not None and (
-                        time.time() >= next_quota or code is not None):
-                    s = self._share(baseline)
-                    if s is not None:
-                        share = s if share is None else max(share, s)
-                    next_quota = time.time() + self.quota_poll_s
-                frac, what = self._usage_fraction(tokens, cost, share)
-                if hit is None and not warned and frac >= WARN_FRACTION:
-                    warned = True
-                    self._say(f"agentcap: WARNING: this job reached 80% of its {what}.")
-                    self._event("cap_threshold", threshold=80, what=what)
-                if hit is None and frac >= 1.0:
-                    hit = what
-                    reason = "quota_exceeded" if what.startswith("quota") else (
-                        "token_cap" if what.startswith("token") else "usd_cap")
-                    if self.enforce:
-                        self._say(f"agentcap: {self._cap_text(what)} reached. Stopping the agent.")
-                        self._event("quota_exceeded" if reason == "quota_exceeded" else "cap_exceeded",
-                                    what=what, tokens=tokens, cost_usd=cost,
-                                    share_pct=round(share, 2) if share is not None else None,
-                                    quota_pct=self.quota, window=self.window)
-                        self._stop()
-                if loop.tripped and reason == "exited":
-                    reason = "loop_detected"
-                    if self.enforce:
-                        self._say(f"agentcap: loop breaker: {loop.tripped}. Stopping the agent.")
-                        self._event("loop_detected", detail=loop.tripped)
-                        self._stop()
-                if code is not None:
-                    break
-                time.sleep(self.poll_s)
-        except KeyboardInterrupt:
-            self._stop()
-            reason = "interrupted"
-        code = self.child.wait()
-        if reap_group(self._pgid):
-            self._say('agentcap: killed leftover processes from the agent process group.')
-        reader.join(timeout=2)
-        if self.enforce and reason in ("token_cap", "usd_cap", "quota_exceeded"):
-            code = EXIT_CAP_EXCEEDED
-        elif self.enforce and reason == "loop_detected":
-            code = EXIT_LOOP_DETECTED
-        self.summary = HarnessSummary(self.kind, code, reason, tokens, cost, share, calls, errors, last_tool)
-        self._report(loop.tripped)
-        return code
+            baseline = None
+            if self.quota is not None:
+                payload = self.quota_fetch()
+                baseline = agy_used_pct(payload, self.model, self.window) if payload else None
+                if baseline is None:
+                    self._say("agentcap: agy reported no quota for this model/window; quota cap is "
+                              "not active (token/USD caps and breakers still are).")
+            self.child = subprocess.Popen(self.argv, stdout=subprocess.PIPE, text=True, bufsize=1,
+                                          start_new_session=True)
+            try:
+                self._pgid = os.getpgid(self.child.pid)
+            except OSError:
+                self._pgid = None
+            reader = threading.Thread(target=self._reader, daemon=True)
+            reader.start()
+            loop = LoopWatch()
+            schema = SchemaWatch(self.kind)
+            tokens, cost, share = 0, None, None
+            calls = errors = 0
+            last_tool: str | None = None
+            reason, hit, warned = "exited", None, False
+            next_quota = time.time() + self.quota_poll_s
+            try:
+                while True:
+                    code = self.child.poll()
+                    with self._lock:
+                        lines, self._lines = self._lines, []
+                    for line in lines:
+                        obj = None
+                        try:
+                            obj = json.loads(line)
+                        except ValueError:
+                            msg = schema.feed(line, False)
+                        else:
+                            msg = schema.feed(line, self.adapter.envelope(obj))
+                        if msg and reason == "exited":
+                            reason = "guard_failed"
+                            if self.enforce:
+                                self._say("agentcap: " + msg)
+                                self._event("guard_failed", detail=msg)
+                                self._stop()
+                            else:
+                                self._say("agentcap: WARNING: " + msg.replace(
+                                    "stopping it (fail-closed)", "Pro would stop it"))
+                        if obj is None:
+                            continue
+                        for ev in self.adapter.parse(obj):
+                            if isinstance(ev, ToolCall):
+                                calls += 1
+                                errors += int(ev.error)
+                                last_tool = ev.name
+                                loop.call(ev.name, ev.args)
+                                loop.result(ev.error)
+                            elif isinstance(ev, Usage):
+                                tokens += ev.tokens
+                                if ev.cost is not None:
+                                    cost = (cost or 0.0) + ev.cost
+                            elif isinstance(ev, ApiError):
+                                if hit is not None or loop.tripped:
+                                    continue  # the agent reporting our own SIGINT
+                                self._say(f"agentcap: {self.kind} reported an API error ({ev.kind}).")
+                    if self.quota is not None and baseline is not None and (
+                            time.time() >= next_quota or code is not None):
+                        s = self._share(baseline)
+                        if s is not None:
+                            share = s if share is None else max(share, s)
+                        next_quota = time.time() + self.quota_poll_s
+                    frac, what = self._usage_fraction(tokens, cost, share)
+                    if hit is None and not warned and frac >= WARN_FRACTION:
+                        warned = True
+                        self._say(f"agentcap: WARNING: this job reached 80% of its {what}.")
+                        self._event("cap_threshold", threshold=80, what=what)
+                    if hit is None and frac >= 1.0:
+                        hit = what
+                        reason = "quota_exceeded" if what.startswith("quota") else (
+                            "token_cap" if what.startswith("token") else "usd_cap")
+                        if self.enforce:
+                            self._say(f"agentcap: {self._cap_text(what)} reached. Stopping the agent.")
+                            self._event("quota_exceeded" if reason == "quota_exceeded" else "cap_exceeded",
+                                        what=what, tokens=tokens, cost_usd=cost,
+                                        share_pct=round(share, 2) if share is not None else None,
+                                        quota_pct=self.quota, window=self.window)
+                            self._stop()
+                    if loop.tripped and reason == "exited":
+                        reason = "loop_detected"
+                        if self.enforce:
+                            self._say(f"agentcap: loop breaker: {loop.tripped}. Stopping the agent.")
+                            self._event("loop_detected", detail=loop.tripped)
+                            self._stop()
+                    if code is not None:
+                        break
+                    time.sleep(self.poll_s)
+            except KeyboardInterrupt:
+                self._stop()
+                reason = "interrupted"
+            except Exception as exc:
+                reason = "guard_failed"
+                if self.enforce:
+                    self._say(f"agentcap: internal error ({type(exc).__name__}: {exc}); stopping the "
+                              "agent so it does not run unguarded (fail-closed).")
+                    self._stop()
+                else:
+                    self._say(f"agentcap: internal error ({type(exc).__name__}: {exc}); observe-only "
+                              "run continues without AgentCap.")
+            code = self.child.wait()
+            if reap_group(self._pgid):
+                self._say('agentcap: killed leftover processes from the agent process group.')
+            reader.join(timeout=2)
+            if self.enforce and reason in ("token_cap", "usd_cap", "quota_exceeded"):
+                code = EXIT_CAP_EXCEEDED
+            elif self.enforce and reason == "loop_detected":
+                code = EXIT_LOOP_DETECTED
+            elif reason == "guard_failed" and self.enforce:
+                code = EXIT_GUARD_FAILED
+            self.summary = HarnessSummary(self.kind, code, reason, tokens, cost, share, calls, errors, last_tool)
+            self._report(loop.tripped)
+            return code
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _usage_fraction(self, tokens: int, cost: float | None, share: float | None) -> tuple[float, str]:
         best = (0.0, "")
