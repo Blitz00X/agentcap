@@ -583,6 +583,25 @@ def test_runner_sweeps_a_setsid_descendant_after_child_exit(tmp_path):
     assert state in ("gone", "Z"), "setsid descendant survived the runner"
 
 
+def test_runner_warns_about_a_process_it_could_not_stop(tmp_path, monkeypatch):
+    # F5: a descendant we may not signal (sudo -b, setuid) must be reported,
+    # not passed off as cleaned up, and the exit code must not change.  The
+    # sweep is mocked: no real process is signalled.
+    from agentcap import procstop
+
+    def fake_sweep(self, term_timeout=2.0, kill_timeout=2.0):
+        if self._enabled:
+            self.denied_pids = (4242,)
+        return 0
+
+    monkeypatch.setattr(procstop.ProcessTreeGuard, "sweep", fake_sweep)
+    runner, stderr = _runner(tmp_path, [sys.executable, "-c", "pass"], cap="1")
+    assert runner.run() == 0
+    out = stderr.getvalue()
+    assert "agentcap: could not stop 1 process(es) (permission denied): pid 4242" in out, out
+    assert "left the agent's process group" not in out
+
+
 def test_runner_exit_is_not_delayed_by_a_finished_background_job(tmp_path):
     # The agent's shell backgrounds a short job and exits; the job finishes
     # during the run.  As subreaper AgentCap adopts it, so it must also reap

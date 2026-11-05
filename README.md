@@ -510,7 +510,9 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   On Linux AgentCap also enables `PR_SET_CHILD_SUBREAPER` for the run: descendants that call
   `setsid()` or double-fork are adopted, matched against a pre-run snapshot (PID + start time),
   and swept with SIGTERM then SIGKILL after a normal exit or a stop. It prints
-  `killed N process(es) that left the agent's process group` when that happens. Daemons the agent
+  `killed N process(es) that left the agent's process group` when that happens. A descendant it
+  may not signal (a root-owned `sudo -b` child, a setuid program) is tried once, not waited on, and
+  left running with a `could not stop N process(es) (permission denied): pid ...` warning. Daemons the agent
   starts (a dev server, a `tmux` server, a Gradle daemon) are part of its tree and stop with the run.
   If AgentCap itself is SIGKILLed or OOM-killed, the parent-death lifeline (`PR_SET_PDEATHSIG`)
   kills the direct agent and a small watchdog SIGKILLs the agent's process group, which also covers

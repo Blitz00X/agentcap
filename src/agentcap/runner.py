@@ -44,7 +44,7 @@ from .license import features as license_features
 from .license import status_from_environment
 from .pricing import PricingStore
 from .private import write_private_text
-from .procstop import ProcessTreeGuard, reap_group
+from .procstop import ProcessTreeGuard, denied_warning, reap_group
 from .proxy import (
     DEFAULT_ANTHROPIC_UPSTREAM,
     DEFAULT_GEMINI_UPSTREAM,
@@ -567,6 +567,9 @@ class Runner:
                     f"agentcap: killed {escaped} process(es) that left the agent's "
                     "process group (setsid/daemonized helpers)."
                 )
+            denied = denied_warning(tree_guard.denied_pids)
+            if denied:
+                self._print_hint(denied)
             self._stop_proxy()
             cleanup = self._adapter_cleanup
             self._adapter_cleanup = None

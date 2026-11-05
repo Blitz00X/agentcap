@@ -43,7 +43,7 @@ from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock
 from .lifeline import GroupWatchdog
 from .lifeline import spawn as lifeline_spawn
 from .private import ensure_private_dir, open_private, write_private_text
-from .procstop import ProcessTreeGuard, reap_group, stop_tree
+from .procstop import ProcessTreeGuard, denied_warning, reap_group, stop_tree
 
 WINDOWS = ("week", "5h")
 WARN_FRACTION = 0.8
@@ -1169,6 +1169,9 @@ class QuotaRunner:
                     f"agentcap: killed {escaped} process(es) that left the agent's "
                     "process group (setsid/daemonized helpers)."
                 )
+            denied = denied_warning(tree_guard.denied_pids)
+            if denied:
+                self._say(denied)
             if loop_detail and self.enforce and not hit:
                 reason = "loop_detected"
                 code = EXIT_LOOP_DETECTED

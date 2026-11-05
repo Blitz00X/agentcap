@@ -349,6 +349,34 @@ def test_quota_runner_sweeps_a_setsid_descendant(tmp_path, monkeypatch):
     assert state in ("gone", "Z"), "setsid descendant survived quota mode"
 
 
+def test_quota_runner_warns_about_a_process_it_could_not_stop(tmp_path, monkeypatch):
+    # F5: a descendant we may not signal (sudo -b, setuid) is reported, never
+    # passed off as cleaned up, and the exit code is unchanged.  The sweep is
+    # mocked: no real process is signalled.
+    from agentcap import procstop
+
+    bindir = tmp_path / "plainbin"; bindir.mkdir()
+    exe = bindir / "claude"
+    exe.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(0)\n")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(tmp_path / "state"))
+
+    def fake_sweep(self, term_timeout=2.0, kill_timeout=2.0):
+        if self._enabled:
+            self.denied_pids = (4242,)
+        return 0
+
+    monkeypatch.setattr(procstop.ProcessTreeGuard, "sweep", fake_sweep)
+    r, _events, err = make_runner(["claude", "-p", "fix"], tmp_path,
+                                 job_root=tmp_path / "state")
+    assert r.run() == 0
+    out = err.getvalue()
+    assert "agentcap: could not stop 1 process(es) (permission denied): pid 4242" in out, out
+    assert out.count("could not stop") == 1, out
+    assert "left the agent's process group" not in out
+
+
 def test_live_status_file_for_editor(fakebin, tmp_path, monkeypatch):
     live = tmp_path / "live.json"
     monkeypatch.setenv("AGENTCAP_QUOTA_LIVE", str(live))

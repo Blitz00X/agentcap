@@ -618,3 +618,213 @@ def test_sweep_spares_new_children_of_a_baseline_process(monkeypatch):
 
     assert guard.sweep(term_timeout=0, kill_timeout=0) == 1
     assert signals == [(400, signal.SIGTERM)], signals
+
+
+# ------------------------------------------- F5: processes we may not signal
+# A descendant owned by another user (``sudo -b``) or running a setuid program
+# makes os.kill raise PermissionError.  Everything below is mocked: the /proc
+# view, os.kill and the clock.  No real process is ever signalled.
+
+
+class _FakeClock:
+    """Virtual monotonic clock: ``sleep`` advances it instead of blocking."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.slept = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        self.slept += seconds
+
+
+class _FakeTree:
+    """A mocked /proc plus a recording os.kill for :class:`ProcessTreeGuard`."""
+
+    ROOT = 100
+
+    def __init__(self, monkeypatch, procs: dict[int, tuple[int, int]]) -> None:
+        P = procstop_module._ProcInfo
+        self.procs: dict[int, procstop_module._ProcInfo] = {
+            self.ROOT: P(ppid=0, start=1, zombie=False)
+        }
+        for pid, (ppid, start) in procs.items():
+            self.procs[pid] = P(ppid=ppid, start=start, zombie=False)
+        self.kills: list[tuple[int, int, int]] = []  # (pid, start at kill time, sig)
+        self.behaviour: dict[tuple[int, int], object] = {}
+        self.waitpids: list[int] = []
+        self.clock = _FakeClock()
+        monkeypatch.setattr(procstop_module, "_snapshot", lambda: dict(self.procs))
+        monkeypatch.setattr(procstop_module, "_read_proc", lambda pid: self.procs.get(pid))
+        monkeypatch.setattr(procstop_module.os, "kill", self.kill)
+        monkeypatch.setattr(procstop_module.os, "waitpid", self.waitpid)
+        monkeypatch.setattr(procstop_module.time, "monotonic", self.clock.monotonic)
+        monkeypatch.setattr(procstop_module.time, "sleep", self.clock.sleep)
+
+    def kill(self, pid: int, sig: int) -> None:
+        info = self.procs.get(pid)
+        if info is None:
+            raise ProcessLookupError(pid)
+        self.kills.append((pid, info.start, sig))
+        action = self.behaviour.get((pid, info.start), "obey")
+        if callable(action):
+            action(pid, sig)
+        elif action == "obey":
+            self.procs.pop(pid)
+        elif action == "deny":
+            raise PermissionError(1, "Operation not permitted")
+        elif action == "deny_kill" and sig == signal.SIGKILL:
+            raise PermissionError(1, "Operation not permitted")
+
+    def waitpid(self, pid: int, flags: int):
+        self.waitpids.append(pid)
+        info = self.procs.get(pid)
+        if info is not None and info.zombie:
+            self.procs.pop(pid)
+            return pid, 0
+        return 0, 0
+
+    def guard(self) -> ProcessTreeGuard:
+        guard = ProcessTreeGuard(root_pid=self.ROOT)
+        guard._enabled = True
+        guard.baseline = {}
+        return guard
+
+
+def test_sweep_tries_an_unsignallable_process_once_and_never_waits_on_it(monkeypatch):
+    tree = _FakeTree(monkeypatch, {4242: (100, 111), 4300: (100, 120)})
+    tree.behaviour[(4242, 111)] = "deny"  # e.g. a root-owned `sudo -b` child
+    guard = tree.guard()
+
+    killed = guard.sweep(term_timeout=2.0, kill_timeout=2.0)
+
+    attempts = [k for k in tree.kills if k[0] == 4242]
+    assert attempts == [(4242, 111, signal.SIGTERM)], attempts
+    assert tree.clock.slept < 0.5, f"sweep slept {tree.clock.slept:.1f}s on a process it cannot signal"
+    assert killed == 1, "only the process that was actually stopped counts as killed"
+    assert guard.denied_pids == (4242,)
+
+
+def test_sweep_does_not_wait_after_sigkill_is_denied(monkeypatch):
+    # TERM is delivered (and ignored); by the KILL step the process is no longer
+    # ours to signal (it exec'd a setuid program).  One TERM wait, then stop.
+    tree = _FakeTree(monkeypatch, {4242: (100, 111)})
+    tree.behaviour[(4242, 111)] = "deny_kill"
+    guard = tree.guard()
+
+    killed = guard.sweep(term_timeout=2.0, kill_timeout=2.0)
+
+    assert tree.kills == [(4242, 111, signal.SIGTERM), (4242, 111, signal.SIGKILL)]
+    assert tree.clock.slept < 2.5, f"sweep slept {tree.clock.slept:.1f}s"
+    assert killed == 0, "it got SIGTERM but is still running: not killed"
+    assert guard.denied_pids == (4242,)
+
+
+def test_sweep_still_stops_a_new_process_that_reuses_a_denied_pid(monkeypatch):
+    # (4242, start 111) cannot be signalled and exits; the kernel hands PID 4242
+    # to a new descendant (start 222).  The denial belongs to the old identity:
+    # the newcomer is stopped normally, and the old identity is never retried.
+    tree = _FakeTree(monkeypatch, {4242: (100, 111)})
+
+    def deny_then_reuse(pid, sig):
+        tree.procs[pid] = procstop_module._ProcInfo(ppid=100, start=222, zombie=False)
+        raise PermissionError(1, "Operation not permitted")
+
+    tree.behaviour[(4242, 111)] = deny_then_reuse
+    guard = tree.guard()
+
+    killed = guard.sweep(term_timeout=2.0, kill_timeout=2.0)
+
+    assert tree.kills == [(4242, 111, signal.SIGTERM), (4242, 222, signal.SIGTERM)], tree.kills
+    assert killed == 1
+    assert guard.denied_pids == (), "the denied identity is gone; nothing was left behind"
+    assert tree.clock.slept < 0.5
+
+
+def test_denied_identity_is_never_retried_while_other_rounds_run(monkeypatch):
+    # A second target keeps the sweep going for several rounds (it respawns a
+    # child each time it is stopped).  The denied identity is still only tried
+    # once, and a denied PID never borrows a signal meant for anyone else.
+    tree = _FakeTree(monkeypatch, {4242: (100, 111), 5000: (100, 500)})
+    tree.behaviour[(4242, 111)] = "deny"
+    spawned = iter([5001, 5002])
+
+    def respawn(pid, sig):
+        tree.procs.pop(pid)
+        nxt = next(spawned, None)
+        if nxt is not None:
+            tree.procs[nxt] = procstop_module._ProcInfo(ppid=100, start=nxt, zombie=False)
+            tree.behaviour[(nxt, nxt)] = respawn
+
+    tree.behaviour[(5000, 500)] = respawn
+    guard = tree.guard()
+
+    killed = guard.sweep(term_timeout=2.0, kill_timeout=2.0)
+
+    assert [k for k in tree.kills if k[0] == 4242] == [(4242, 111, signal.SIGTERM)]
+    assert {k[0] for k in tree.kills} == {4242, 5000, 5001, 5002}
+    assert killed == 3
+    assert guard.denied_pids == (4242,)
+    assert tree.clock.slept < 0.5
+
+
+def test_denied_process_that_exits_on_its_own_is_reaped_not_reported(monkeypatch):
+    tree = _FakeTree(monkeypatch, {4242: (100, 111)})
+
+    def deny_then_exit(pid, sig):
+        tree.procs[pid] = procstop_module._ProcInfo(ppid=100, start=111, zombie=True)
+        raise PermissionError(1, "Operation not permitted")
+
+    tree.behaviour[(4242, 111)] = deny_then_exit
+    guard = tree.guard()
+
+    assert guard.sweep(term_timeout=2.0, kill_timeout=2.0) == 0
+    assert guard.denied_pids == ()
+    assert 4242 not in tree.procs, "our adopted zombie was left unreaped"
+
+
+def test_sweep_already_gone_and_normal_paths_report_nothing_denied(monkeypatch):
+    tree = _FakeTree(monkeypatch, {4242: (100, 111), 4300: (100, 120)})
+
+    def vanish(pid, sig):  # exited between the snapshot and the signal
+        tree.procs.pop(pid)
+        raise ProcessLookupError(pid)
+
+    tree.behaviour[(4242, 111)] = vanish
+    guard = tree.guard()
+
+    assert guard.sweep(term_timeout=2.0, kill_timeout=2.0) == 1  # only 4300 was stopped
+    assert guard.denied_pids == ()
+    assert tree.clock.slept < 0.5
+    assert ProcessTreeGuard().denied_pids == ()
+
+
+def test_denied_warning_names_the_processes():
+    assert procstop_module.denied_warning(()) is None
+    msg = procstop_module.denied_warning((4242, 4300))
+    assert msg.startswith("agentcap: could not stop 2 process(es) (permission denied): pid 4242, 4300")
+
+
+def test_reap_group_does_not_wait_when_no_member_may_be_signalled(monkeypatch):
+    # killpg fails with EPERM only when *no* member could be signalled, so
+    # waiting for the group to empty (and retrying with SIGKILL) is pointless.
+    clock = _FakeClock()
+    calls: list[tuple[int, int]] = []
+
+    def fake_killpg(pgid, sig):
+        calls.append((pgid, sig))
+        if sig != 0:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(procstop_module.os, "killpg", fake_killpg)
+    monkeypatch.setattr(procstop_module.os, "getpgrp", lambda: 1)
+    monkeypatch.setattr(procstop_module, "_reap_group_zombies", lambda pgid: None)
+    monkeypatch.setattr(procstop_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(procstop_module.time, "sleep", clock.sleep)
+
+    assert reap_group(7777, term_timeout=2.0) is False, "nothing was killed"
+    assert [sig for _, sig in calls if sig != 0] == [signal.SIGTERM]
+    assert clock.slept == 0.0

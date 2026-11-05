@@ -467,6 +467,27 @@ def test_setsid_descendant_is_swept_after_a_normal_exit(tmp_path, monkeypatch):
     assert state in ("gone", "Z"), "setsid descendant survived a normal exit"
 
 
+def test_harness_warns_about_a_process_it_could_not_stop(fakebin, tmp_path, monkeypatch):
+    # F5: a descendant we may not signal is reported honestly; exit code unchanged.
+    # The sweep is mocked, so no real process is signalled.
+    from agentcap import procstop
+
+    def fake_sweep(self, term_timeout=2.0, kill_timeout=2.0):
+        if self._enabled:
+            self.denied_pids = (4242, 4300)
+        return 0
+
+    monkeypatch.setattr(procstop.ProcessTreeGuard, "sweep", fake_sweep)
+    monkeypatch.setenv("FAKE_N", "1")
+    monkeypatch.setenv("FAKE_SLEEP", "0")
+    _r, code, err, *_ = run(["opencode", "run", "hi"], tmp_path, tokens=10**9)
+
+    assert code == 0
+    assert "agentcap: could not stop 2 process(es) (permission denied): pid 4242, 4300" in err, err
+    assert err.count("could not stop") == 1, err
+    assert "left the agent's process group" not in err
+
+
 def test_finished_background_job_is_not_reported_as_a_leftover(tmp_path, monkeypatch):
     # The fake agent's shell backgrounds a short job that finishes before the
     # agent exits.  Nothing is left to kill, so the run must neither sit out

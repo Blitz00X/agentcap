@@ -278,10 +278,25 @@ API, no auth file read. Details and command output:
 Not changed (decisions or documented limits): `ensure_private_dir` chmodding an
 existing user-chosen parent directory to 0700 was left open here and fixed
 later as F6 (see State permissions); a descendant that
-AgentCap may not signal (root-owned) costs up to 4 × (2 s + 2 s) of sweep
-waits; the self-approve hook is bypassed by `$()`, `${x}`, variable
+AgentCap may not signal (root-owned) cost up to 4 × (2 s + 2 s) of sweep
+waits, fixed later as F5 (below); the self-approve hook is bypassed by `$()`, `${x}`, variable
 indirection or `eval`, and a same-user agent can kill or disarm the watchdog —
 all inside the documented same-user limit.
+
+F5 (fixed on `hardening-0.3`): a descendant whose signal fails with
+`PermissionError` (a root-owned `sudo -b` child, a setuid program) is tried
+once per `(pid, start)` identity and then neither waited for nor signalled
+again, so it no longer adds up to ~16 s to the exit. If it is still running
+when the sweep ends, `--cap`, `--tokens` and `--quota` runs print
+`agentcap: could not stop N process(es) (permission denied): pid ...` and it
+is not counted as killed; exit codes are unchanged. The denial is tied to the
+identity, so a later descendant reusing that PID is handled normally.
+`reap_group` returns at once when `killpg` fails with EPERM (no member could be
+signalled). Still not handled: such a process is left running (AgentCap does
+not escalate privileges), and `stop_tree`'s group ladder still waits its
+timeouts if only an unsignallable member keeps the group alive. Tests: the F5
+block in `tests/test_procstop.py` (mocked `/proc`, `os.kill` and clock) and one
+warning test each in `test_runner.py`, `test_harness.py`, `test_quota.py`.
 
 ## Remaining human steps
 

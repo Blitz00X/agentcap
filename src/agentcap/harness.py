@@ -36,7 +36,7 @@ from typing import Any, Callable, Mapping, Sequence, TextIO
 from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock, SchemaWatch
 from .lifeline import GroupWatchdog
 from .lifeline import spawn as lifeline_spawn
-from .procstop import ProcessTreeGuard, reap_group, stop_tree
+from .procstop import ProcessTreeGuard, denied_warning, reap_group, stop_tree
 from .quota import LoopWatch, WARN_FRACTION, _atomic_write, state_root
 
 EXIT_CAP_EXCEEDED = 3
@@ -479,6 +479,9 @@ class HarnessRunner:
                     f"agentcap: killed {escaped} process(es) that left the agent's "
                     "process group (setsid/daemonized helpers)."
                 )
+            denied = denied_warning(tree_guard.denied_pids)
+            if denied:
+                self._say(denied)
             reader.join(timeout=2)
             if self.enforce and reason in ("token_cap", "usd_cap", "quota_exceeded"):
                 code = EXIT_CAP_EXCEEDED

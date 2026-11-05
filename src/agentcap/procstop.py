@@ -127,14 +127,34 @@ def _depth(pid: int, procs: dict[int, _ProcInfo], root_pid: int) -> int:
 
 
 def _signal_if_same_process(pid: int, expected: _ProcInfo, sig: int) -> bool:
+    """Signal ``pid`` only if it is still the process ``expected`` describes.
+
+    Returns False when it is gone, a zombie or a reused PID.  PermissionError
+    (another user's process, a setuid program) is *raised*: the caller must
+    stop treating that identity as something it can clean up.
+    """
     current = _read_proc(pid)
     if current is None or current.zombie or current.start != expected.start:
         return False
     try:
         os.kill(pid, sig)
         return True
-    except (ProcessLookupError, PermissionError, OSError):
+    except PermissionError:
+        raise
+    except (ProcessLookupError, OSError):
         return False
+
+
+def denied_warning(pids: tuple[int, ...] | list[int]) -> str | None:
+    """User-facing warning for descendants that could not be signalled."""
+
+    if not pids:
+        return None
+    listed = ", ".join(str(pid) for pid in pids)
+    return (
+        f"agentcap: could not stop {len(pids)} process(es) (permission denied): pid {listed}; "
+        "they run as another user or a setuid program and are still running."
+    )
 
 
 def _reap_and_wait(expected: set[_ProcessId], timeout: float) -> set[_ProcessId]:
@@ -166,6 +186,21 @@ def _reap_and_wait(expected: set[_ProcessId], timeout: float) -> set[_ProcessId]
         time.sleep(POLL_INTERVAL)
 
 
+def _still_running(ident: _ProcessId) -> bool:
+    """True while ``ident`` is alive; reap it if it has become our zombie."""
+
+    info = _read_proc(ident.pid)
+    if info is None or info.start != ident.start:
+        return False
+    if info.zombie:
+        try:
+            os.waitpid(ident.pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
+        return False
+    return True
+
+
 class ProcessTreeGuard:
     """Adopt and clean up descendants that leave the child's process group.
 
@@ -188,6 +223,9 @@ class ProcessTreeGuard:
     def __init__(self, root_pid: int | None = None) -> None:
         self.root_pid = root_pid if root_pid is not None else os.getpid()
         self.baseline: dict[int, int] = {}
+        # PIDs the last sweep could not signal (PermissionError) and that were
+        # still running when it finished.  See :func:`denied_warning`.
+        self.denied_pids: tuple[int, ...] = ()
         self._previous: bool | None = None
         self._enabled = False
 
@@ -218,11 +256,19 @@ class ProcessTreeGuard:
         conservative: a new descendant that happens to reuse a targeted PID in
         the few seconds of cleanup is skipped rather than risking a kill of an
         unrelated process.
+
+        An identity whose signal fails with PermissionError (another user's
+        process, e.g. ``sudo -b``, or a setuid program) is tried once and then
+        neither waited for nor signalled again; if it is still running at the
+        end it is listed in :attr:`denied_pids` and not counted as killed.  The
+        denial belongs to that ``(pid, start_time)`` only: a later descendant
+        that reuses the PID is handled like any other.
         """
 
         if not self._enabled:
             return 0
         signalled: set[_ProcessId] = set()
+        denied: set[_ProcessId] = set()
         attempted: dict[int, int] = {}
         for _ in range(4):
             procs = _snapshot()
@@ -230,7 +276,7 @@ class ProcessTreeGuard:
             targets: dict[int, int] = {}
             for pid in _descendants(self.root_pid, procs):
                 info = procs[pid]
-                if pid in protected:
+                if pid in protected or _ProcessId(pid, info.start) in denied:
                     continue
                 previous = attempted.get(pid)
                 if previous is not None and previous != info.start:
@@ -244,10 +290,10 @@ class ProcessTreeGuard:
             ordered = sorted(targets, key=lambda pid: _depth(pid, procs, self.root_pid), reverse=True)
             for pid in ordered:
                 info = procs.get(pid)
-                if info is not None and _signal_if_same_process(pid, info, signal.SIGTERM):
+                if info is not None and self._signal(pid, info, signal.SIGTERM, denied, attempted):
                     signalled.add(_ProcessId(pid, info.start))
             remaining = _reap_and_wait(
-                {_ProcessId(pid, start) for pid, start in targets.items()},
+                {_ProcessId(pid, start) for pid, start in targets.items()} - denied,
                 term_timeout,
             )
             if remaining:
@@ -260,10 +306,31 @@ class ProcessTreeGuard:
                     info = latest.get(ident.pid)
                     if info is None or info.start != ident.start:
                         continue  # PID reused while we waited: not our process
-                    if _signal_if_same_process(ident.pid, info, signal.SIGKILL):
+                    if self._signal(ident.pid, info, signal.SIGKILL, denied, attempted):
                         signalled.add(ident)
-                _reap_and_wait(remaining, kill_timeout)
-        return len(signalled)
+                _reap_and_wait(remaining - denied, kill_timeout)
+        left = {ident for ident in denied if _still_running(ident)}
+        self.denied_pids = tuple(sorted(ident.pid for ident in left))
+        # A process that got SIGTERM but refused SIGKILL and is still running
+        # was not stopped: never count it as killed.
+        return len(signalled - left)
+
+    @staticmethod
+    def _signal(
+        pid: int,
+        info: _ProcInfo,
+        sig: int,
+        denied: set[_ProcessId],
+        attempted: dict[int, int],
+    ) -> bool:
+        try:
+            return _signal_if_same_process(pid, info, sig)
+        except PermissionError:
+            denied.add(_ProcessId(pid, info.start))
+            # The denial is tied to this identity, not to the PID: a later
+            # descendant that reuses the PID must not be skipped because of it.
+            attempted.pop(pid, None)
+            return False
 
     def _baseline_subtrees(self, procs: dict[int, _ProcInfo]) -> set[int]:
         """Pre-run children that are still the same process, and their subtrees.
@@ -455,7 +522,11 @@ def reap_group(pgid: int | None, term_timeout: float = 2.0) -> bool:
     SIGTERMs the group, waits ``term_timeout``, then SIGKILLs whatever remains.
     Returns True if the group had survivors and had to be signalled, False if
     it was already empty (or no usable group id was given).  The caller's own
-    group is never touched.
+    group is never touched.  If no member may be signalled at all (``killpg``
+    fails with EPERM, e.g. only a root-owned ``sudo -b`` child is left) it
+    returns False at once: waiting, or retrying with SIGKILL, cannot help, and
+    nothing was killed.  On Linux :meth:`ProcessTreeGuard.sweep` then reports
+    such a process via ``denied_pids``.
     """
     if pgid is None or pgid <= 0 or pgid == os.getpgrp():
         return False
@@ -465,6 +536,8 @@ def reap_group(pgid: int | None, term_timeout: float = 2.0) -> bool:
 
     try:
         os.killpg(pgid, signal.SIGTERM)
+    except PermissionError:
+        return False
     except (ProcessLookupError, OSError):
         pass
     if _wait_group_gone(pgid, term_timeout):
