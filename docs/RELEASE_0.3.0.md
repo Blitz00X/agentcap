@@ -103,6 +103,11 @@ the job lock, the ledger, receipts, history and the budget file. Tests assert
 the modes in `test_quota.py`, `test_failsafe.py`, `test_harness.py`,
 `test_ledger.py`, `test_history.py` and `test_budget.py`.
 
+F6 (fixed on `hardening-0.3`): `ensure_private_dir` no longer chmods an existing
+directory. Only directories it creates, and AgentCap's own default
+directories, become `0700`; the parent of `$AGENTCAP_DB`, a receipt dir or a
+project dir keeps its mode. Tests: `tests/test_private_dirs.py`.
+
 ### Parent-death lifeline (T2)
 
 A Linux child is spawned through `agentcap/_lifeline_exec.py`, which arms
@@ -270,9 +275,9 @@ API, no auth file read. Details and command output:
 | F4 | New children of a pre-run (baseline) child were swept | baseline subtrees excluded | `test_sweep_spares_new_children_of_a_baseline_process` |
 | F2 | The shim ran with its package directory and the user's `PYTHONPATH` on `sys.path` | `python -I` | `test_shim_only_sees_the_standard_library` |
 
-Not changed (decisions or documented limits): `ensure_private_dir` chmods an
-existing user-chosen parent directory to 0700 (e.g. the parent of
-`$AGENTCAP_DB`; asserted by `test_ledger_file_is_private`); a descendant that
+Not changed (decisions or documented limits): `ensure_private_dir` chmodding an
+existing user-chosen parent directory to 0700 was left open here and fixed
+later as F6 (see State permissions); a descendant that
 AgentCap may not signal (root-owned) costs up to 4 × (2 s + 2 s) of sweep
 waits; the self-approve hook is bypassed by `$()`, `${x}`, variable
 indirection or `eval`, and a same-user agent can kill or disarm the watchdog —

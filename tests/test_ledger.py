@@ -39,10 +39,18 @@ def ledger(tmp_path, clock) -> Ledger:
     return Ledger(tmp_path / "ledger.db", clock=clock)
 
 
-def test_ledger_file_is_private(ledger):
+def test_ledger_file_is_private(ledger, tmp_path):
     mode = stat.S_IMODE(ledger.path.stat().st_mode)
     assert mode == 0o600
-    assert stat.S_IMODE(ledger.path.parent.stat().st_mode) == 0o700
+    # F6: the ledger's parent already existed (tmp_path), so its mode is the
+    # caller's business; only a directory the ledger creates is made 0700.
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    existing.chmod(0o755)
+    fresh = Ledger(existing / "new" / "ledger.db")
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o755
+    assert stat.S_IMODE(fresh.path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(fresh.path.stat().st_mode) == 0o600
 
 
 def test_run_cap_blocks_before_overshoot(ledger):
