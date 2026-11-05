@@ -74,6 +74,13 @@ def main(argv: list[str]) -> int:
     # kernel had nobody to signal, so check the reparented pid explicitly.
     if os.getppid() != parent:
         return 137
+    # Python ignores these at startup and exec keeps an ignored signal ignored.
+    # Undo it like subprocess's restore_signals does for a direct child, or the
+    # agent's pipelines (``producer | head -1``) would never get SIGPIPE.
+    for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            signal.signal(number, signal.SIG_DFL)
     try:
         os.execvp(command[0], command)
     except OSError as exc:

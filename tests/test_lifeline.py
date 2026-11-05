@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -126,6 +127,26 @@ def test_spawned_agent_does_not_inherit_the_error_pipe():
     out, _ = child.communicate(timeout=30)
     assert child.returncode == 0
     assert out.strip() == "[]", "the shim's error pipe leaked into the agent"
+
+
+def _ignored_signals(stdout: str) -> set[int]:
+    mask = int(stdout.split()[1], 16)
+    return {sig for sig in (signal.SIGPIPE, signal.SIGXFSZ) if mask >> (sig - 1) & 1}
+
+
+@pytest.mark.skipif(not lifeline.supported(), reason="the lifeline shim is Linux-only")
+def test_spawned_agent_gets_the_signal_dispositions_a_direct_popen_gives():
+    # Review finding: the shim is a Python process, and Python ignores SIGPIPE
+    # and SIGXFSZ at startup; exec keeps an ignored signal ignored.  Popen's
+    # restore_signals undoes that for a direct child, so the agent (and every
+    # shell pipeline it runs: `producer | head -1`) must get them back too.
+    probe = ["sh", "-c", "grep '^SigIgn:' /proc/self/status"]
+    direct = subprocess.run(probe, capture_output=True, text=True, timeout=30)
+    child = lifeline.spawn(probe, stdout=subprocess.PIPE, text=True, start_new_session=True)
+    guarded, _ = child.communicate(timeout=30)
+    assert child.returncode == 0
+    assert _ignored_signals(direct.stdout) == set()
+    assert _ignored_signals(guarded) == set()
 
 
 # --------------------------------------------------------- AgentCap SIGKILLed
