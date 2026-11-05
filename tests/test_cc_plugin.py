@@ -280,8 +280,16 @@ def test_approve_resets_loop_streak(env):
         d = _pre()
     assert d["continue"] is False
     statusline(sl_payload(1.0)); cmd("quota", "50%")
-    cmd("approve")
+    out = cmd("approve")
+    assert "loop breaker cleared" in out
     assert _pre() is None
+
+
+def test_approve_at_full_quota_says_quota_no_longer_stops(env):
+    pro(env)
+    statusline(sl_payload(1.0)); cmd("quota", "100%")
+    out = cmd("approve")
+    assert "150%" in out and "no longer stops" in out
 
 
 def test_stop_receipt_has_last_tool(env):

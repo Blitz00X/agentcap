@@ -417,6 +417,7 @@ def cmd_approve(sid: str | None) -> str:
         return f"agentcap: approve is a Pro feature (Free never blocks, so there is nothing to approve). {PRICING_URL}"
     state = load(sid)
     loop = _loop_path(sid)
+    loop_cleared = loop.exists()
     if loop.exists():
         allst = _read_json(loop) or {}
         for k, v in list(allst.items()):
@@ -432,7 +433,15 @@ def cmd_approve(sid: str | None) -> str:
     new = round(float(state["quota"]) * APPROVE_FACTOR, 4)
     state.update({"quota": new, "approvals": n + 1, "nudged": False})
     save(sid, state)
-    return f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g}%; tell the agent to continue."
+    if new >= 100:
+        head = (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit is now {new:g}% "
+                "(above 100%), so the quota no longer stops this session")
+    else:
+        head = (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g}% "
+                "of the window")
+    if loop_cleared:
+        head += "; loop breaker cleared"
+    return head + "; tell the agent to continue."
 
 
 def cmd_status(sid: str | None) -> str:
