@@ -46,9 +46,16 @@ def test_detect_harness():
     assert h.detect_harness(["codex", "exec"]) is None
 
 
-def test_opencode_argv_forces_json():
-    assert h.OpenCodeAdapter().argv(["opencode", "run", "hi"]) == ["opencode", "run", "--format", "json", "hi"]
-    assert h.OpenCodeAdapter().argv(["opencode", "run", "--format", "json", "hi"]).count("--format") == 1
+def test_opencode_argv_forces_json_and_standalone():
+    # --standalone keeps the harness run off opencode's shared managed service,
+    # whose fixed port can already be taken by another opencode instance.
+    assert h.OpenCodeAdapter().argv(["opencode", "run", "hi"]) == [
+        "opencode", "run", "--standalone", "--format", "json", "hi"]
+    argv = h.OpenCodeAdapter().argv(["opencode", "run", "--format", "json", "hi"])
+    assert argv.count("--format") == 1
+    assert argv.count("--standalone") == 1
+    explicit = h.OpenCodeAdapter().argv(["opencode", "run", "--standalone", "hi"])
+    assert explicit.count("--standalone") == 1
 
 
 def test_opencode_needs_run():
@@ -188,6 +195,8 @@ def test_e2e_opencode_token_cap_stops(fakebin, tmp_path, monkeypatch):
     assert r.summary.tokens < 20 * 1000
     rec = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
     assert rec["agent"] == "opencode" and rec["reason"] == "token_cap"
+    assert stat.S_IMODE((tmp_path / "receipts").stat().st_mode) == 0o700
+    assert stat.S_IMODE(next((tmp_path / "receipts").glob("*.json")).stat().st_mode) == 0o600
     assert "step_finish" in out  # agent output is passed through
 
 
@@ -413,3 +422,82 @@ def test_e2e_stop_leaves_no_orphan_processes(fakebin, tmp_path, monkeypatch):
             break
         _t.sleep(0.05)
     assert st in ("gone", "Z"), "grandchild survived the stop"
+
+
+def test_setsid_descendant_is_swept_after_a_normal_exit(tmp_path, monkeypatch):
+    bindir = tmp_path / "escapebin"; bindir.mkdir()
+    pidfile = tmp_path / "escaped.pid"
+    script = bindir / "opencode"
+    script.write_text(textwrap.dedent(f"""\
+        #!{sys.executable}
+        import json, os, subprocess, sys, time
+        child = subprocess.Popen(
+            ["setsid", sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        for _ in range(200):
+            try:
+                if os.getpgid(child.pid) != os.getpgid(0):
+                    break
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        open({str(pidfile)!r}, "w").write(str(child.pid))
+        print(json.dumps({{"type": "step_finish", "part": {{"type": "step-finish",
+              "cost": 0, "tokens": {{"input": 1, "output": 1, "reasoning": 0,
+              "cache": {{"read": 0, "write": 0}}}}}}}}), flush=True)
+        """))
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+    _r, code, err, *_ = run(["opencode", "run", "hi"], tmp_path, tokens=10**9)
+
+    assert code == 0
+    assert "left the agent's process group" in err
+    escaped = int(pidfile.read_text())
+    for _ in range(60):
+        try:
+            state = Path(f"/proc/{escaped}/stat").read_text().split(")")[-1].split()[0]
+        except OSError:
+            state = "gone"
+        if state in ("gone", "Z"):
+            break
+        import time as _t
+        _t.sleep(0.05)
+    assert state in ("gone", "Z"), "setsid descendant survived a normal exit"
+
+
+def test_finished_background_job_is_not_reported_as_a_leftover(tmp_path, monkeypatch):
+    # The fake agent's shell backgrounds a short job that finishes before the
+    # agent exits.  Nothing is left to kill, so the run must neither sit out
+    # reap_group's timeouts nor claim it "killed leftover processes".
+    bindir = tmp_path / "bgbin"; bindir.mkdir()
+    script = bindir / "opencode"
+    script.write_text(textwrap.dedent(f"""\
+        #!{sys.executable}
+        import json, subprocess, time
+        subprocess.run(["bash", "-c", "sleep 0.2 >/dev/null 2>&1 &"])
+        time.sleep(0.8)
+        print(json.dumps({{"type": "step_finish", "part": {{"type": "step-finish",
+              "cost": 0, "tokens": {{"input": 1, "output": 1, "reasoning": 0,
+              "cache": {{"read": 0, "write": 0}}}}}}}}), flush=True)
+        """))
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+    import time as _t
+    started = _t.monotonic()
+    _r, code, err, *_ = run(["opencode", "run", "hi"], tmp_path, tokens=10**9)
+    elapsed = _t.monotonic() - started
+
+    assert code == 0
+    assert "killed leftover processes" not in err, err
+    assert "left the agent's process group" not in err, err
+    assert elapsed < 2.5, f"harness run took {elapsed:.2f}s for a 0.8s agent"
+
+
+def test_missing_harness_binary_is_still_a_start_failure(tmp_path, monkeypatch):
+    empty = tmp_path / "emptybin"; empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    with pytest.raises(FileNotFoundError):
+        run(["opencode", "run", "hi"], tmp_path, tokens=10**9)

@@ -71,6 +71,28 @@ def test_hook_denies_bash_self_approve(tmp_path):
     assert (job_dir / "job.json").read_text() == before
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "agentcap 'approve'",
+        'agentcap "approve"',
+        "agentcap a''pprove",
+        "agentcap \\approve",
+        "agentcap${IFS}approve",
+        "env -u CLAUDECODE -u AGENTCAP_GUARDED /home/k/.local/bin/agentcap 'approve'",
+        "python -m agentcap approve",
+    ],
+)
+def test_hook_denies_obfuscated_self_approve(tmp_path, command):
+    _root, job_dir = _job(tmp_path)
+    before = (job_dir / "job.json").read_text()
+
+    data = json.loads(_hook(job_dir, command))
+
+    assert data["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert (job_dir / "job.json").read_text() == before
+
+
 def test_hook_allows_unrelated_bash(tmp_path):
     _root, job_dir = _job(tmp_path)
     # not at the limit: the quota branch must not deny this unrelated command
@@ -83,14 +105,17 @@ def test_hook_allows_unrelated_bash(tmp_path):
 
 def test_harness_child_env_has_guard_marker(monkeypatch):
     recorded = {}
+    real_popen = h.subprocess.Popen
 
-    class FakePopen:
-        def __init__(self, argv, **kw):
-            recorded["argv"] = argv
-            recorded["env"] = kw.get("env")
-            raise RuntimeError("stop before the real child starts")
+    def fake_popen(argv, **kw):
+        if "opencode" not in argv:
+            # AgentCap's own helper (the lifeline watchdog) is not the agent.
+            return real_popen(argv, **kw)
+        recorded["argv"] = argv
+        recorded["env"] = kw.get("env")
+        raise RuntimeError("stop before the real child starts")
 
-    monkeypatch.setattr(h.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(h.subprocess, "Popen", fake_popen)
     runner = h.HarnessRunner(
         ["opencode", "run", "hi"],
         tokens=10,

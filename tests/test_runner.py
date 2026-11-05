@@ -547,3 +547,80 @@ def test_suggested_cap_rounds_up_and_has_a_floor():
     assert _hint_usd(Decimal("0.01")) == "$0.01"
     assert _hint_usd(Decimal("0.0123")) == "$0.0123"
     assert _hint_usd(Decimal("0")) == "$0.00"
+
+
+def test_runner_sweeps_a_setsid_descendant_after_child_exit(tmp_path):
+    pidfile = tmp_path / "escaped.pid"
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import os, subprocess, sys, time\n"
+            "p = subprocess.Popen(['setsid', sys.executable, '-c', "
+            "'import time; time.sleep(60)'], stdout=subprocess.DEVNULL, "
+            "stderr=subprocess.DEVNULL)\n"
+            "for _ in range(200):\n"
+            "    try:\n"
+            "        if os.getpgid(p.pid) != os.getpgid(0): break\n"
+            "    except ProcessLookupError:\n"
+            "        break\n"
+            "    time.sleep(0.01)\n"
+            f"open({str(pidfile)!r}, 'w').write(str(p.pid))\n"
+        ),
+    ]
+    runner, stderr = _runner(tmp_path, child, cap="1")
+    assert runner.run() == 0
+    assert "left the agent's process group" in stderr.getvalue()
+    escaped = int(pidfile.read_text())
+    for _ in range(60):
+        try:
+            state = Path(f"/proc/{escaped}/stat").read_text().split(")")[-1].split()[0]
+        except OSError:
+            state = "gone"
+        if state in ("gone", "Z"):
+            break
+        time.sleep(0.05)
+    assert state in ("gone", "Z"), "setsid descendant survived the runner"
+
+
+def test_runner_exit_is_not_delayed_by_a_finished_background_job(tmp_path):
+    # The agent's shell backgrounds a short job and exits; the job finishes
+    # during the run.  As subreaper AgentCap adopts it, so it must also reap
+    # it -- an unreaped zombie kept the group "alive" for reap_group's two
+    # 2-second waits on every such run.
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import subprocess, time\n"
+            "subprocess.run(['bash', '-c', 'sleep 0.2 >/dev/null 2>&1 &'])\n"
+            "time.sleep(0.8)\n"
+        ),
+    ]
+    runner, stderr = _runner(tmp_path, child, cap="1")
+    started = time.monotonic()
+    assert runner.run() == 0
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.5, f"runner took {elapsed:.2f}s for a 0.8s agent"
+    # Nothing escaped: the sweep must not count (or kill) AgentCap's own watchdog.
+    assert "left the agent's process group" not in stderr.getvalue()
+
+
+def test_missing_command_is_still_a_start_failure(tmp_path):
+    # Behind the lifeline Popen starts the shim, not the agent.  A typo in the
+    # command must still raise the start failure (the CLI turns it into
+    # "could not start the command", exit 127), not look like an agent that
+    # ran and made no requests.
+    runner, stderr = _runner(tmp_path, ["agentcap-test-no-such-command"], cap="1")
+    with pytest.raises(FileNotFoundError):
+        runner.run()
+    assert "no model requests observed" not in stderr.getvalue()
+
+
+def test_non_executable_command_is_still_a_start_failure(tmp_path):
+    script = tmp_path / "agent.sh"
+    script.write_text("#!/bin/sh\necho should-not-run\n")
+    script.chmod(0o644)
+    runner, _stderr = _runner(tmp_path, [str(script)], cap="1")
+    with pytest.raises(PermissionError):
+        runner.run()

@@ -40,7 +40,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence, TextIO
 
 from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock
-from .procstop import reap_group, stop_tree
+from .lifeline import GroupWatchdog
+from .lifeline import spawn as lifeline_spawn
+from .private import ensure_private_dir, open_private, write_private_text
+from .procstop import ProcessTreeGuard, reap_group, stop_tree
 
 WINDOWS = ("week", "5h")
 WARN_FRACTION = 0.8
@@ -93,6 +96,8 @@ def approve_job(root: Path | None = None) -> str:
         return (f"agentcap: already approved twice (limit {float(job.get('quota', 0)):g}%); "
                 "start a new job if you really need more.")
     new = round(float(job.get("quota", 0)) * APPROVE_FACTOR, 4)
+    loop_cleared = (d / "loop.json").exists()
+    error_cleared = (d / "errors.json").exists()
     job.update({"quota": new, "approvals": n + 1, "approved_at": time.time()})
     _atomic_write(d / "job.json", job)
     status = _read_json(d / "status.json")
@@ -109,12 +114,43 @@ def approve_job(root: Path | None = None) -> str:
     if tools:  # keep the last tool name for the receipt; restart the streak
         tools.update({"count": 0, "digest": None})
         _atomic_write(d / "tools.json", tools)
-    return (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g}% of the "
-            f"{'weekly' if job.get('window') == 'week' else '5-hour'} quota; the run continues.")
+    if new >= 100:
+        head = (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit is now {new:g}% "
+                "(above 100%), so the quota no longer stops this job")
+    else:
+        head = (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g}% of the "
+                f"{'weekly' if job.get('window') == 'week' else '5-hour'} quota")
+    if loop_cleared:
+        head += "; loop breaker cleared"
+    elif error_cleared:
+        head += "; error breaker cleared"
+    return head + "; the run continues."
 
 
 AGENT_ENV_MARKERS = ("AGENTCAP_QUOTA_JOB", "AGENTCAP_GUARDED", "CLAUDECODE")
 SELF_APPROVE_RE = re.compile(r"\bagentcap(?:\.cli)?\s+approve\b")
+_QUOTE_OR_ESCAPE_RE = re.compile(r"[\"'\\]")
+_SHELL_IFS_RE = re.compile(r"\$\{IFS\}|\$IFS")
+
+
+def _normalized_shell_text(command: str) -> str:
+    """Strip the cheap shell obfuscations an agent can use around a word.
+
+    The hook sees the raw Bash string, so ``agentcap 'approve'`` and
+    ``agentcap a''pprove`` reach the same argv as ``agentcap approve``.  Quotes,
+    backslash escapes and the ``$IFS`` word separator do not change the command
+    a shell runs, so they must not hide a self-approve from the guard.
+    """
+
+    text = _QUOTE_OR_ESCAPE_RE.sub("", command)
+    text = _SHELL_IFS_RE.sub(" ", text)
+    return " ".join(text.split())
+
+
+def is_self_approve_command(command: str) -> bool:
+    """True when a Bash command would run ``agentcap approve``."""
+
+    return bool(SELF_APPROVE_RE.search(_normalized_shell_text(command)))
 
 
 def self_approve_refusal(env: Mapping[str, str]) -> str | None:
@@ -157,10 +193,7 @@ def parse_quota(raw: str) -> float:
 
 
 def _atomic_write(path: Path, data: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(tmp, path)
+    write_private_text(path, json.dumps(data))
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -332,8 +365,8 @@ def _append_sample(record: Mapping[str, Any]) -> None:
 
     try:
         path = state_root() / "claude_samples.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        ensure_private_dir(path.parent)
+        fd = open_private(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except OSError:
@@ -678,7 +711,7 @@ def hook_main(job_dir: Path, stdin: TextIO, stdout: TextIO) -> int:
     if isinstance(payload, dict) and payload.get("tool_name") == "Bash":
         tool_input = payload.get("tool_input")
         command = tool_input.get("command") if isinstance(tool_input, Mapping) else None
-        if isinstance(command, str) and SELF_APPROVE_RE.search(command):
+        if isinstance(command, str) and is_self_approve_command(command):
             json.dump(
                 {
                     "hookSpecificOutput": {
@@ -940,9 +973,11 @@ class QuotaRunner:
         except GuardFailure as e:
             self._say('agentcap: ' + str(e))
             return 2
+        watchdog = GroupWatchdog()
+        tree_guard = ProcessTreeGuard()
         try:
             started = time.time()
-            self.job_dir.mkdir(parents=True, exist_ok=True)
+            ensure_private_dir(self.job_dir)
             argv = list(self.argv)
             tailer: CodexTailer | None = None
             tracker = ShareTracker()
@@ -989,11 +1024,14 @@ class QuotaRunner:
                 self._say(f"agentcap: WARNING: Claude Code reports quota in whole percent, so a {self.quota:g}% "
                           "cap trips at the next 1% step of the account (it may stop at once or overshoot). "
                           "Use --quota 1% or more for Claude Code.")
-            self.child = subprocess.Popen(argv, env=env, start_new_session=True, cwd=self.cwd)
+            watchdog.start()  # before the tree guard, so its baseline excludes it
+            tree_guard.start()
+            self.child = lifeline_spawn(argv, env=env, start_new_session=True, cwd=self.cwd)
             try:
                 self._pgid = os.getpgid(self.child.pid)
             except OSError:
                 self._pgid = None
+            watchdog.watch(self._pgid)
 
             warned = hit = parallel = observed = no_data_warned = False
             loop_detail: str | None = None
@@ -1122,6 +1160,15 @@ class QuotaRunner:
                     self._say(f'agentcap: {guard_msg}; observe-only run continues without AgentCap.')
             code = self.child.wait()
             reap_group(self._pgid)
+            try:
+                escaped = tree_guard.sweep()
+            finally:
+                tree_guard.close()
+            if escaped:
+                self._say(
+                    f"agentcap: killed {escaped} process(es) that left the agent's "
+                    "process group (setsid/daemonized helpers)."
+                )
             if loop_detail and self.enforce and not hit:
                 reason = "loop_detected"
                 code = EXIT_LOOP_DETECTED
@@ -1145,6 +1192,12 @@ class QuotaRunner:
                 pass
             return code
         finally:
+            try:
+                tree_guard.sweep()
+            except Exception:
+                pass
+            tree_guard.close()
+            watchdog.disarm()
             lock.release()
 
     def _say_open(self, said: bool, what: str) -> bool:

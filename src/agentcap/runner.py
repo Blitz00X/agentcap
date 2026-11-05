@@ -38,10 +38,13 @@ from .adapters import (
 )
 from .alerts import AlertDispatcher, dispatcher_from_env
 from .ledger import Caps, Ledger
+from .lifeline import GroupWatchdog
+from .lifeline import spawn as lifeline_spawn
 from .license import features as license_features
 from .license import status_from_environment
 from .pricing import PricingStore
-from .procstop import reap_group
+from .private import write_private_text
+from .procstop import ProcessTreeGuard, reap_group
 from .proxy import (
     DEFAULT_ANTHROPIC_UPSTREAM,
     DEFAULT_GEMINI_UPSTREAM,
@@ -155,8 +158,8 @@ def cap_from_env(default: Decimal | str | int = DEFAULT_CAP) -> Decimal:
 
 
 def _default_popen(argv: Sequence[str], env: Mapping[str, str]) -> subprocess.Popen:
-    return subprocess.Popen(
-        list(argv),
+    return lifeline_spawn(
+        argv,
         env=dict(env),
         start_new_session=True,
     )
@@ -514,6 +517,11 @@ class Runner:
             return 2
 
         self._start_proxy()
+        # Started before the tree guard so its baseline excludes the watchdog.
+        watchdog = GroupWatchdog()
+        watchdog.start()
+        tree_guard = ProcessTreeGuard()
+        tree_guard.start()
         reason = "child_exit"
         exit_code = 1
         try:
@@ -525,6 +533,7 @@ class Runner:
             )
             self._adapter_cleanup = prepared.cleanup
             self.child = self._spawn(prepared.argv, prepared.env)
+            watchdog.watch(self._pgid)
             try:
                 exit_code = self._monitor()
             except KeyboardInterrupt:
@@ -546,6 +555,18 @@ class Runner:
             # No orphans: grandchildren left in the agent's process group after
             # the leader exited (or was stopped) are terminated too.
             reap_group(self._pgid)
+            try:
+                escaped = tree_guard.sweep()
+            except Exception:
+                escaped = 0
+            finally:
+                tree_guard.close()
+            watchdog.disarm()
+            if escaped:
+                self._print_hint(
+                    f"agentcap: killed {escaped} process(es) that left the agent's "
+                    "process group (setsid/daemonized helpers)."
+                )
             self._stop_proxy()
             cleanup = self._adapter_cleanup
             self._adapter_cleanup = None
@@ -619,9 +640,8 @@ class Runner:
         payload = self.receipt_payload(summary)
         directory = self.receipt_dir or default_receipt_dir()
         try:
-            directory.mkdir(parents=True, exist_ok=True)
             path = directory / f"{summary.run_id}.json"
-            path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            write_private_text(path, json.dumps(payload, indent=2) + "\n")
             self.receipt_path = path
             self._print_hint(f"agentcap: spend receipt saved: {path}")
         except OSError:

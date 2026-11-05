@@ -309,6 +309,46 @@ def test_e2e_claude_denied_at_quota(fakebin, tmp_path):
     assert (r.job_dir / "denies.log").exists()
 
 
+def test_quota_runner_sweeps_a_setsid_descendant(tmp_path, monkeypatch):
+    bindir = tmp_path / "escapebin"; bindir.mkdir()
+    pidfile = tmp_path / "escaped.pid"
+    exe = bindir / "claude"
+    exe.write_text(textwrap.dedent(f"""\
+        #!{sys.executable}
+        import os, subprocess, sys, time
+        child = subprocess.Popen(
+            ["setsid", sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        for _ in range(200):
+            try:
+                if os.getpgid(child.pid) != os.getpgid(0):
+                    break
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        open({str(pidfile)!r}, "w").write(str(child.pid))
+        """))
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(tmp_path / "state"))
+
+    r, _events, err = make_runner(["claude", "-p", "fix"], tmp_path,
+                                 job_root=tmp_path / "state")
+    assert r.run() == 0
+    assert "left the agent's process group" in err.getvalue()
+    escaped = int(pidfile.read_text())
+    for _ in range(60):
+        try:
+            state = Path(f"/proc/{escaped}/stat").read_text().split(")")[-1].split()[0]
+        except OSError:
+            state = "gone"
+        if state in ("gone", "Z"):
+            break
+        time.sleep(0.05)
+    assert state in ("gone", "Z"), "setsid descendant survived quota mode"
+
+
 def test_live_status_file_for_editor(fakebin, tmp_path, monkeypatch):
     live = tmp_path / "live.json"
     monkeypatch.setenv("AGENTCAP_QUOTA_LIVE", str(live))
@@ -534,6 +574,15 @@ def _job(tmp_path, **kw):
     return root, d
 
 
+def test_quota_state_files_are_private(tmp_path):
+    root, d = _job(tmp_path)
+    q._atomic_write(d / "job.json", {"quota": 1})
+    assert stat.S_IMODE((d / "job.json").stat().st_mode) == 0o600
+    q._atomic_write(d / "nested" / "status.json", {"limit_hit": False})
+    assert stat.S_IMODE((d / "nested").stat().st_mode) == 0o700
+    assert stat.S_IMODE((d / "nested" / "status.json").stat().st_mode) == 0o600
+
+
 def test_approve_raises_quota_50pct_at_most_twice(tmp_path):
     root, d = _job(tmp_path)
     (d / "loop.json").write_text("{}"); (d / "tools.json").write_text(json.dumps({"digest": "x", "count": 4, "tool": "Bash"}))
@@ -546,6 +595,27 @@ def test_approve_raises_quota_50pct_at_most_twice(tmp_path):
     assert "9%" in q.approve_job(root)
     assert "already approved twice" in q.approve_job(root)
     assert json.loads((d / "job.json").read_text())["quota"] == 9.0
+
+
+def test_approve_reports_cleared_loop_breaker(tmp_path):
+    root, d = _job(tmp_path)
+    (d / "loop.json").write_text(json.dumps({"count": 4, "tool": "Bash"}))
+    msg = q.approve_job(root)
+    assert "loop breaker cleared" in msg and "run continues" in msg
+
+
+def test_approve_reports_cleared_error_breaker(tmp_path):
+    root, d = _job(tmp_path)
+    (d / "errors.json").write_text(json.dumps({"errors": 8, "tool": "Bash"}))
+    msg = q.approve_job(root)
+    assert "error breaker cleared" in msg
+
+
+def test_approve_at_full_quota_says_quota_no_longer_stops(tmp_path):
+    root, d = _job(tmp_path, quota=100.0)
+    msg = q.approve_job(root)
+    assert "150%" in msg and "no longer stops" in msg
+    assert "raised to 150%" not in msg
 
 
 def test_approve_free_job_and_no_job(tmp_path):
@@ -762,3 +832,15 @@ def test_deny_messages_invite_resume_after_approve(tmp_path):
     reason = _j.loads(out.getvalue())["hookSpecificOutput"]["permissionDecisionReason"]
     assert "agentcap approve" in reason and "continue" in reason
     assert "Stop now" not in reason and "do not call more tools" not in reason
+
+
+def test_missing_quota_agent_binary_is_still_a_start_failure(tmp_path, monkeypatch):
+    # The lifeline shim is what Popen starts; a missing `codex`/`claude` must
+    # still raise the start failure the CLI reports as "could not start".
+    empty = tmp_path / "emptybin"; empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    r, _events, _err = make_runner(["codex", "exec", "hi"], tmp_path)
+    with pytest.raises(FileNotFoundError):
+        r.run()

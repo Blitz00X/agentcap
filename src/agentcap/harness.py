@@ -34,7 +34,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
 from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock, SchemaWatch
-from .procstop import reap_group, stop_tree
+from .lifeline import GroupWatchdog
+from .lifeline import spawn as lifeline_spawn
+from .procstop import ProcessTreeGuard, reap_group, stop_tree
 from .quota import LoopWatch, WARN_FRACTION, _atomic_write, state_root
 
 EXIT_CAP_EXCEEDED = 3
@@ -89,8 +91,12 @@ class OpenCodeAdapter:
         argv = list(argv)
         if len(argv) < 2 or argv[1] != "run":
             raise ValueError("AgentCap needs headless opencode: `opencode run ...`")
+        # A shared managed service has a fixed port; another opencode process
+        # can already own it.  --standalone gives this run its own service.
         if "--format" not in argv:
             argv[2:2] = ["--format", "json"]
+        if "--standalone" not in argv:
+            argv.insert(2, "--standalone")
         return argv
 
     def envelope(self, obj: Any) -> bool:
@@ -350,7 +356,11 @@ class HarnessRunner:
                 self._say("agentcap: " + str(e))
                 return 2
             lock = self._joblock
+        watchdog = GroupWatchdog()
+        tree_guard = ProcessTreeGuard()
         try:
+            watchdog.start()  # before the tree guard, so its baseline excludes it
+            tree_guard.start()
             baseline = None
             if self.quota is not None:
                 payload = self.quota_fetch()
@@ -358,13 +368,14 @@ class HarnessRunner:
                 if baseline is None:
                     self._say("agentcap: agy reported no quota for this model/window; quota cap is "
                               "not active (token/USD caps and breakers still are).")
-            self.child = subprocess.Popen(self.argv, stdout=subprocess.PIPE, text=True, bufsize=1,
-                                          start_new_session=True,
-                                          env={**os.environ, "AGENTCAP_GUARDED": "1"})
+            self.child = lifeline_spawn(self.argv, stdout=subprocess.PIPE, text=True, bufsize=1,
+                                        start_new_session=True,
+                                        env={**os.environ, "AGENTCAP_GUARDED": "1"})
             try:
                 self._pgid = os.getpgid(self.child.pid)
             except OSError:
                 self._pgid = None
+            watchdog.watch(self._pgid)
             reader = threading.Thread(target=self._reader, daemon=True)
             reader.start()
             loop = LoopWatch()
@@ -459,6 +470,15 @@ class HarnessRunner:
             code = self.child.wait()
             if reap_group(self._pgid):
                 self._say('agentcap: killed leftover processes from the agent process group.')
+            try:
+                escaped = tree_guard.sweep()
+            finally:
+                tree_guard.close()
+            if escaped:
+                self._say(
+                    f"agentcap: killed {escaped} process(es) that left the agent's "
+                    "process group (setsid/daemonized helpers)."
+                )
             reader.join(timeout=2)
             if self.enforce and reason in ("token_cap", "usd_cap", "quota_exceeded"):
                 code = EXIT_CAP_EXCEEDED
@@ -470,6 +490,12 @@ class HarnessRunner:
             self._report(loop.tripped)
             return code
         finally:
+            try:
+                tree_guard.sweep()
+            except Exception:
+                pass
+            tree_guard.close()
+            watchdog.disarm()
             if lock is not None:
                 lock.release()
 
