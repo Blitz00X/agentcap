@@ -426,3 +426,87 @@ the daemon during the run. Replacing F0 with `waitpid(-1)` fails the F0 test.
    "Known limit: adopted zombies wait for the end of the run". It would reap
    the agent's in-session helpers and double-fork daemons during a run;
    `setsid` helpers would still wait for the end of the run.
+
+## Final review before packaging (2026-11-05)
+
+Scope: `6b5b177..d50124f` (`src`, `scripts`; `agentcap/ops` only where it
+touches the shipped package), README, CHANGELOG and this file. Every code fix
+went RED first (test below failing on `d50124f`), then GREEN. No network, no
+model call, no auth/licence file read; processes were the tests' own.
+
+Fixed:
+
+| # | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| R1 | Medium-high | Loop breaker blind to a step whose first attempt was forgiven (429/408/5xx/529, and since F8 401/402/403/Gemini `API_KEY_INVALID`) and then retried unchanged: `forgive_last()` restored the streaks but left `_last_exact` on the forgiven request, so the retry was taken for a resend and skipped the step/error checks. The step counted zero times: a loop whose every step needs one retry (a rate-limited account) never tripped; one retry every other step moved the stop from step 4 to step 7. The spend cap was not affected. | `loop.py`: the snapshot also restores `_last_exact` (`608186e`). `tests/test_proxy_auth.py::test_a_loop_whose_every_step_needs_one_retry_still_trips_at_four` (429, 503, 401) |
+| R2 | Medium | Regression from the lifeline shim: the shim is a Python process (Python sets SIGPIPE and SIGXFSZ to `SIG_IGN` at startup) and `execvp` keeps an ignored signal ignored, so every agent ran with SIGPIPE ignored; a direct `Popen` (0.2.2) restores both. Measured: `while ...; do echo y; done \| head -n 1` gave 199,649 `echo: I/O error` lines instead of the producer dying; an endless producer spins forever. Node and Rust agents reset signals for their own tool children; shell/script agents and anything they exec inherited it. | `_lifeline_exec.py` restores SIGPIPE/SIGXFZ/SIGXFSZ to `SIG_DFL` before `execvp`, as `restore_signals` does (`d344e5b`). `tests/test_lifeline.py::test_spawned_agent_gets_the_signal_dispositions_a_direct_popen_gives` |
+| R3 | Low (docs) | README/CHANGELOG did not match the code: exit 5 promised for any internal error (a `--cap` run stops the agent but exits 2 for a `RuntimeError`, measured); "Free only warns" read as covering the quota lock (a Free quota job is refused with exit 2, measured); the stop ladder described only quota/harness (`--cap` is SIGTERM, then SIGKILL after 5 s); "no success between them" (any other answer, a 429 too, resets the auth streak); "the Claude Code hook denies" a Bash self-approve (only the `agentcap run --quota -- claude` hook does, see R4). | README and CHANGELOG corrected (`feb30d9`) |
+
+Open, needs a decision (no code changed):
+
+- **R4 (medium): the Claude Code plugin has no self-approve guard.** After a
+  Pro loop stop, the model's next Bash call
+  `python3 <plugin>/scripts/agentcap_cc.py approve --session <id>` passes the
+  plugin's `PreToolUse` hook (no output) and, run with `CLAUDECODE=1`, prints
+  `approved (1/2): limit raised to 7.5% ...; loop breaker cleared` (scratch
+  run, temp state and a test licence fixture). `quota 100%` and `off` work the
+  same way before a limit is hit. The `--quota` hook regex does not match
+  `agentcap_cc.py approve`, and `cmd_approve` cannot use the environment
+  markers because `/agentcap:approve` itself runs inside Claude Code. Now
+  documented in README/CHANGELOG. Possible fix: deny those script commands in
+  the plugin hook, after a real Claude Code check that a slash command's `!`
+  line does not pass through `PreToolUse`.
+- **R5 (low): AgentCap's own state errors are reported as
+  `could not start the command`, exit 127.** A symlinked `quota.lock`
+  (`O_NOFOLLOW`) or an unwritable `HOME` made
+  `agentcap run --quota 5% -- codex exec hi` print
+  `could not start the command (Too many levels of symbolic links)` /
+  `(Permission denied)` and exit 127; the agent never started, so it stays
+  fail-closed. The CLI maps every `OSError` from a run to 127 (pre-existing;
+  a `--port` already in use is reported the same way). Decide 2 or 5 and
+  separate spawn errors from state errors.
+- **R6 (low): `--cap` internal errors.** The agent is stopped (the run's
+  `finally` reaps the group and sweeps), but the exit code is 2
+  (`RuntimeError`/`ValueError`), 127 (`OSError`) or 1, and the printed summary
+  says `exit code: 1` followed by the "no model requests observed" hints.
+  Exit 5 everywhere would need a catch in `Runner.run`.
+- **R7 (low, residual): loop-detector forgiveness is a single slot.** With
+  concurrent requests a 429 on request A undoes the latest `check` (maybe
+  request B's). Counts can be off by one per concurrent rejection; no false
+  stop or hidden loop was demonstrated.
+- **R8 (low, residual): F8 policy edges.** Any non-rejection answer, a 429 or
+  5xx too, resets the auth streak, so an agent alternating 401 and 429 is
+  never stopped as `upstream_auth_failed` (nothing is spent). A 403 that is
+  not about the key (region block, an OpenRouter moderation refusal) stops the
+  run after three in a row with "check the API key" advice. An agent that
+  exits 0 right after a rejected background request gets reason
+  `upstream_auth_failed` with exit 0. The upstream `error.message` path was
+  checked: control/format characters (ESC, C1, bidi) are removed and
+  key-shaped text is redacted before the terminal, alerts or webhooks see it;
+  nothing from it is written to state or receipts.
+- **R9 (info): `agentcap.ops` ships in the wheel** (`packages =
+  ["src/agentcap"]`). It is not wired into the `agentcap` CLI and holds no
+  endpoints or personal data; decide whether the public wheel should carry it.
+- **R10 (info): stale release evidence.** The SHA256 list under S6 predates
+  F5, F6, F8 and this review, and "Remaining human steps" item 1 (uncommitted
+  diff) no longer applies: everything is committed on `hardening-0.3`. Rebuild
+  the wheel and sdist from the final commit before any upload.
+
+Checked without findings: PID reuse and `(pid, start)` identity through TERM,
+wait and KILL; baseline subtrees (F4) and denied identities (F5); F0 zombie
+reaping only after the leader's `Popen` reaped it; errfd close-on-exec, the
+shim's `-I` isolation and its environment, fds, cwd and PATH lookup;
+watchdog session, protocol and disarm order; non-Linux fallbacks (no shim,
+no watchdog, no sweep, group-only stop); exit codes 2/3/4/5/127 for quota,
+harness and proxy paths; private dirs (F6) and symlink-refusing opens; secret
+redaction in alerts; `approve` env-marker refusal; versions (0.3.0 in
+`pyproject.toml`, `__init__.py`, `.claude-plugin/plugin.json`, CHANGELOG,
+`tests/test_release.py`); Python 3.11 grammar of the changed files.
+
+Full suite after the fixes (repo root, isolated `HOME`/`TMPDIR`, `env -i`):
+**889 passed, 2 skipped, exit 0** (baseline 885 passed, 2 skipped; +4 new
+tests; the skips are the opt-in live log-contract tests).
+
+Verdict: no blocker left in the code for 0.3.0 once R1 and R2 are in; before
+packaging, decide R4 (fix or keep it documented) and rebuild the artifacts
+(R10). R5-R9 can wait for a later release.
