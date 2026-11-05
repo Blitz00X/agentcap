@@ -353,7 +353,10 @@ class RunawayDetector:
         if snap is None:
             return
         with self._lock:
-            self._last_tail, self._last_tail_t, self._tail_streak, self._error_streak = snap[1:]
+            # Also undo ``_last_exact``: otherwise the identical retry of the
+            # forgiven call looks like a resend and its step never counts.
+            (self._last_tail, self._last_tail_t, self._tail_streak,
+             self._error_streak, self._last_exact) = snap[1:]
         hits = self._exact._hits.get(snap[0])
         if hits:
             hits.pop()
@@ -364,9 +367,9 @@ class RunawayDetector:
         exact = request_hash(body)
         with self._lock:
             resend = self._snapshot is not None and self._snapshot[0] == exact or self._last_exact == exact
-            self._last_exact = exact
             self._snapshot = (exact, self._last_tail, self._last_tail_t,
-                              self._tail_streak, self._error_streak)
+                              self._tail_streak, self._error_streak, self._last_exact)
+            self._last_exact = exact
         if self._exact.record(exact):
             return {"kind": "repeat", "count": self.repeat_threshold,
                     "window_s": self.repeat_window_s}

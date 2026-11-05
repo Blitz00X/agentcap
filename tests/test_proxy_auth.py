@@ -184,6 +184,51 @@ async def test_real_loop_with_200_responses_still_trips_at_four(tmp_path):
     assert proxy.auth_kills == []
 
 
+def _stuck_turn(turn: int) -> dict[str, Any]:
+    """Turn ``turn`` of an agent stuck on one step: the history grows, the step does not."""
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "make the tests pass"}]
+    for i in range(turn):
+        call_id = f"call_{i}abc"
+        messages.append({"role": "assistant", "content": None, "tool_calls": [
+            {"id": call_id, "type": "function",
+             "function": {"name": "bash", "arguments": '{"cmd": "pytest -q"}'}}]})
+        messages.append({"role": "tool", "tool_call_id": call_id, "content": "3 passed"})
+    return {"model": "gpt-4o-mini", "messages": messages}
+
+
+@pytest.mark.parametrize("first_status", [429, 503, 401])
+async def test_a_loop_whose_every_step_needs_one_retry_still_trips_at_four(tmp_path, first_status):
+    # Review finding: the forgiven first attempt was undone, and its identical
+    # retry was then skipped as a "resend", so the step counted zero times.  A
+    # loop on a rate-limited (or briefly rejected) account never tripped.
+    seen: set[bytes] = set()
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.content not in seen:
+            seen.add(request.content)
+            return httpx.Response(first_status, json={"error": {"message": "try again"}})
+        return httpx.Response(
+            200, json={"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 1}}
+        )
+
+    proxy = Proxy(tmp_path, httpx.MockTransport(responder))
+    blocked_at = None
+    for turn in range(1, 13):
+        for _attempt in range(2):  # the first try, then the agent's identical retry
+            response = await proxy.post("/openai/v1/chat/completions", _stuck_turn(turn))
+            if response.headers.get("x-agentcap-blocked") == "loop":
+                blocked_at = turn
+            if response.status_code == 200 or blocked_at:
+                break
+        if blocked_at:
+            break
+
+    assert blocked_at == 4
+    assert len(proxy.loop_kills) == 1
+    assert proxy.auth_kills == []
+
+
 async def test_free_tier_shadow_detector_does_not_nudge_on_401s(tmp_path):
     proxy = Proxy(
         tmp_path, httpx.MockTransport(_always(401, OPENROUTER_401)), feature_set=FREE_FEATURES
