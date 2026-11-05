@@ -56,9 +56,12 @@ Issues = "https://github.com/Blitz00X/agentcap/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentcap"]
+# agentcap.ops is an internal task/notification tracker, not part of the CLI.
+exclude = ["src/agentcap/ops"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/agentcap", "tests", "README.md", "LICENSE", "pyproject.toml"]
+exclude = ["src/agentcap/ops", "tests/test_ops_*.py", "tests/ops_support.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

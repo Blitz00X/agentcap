@@ -28,3 +28,13 @@ def test_version_is_consistent_everywhere():
     assert plugin["version"] == version
     assert f"## {version}\n" in changelog
     assert "Unreleased" not in changelog
+
+
+def test_internal_ops_tracker_is_not_shipped():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    targets = project["tool"]["hatch"]["build"]["targets"]
+    assert "src/agentcap/ops" in targets["wheel"]["exclude"]
+    sdist_exclude = targets["sdist"]["exclude"]
+    assert "src/agentcap/ops" in sdist_exclude
+    # the sdist must not ship tests for a package it leaves out
+    assert "tests/test_ops_*.py" in sdist_exclude and "tests/ops_support.py" in sdist_exclude

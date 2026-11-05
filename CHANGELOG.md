@@ -24,6 +24,7 @@
 - **agy quota mode:** `agentcap run --quota 5% --window 5h -- agy -p ...` reads `remaining_fraction` from `agy -p /quota --output-format json` (no agent turn, no quota spent) for the model's group. opencode exposes no quota %, so `--quota` is refused for it with a pointer to `--tokens`/`--log-cap`.
 - **$ mode:** `agentcap run --cap 1 -- opencode run -m agentcap/<model> ...` injects a provider through `OPENCODE_CONFIG_CONTENT` (user config untouched, run forced `--standalone`); `agy` is routed through the Gemini API route (`modelProvider: gemini`, `GEMINI_API_KEY`).
 - Version 0.3.0 (package and plugin manifest).
+- Packaging: the internal task/notification tracker `agentcap.ops` is no longer shipped in the wheel or sdist (it stays in the repository).
 
 ## 0.2.2
 - Codex quota under 1% (`--quota 0.5%`) now prints a warning at start. Codex reports quota in whole percent, so such a cap cannot trigger until a full 1% is used (seen in a real ChatGPT-plan run). README note added.
