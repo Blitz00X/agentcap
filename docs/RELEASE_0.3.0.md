@@ -223,21 +223,32 @@ resources; none were created and no real key was used.
 Build and clean install of 0.3.0 (rebuilt after the independent review; the
 earlier `f525fc47…`/`ef2cd721…` artifacts are superseded):
 
+Final artifacts, built 5 Nov 2026 from commit `3556c67` (clean tree; later
+commits change only this document, which is not in the sdist):
+
 ```bash
-uv build --offline --out-dir /tmp/opus-kalan/dist
-# agentcap_cli-0.3.0-py3-none-any.whl
-# agentcap_cli-0.3.0.tar.gz
+uv build --out-dir <dir>
 ```
 
 SHA256:
 
 ```text
-d665b550a8207f03b098853513b8059ee835eb2be578455d92f7e68ba7d93e65  agentcap_cli-0.3.0-py3-none-any.whl
-44fb93105053542e082f47b17e203b4d77dc661a59421b5b0eefcf3fbbcf7589  agentcap_cli-0.3.0.tar.gz
+77fda626f4c9e9533e41c788ee5f15e3f4e4c88879f2b681b656e974bffa2a85  agentcap_cli-0.3.0-py3-none-any.whl
+98624cc088e55900d2d978a30af6c1206b52a12e75c20e2c33b825441bcd3bac  agentcap_cli-0.3.0.tar.gz
 ```
 
-The wheel contains `agentcap/_lifeline_exec.py`, `agentcap/_lifeline_watch.py`,
-`agentcap/lifeline.py`, `agentcap/private.py` and `agentcap/data/pricing.json`.
+The wheel (40 files) contains `agentcap/_lifeline_exec.py`,
+`agentcap/_lifeline_watch.py`, `agentcap/lifeline.py`, `agentcap/private.py` and
+`agentcap/data/pricing.json`; `agentcap.ops` is not shipped. Each artifact was
+installed into a fresh venv with an empty HOME (`env -i`): `agentcap 0.3.0`;
+`demo` exit 3 (`cap_exceeded`); a missing command exit 127 with one "could not
+start" line and no `lifeline:` line; `agentcap.ops` not importable; SIGKILL of
+`agentcap run` took the agent's background tool process with it; state dir
+0700, files 0600, HOME mode unchanged. Full suite on the same tree: 946 passed,
+2 skipped (opt-in live checks), exit 0.
+
+The earlier hashes (`d665b550…`, `44fb9310…`) predate F5, F6, F8, the final
+review and the plugin guard and are void.
 
 Fresh venv + empty HOME + `env -i`, once from the wheel and once from the
 sdist (dependencies downloaded from PyPI; nothing uploaded): `agentcap 0.3.0`;
@@ -406,11 +417,7 @@ the daemon during the run. Replacing F0 with `waitpid(-1)` fails the F0 test.
 
 ## Remaining human steps
 
-1. Review the uncommitted diff (no commit was made). The commit must include
-   the untracked files `src/agentcap/_lifeline_exec.py`,
-   `src/agentcap/_lifeline_watch.py`, `src/agentcap/lifeline.py`,
-   `src/agentcap/private.py`, `tests/test_lifeline.py`, `tests/test_release.py`
-   and this document.
+1. Done: all 0.3.0 work is committed on `hardening-0.3` (local only).
 2. Decide whether the 0.3.0 version bump and CHANGELOG are the release notes.
 3. Commit, merge to `main`, tag `v0.3.0`, push, upload to PyPI, update the
    landing/plugin listings — all require Kutay's approval.
