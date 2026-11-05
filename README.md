@@ -504,8 +504,9 @@ Request bodies are billed at price-book rates; embeddings are input-only.
 
 ### Stopping, fail-closed and self-approval (0.3, Linux-verified)
 
-- **Whole process tree.** A stop sends SIGINT to the agent's process group, then SIGTERM, then
-  SIGKILL (5 s / 3 s / 2 s). Helpers the agent left behind in its group are also killed after a
+- **Whole process tree.** A quota/harness stop (`--quota`, `--tokens`, `--log-cap`) sends SIGINT
+  to the agent's process group, then SIGTERM, then SIGKILL (5 s / 3 s / 2 s); a proxy (`--cap`)
+  stop sends SIGTERM, then SIGKILL after 5 s. Helpers the agent left behind in its group are also killed after a
   normal exit, so a dev server started by the agent does not outlive the run.
   On Linux AgentCap also enables `PR_SET_CHILD_SUBREAPER` for the run: descendants that call
   `setsid()` or double-fork are adopted, matched against a pre-run snapshot (PID + start time),
@@ -529,25 +530,30 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   counted against `ulimit -u`, until the run ends. Interrupting a job
   can leave its work half done (a migration, a deploy): that is the job's responsibility, so
   commit before a guarded run.
-- **Fail-closed.** On Pro the agent is stopped with exit code 5 instead of running unguarded when
-  opencode/agy output matches no known log schema, the Codex session log becomes unreadable, or
-  AgentCap itself hits an internal error. Two quota jobs at once are refused (exit 2), since the
-  quota % is account-wide; `AGENTCAP_ALLOW_PARALLEL=1` turns that lock off. Free only warns.
+- **Fail-closed.** On Pro, quota and harness runs (`--quota`, `--tokens`, `--log-cap`) stop the
+  agent with exit code 5 instead of letting it run unguarded when opencode/agy output matches no
+  known log schema, the Codex session log becomes unreadable, or AgentCap itself hits an internal
+  error; Free only warns about these. In `--cap` mode an internal AgentCap error stops the agent
+  too, but the exit code is not 5. Two quota jobs at once are refused on Free and Pro (exit 2),
+  since the quota % is account-wide; `AGENTCAP_ALLOW_PARALLEL=1` turns that lock off.
   Not covered yet: a stale Claude statusline (no fresh `rate_limits`) is reported, not stopped.
 - **Rejected credentials (`--cap` proxy mode).** When the provider answers HTTP 401, 402
   (OpenRouter: no credits), 403, or Gemini's 400 `API_KEY_INVALID`, AgentCap prints
   `upstream rejected the request (HTTP 401: User not found.) — check the API key for <host>;
   nothing was spent.` (the provider's short `error.message`, truncated, key-shaped text redacted,
   headers never read). The agent's resends of such a request never count toward the loop breaker.
-  After 3 rejections in a row with no success between them, the run is stopped on Free and Pro
+  After 3 rejections in a row with no other answer between them, the run is stopped on Free and Pro
   with reason `upstream_auth_failed` and exit 2 (like AgentCap's other exit-2 refusals: a setup
   problem to fix, rerunning unchanged cannot help). If the agent gives up first, the reason is
   still `upstream_auth_failed` and its own exit code is kept. One rejection followed by a
   success changes nothing. `agentcap serve` only reports it and keeps serving.
 - **Self-approval.** `agentcap approve` refuses (exit 2) when it runs inside an agent session
-  (`AGENTCAP_QUOTA_JOB`, `AGENTCAP_GUARDED` or `CLAUDECODE` in its environment), and the Claude
-  Code hook denies a Bash call that runs `agentcap approve`; `/agentcap:approve` cannot be invoked
-  by the model (`disable-model-invocation`). Run approve from your own terminal.
+  (`AGENTCAP_QUOTA_JOB`, `AGENTCAP_GUARDED` or `CLAUDECODE` in its environment), and the hook of
+  `agentcap run --quota -- claude` denies a Bash call that runs `agentcap approve`;
+  `/agentcap:approve` cannot be invoked by the model (`disable-model-invocation`). Run approve
+  from your own terminal. In the Claude Code plugin there is no such check: the model can run the
+  plugin's own script (`python3 .../scripts/agentcap_cc.py approve`, `quota` or `off`) through
+  Bash, and neither the plugin hook nor the script refuses it.
   **Honest limit:** the agent runs as your OS user, so a determined agent can still clear the
   environment, edit AgentCap's state files or kill AgentCap. AgentCap guards cooperative
   workloads against accidents (loops, runaway spend), not a hostile agent; use a separate OS
