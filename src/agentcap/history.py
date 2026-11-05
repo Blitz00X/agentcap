@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from .pricing import PricingError, cost, load_pricing
+from .private import ensure_private_dir
 
 _FORBIDDEN = ("auth", "credential", "token", "oauth", "keychain")
 
@@ -87,7 +88,7 @@ CREATE TABLE IF NOT EXISTS file_offsets (
 class HistoryStore:
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         self.path = Path(path).expanduser() if path is not None else default_db_path()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(self.path.parent)
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
             have = {r[1] for r in conn.execute("PRAGMA table_info(events)")}

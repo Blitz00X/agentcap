@@ -18,6 +18,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable, Iterator
 
+from .private import ensure_private_dir
+
 ZERO = Decimal("0")
 _STATUSES = ("reserved", "settled", "released")
 
@@ -113,7 +115,7 @@ class Ledger:
 
     # ------------------------------------------------------------------ setup
     def _initialise(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(self.path.parent)
         conn = sqlite3.connect(str(self.path), timeout=30.0, isolation_level=None)
         try:
             conn.execute("PRAGMA journal_mode=WAL")

@@ -135,6 +135,7 @@ def test_missing_sources_are_fine(store, tmp_path):
 
 def test_db_is_private(store):
     assert (store.path.stat().st_mode & 0o777) == 0o600
+    assert (store.path.parent.stat().st_mode & 0o777) == 0o700
 
 
 def test_claude_quota_samples_imported_from_statusline_log(store, tmp_path):

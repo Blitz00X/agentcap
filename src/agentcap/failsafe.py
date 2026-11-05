@@ -12,6 +12,8 @@ import fcntl
 import os
 from pathlib import Path
 
+from .private import ensure_private_dir, open_private
+
 EXIT_GUARD_FAILED = 5
 
 _PARALLEL_ENV = "AGENTCAP_ALLOW_PARALLEL"
@@ -33,8 +35,9 @@ class JobLock:
         """Take the lock, or raise :class:`GuardFailure` if another job holds it."""
         if os.environ.get(_PARALLEL_ENV) == "1":
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fh = self.path.open("a+")
+        ensure_private_dir(self.path.parent)
+        fd = open_private(self.path, os.O_RDWR | os.O_CREAT)
+        fh = os.fdopen(fd, "a+")
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

@@ -42,6 +42,7 @@ def ledger(tmp_path, clock) -> Ledger:
 def test_ledger_file_is_private(ledger):
     mode = stat.S_IMODE(ledger.path.stat().st_mode)
     assert mode == 0o600
+    assert stat.S_IMODE(ledger.path.parent.stat().st_mode) == 0o700
 
 
 def test_run_cap_blocks_before_overshoot(ledger):

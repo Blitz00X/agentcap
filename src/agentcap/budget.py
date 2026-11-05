@@ -22,6 +22,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from .private import ensure_private_dir
+
 
 def budget_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME", "").strip()
@@ -90,7 +92,7 @@ def load(path: Path | None = None) -> Budget:
 
 def save(b: Budget, path: Path | None = None) -> Path:
     path = path or budget_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(path.parent)
     data = {k: (str(v) if isinstance(v, Decimal) else v) for k, v in asdict(b).items() if v is not None}
     tmp = path.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

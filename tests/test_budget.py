@@ -44,6 +44,7 @@ def test_set_rejects_bad_values(capsys):
 def test_budget_file_is_private():
     cli.main(["budget", "set", "--task-usd", "1"])
     assert budget.budget_path().stat().st_mode & 0o777 == 0o600
+    assert budget.budget_path().parent.stat().st_mode & 0o777 == 0o700
 
 
 def test_corrupt_budget_is_ignored_with_warning(capsys):
