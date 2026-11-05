@@ -551,9 +551,19 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   (`AGENTCAP_QUOTA_JOB`, `AGENTCAP_GUARDED` or `CLAUDECODE` in its environment), and the hook of
   `agentcap run --quota -- claude` denies a Bash call that runs `agentcap approve`;
   `/agentcap:approve` cannot be invoked by the model (`disable-model-invocation`). Run approve
-  from your own terminal. In the Claude Code plugin there is no such check: the model can run the
-  plugin's own script (`python3 .../scripts/agentcap_cc.py approve`, `quota` or `off`) through
-  Bash, and neither the plugin hook nor the script refuses it.
+  from your own terminal. The Claude Code plugin's `PreToolUse` hook denies, on Free and Pro, any
+  model tool call that would run its own script (`python3 .../scripts/agentcap_cc.py approve`,
+  `quota`, `off`, `setup`, `unsetup`, `statusline`, `hook`; any path, `python -m agentcap_cc`,
+  `import agentcap_cc`, an `agentcap*` glob, quoted/escaped/`$IFS` forms, inside `bash -c`/`sh -c`)
+  or touch its state dir or installed plugin files: Bash and any other tool with a `command`, and
+  Write/Edit/MultiEdit/NotebookEdit on those paths. Plain reads (`cat`, `grep`, `ls`, `jq`, ...;
+  `git` without `-c`/config/checkout-style subcommands) still pass. Your own `/agentcap:approve`,
+  `/agentcap:quota` and `/agentcap:off` keep working: Claude Code runs a slash command's `!` line
+  without `PreToolUse` hooks (measured on 2.1.318, headless). When Claude Code's working
+  directory is inside the plugin's own checkout, its code files stay editable (plugin development).
+  What still passes: a command that never names the script or state dir (a script the agent
+  writes elsewhere that builds the path at run time, `$(printf ...)` path pieces, other globs),
+  and tools that execute code without a `command` field.
   **Honest limit:** the agent runs as your OS user, so a determined agent can still clear the
   environment, edit AgentCap's state files or kill AgentCap. AgentCap guards cooperative
   workloads against accidents (loops, runaway spend), not a hostile agent; use a separate OS

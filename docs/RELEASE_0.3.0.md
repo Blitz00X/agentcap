@@ -432,7 +432,10 @@ the daemon during the run. Replacing F0 with `waitpid(-1)` fails the F0 test.
 Scope: `6b5b177..d50124f` (`src`, `scripts`; `agentcap/ops` only where it
 touches the shipped package), README, CHANGELOG and this file. Every code fix
 went RED first (test below failing on `d50124f`), then GREEN. No network, no
-model call, no auth/licence file read; processes were the tests' own.
+model call, no auth/licence file read; processes were the tests' own. R4 was
+fixed after the review (RED on `84b5f57`): it needed three headless Claude Code
+runs (haiku, subscription login, scratch project and state, no global settings
+touched) and a scratch test licence fixture.
 
 Fixed:
 
@@ -441,21 +444,10 @@ Fixed:
 | R1 | Medium-high | Loop breaker blind to a step whose first attempt was forgiven (429/408/5xx/529, and since F8 401/402/403/Gemini `API_KEY_INVALID`) and then retried unchanged: `forgive_last()` restored the streaks but left `_last_exact` on the forgiven request, so the retry was taken for a resend and skipped the step/error checks. The step counted zero times: a loop whose every step needs one retry (a rate-limited account) never tripped; one retry every other step moved the stop from step 4 to step 7. The spend cap was not affected. | `loop.py`: the snapshot also restores `_last_exact` (`608186e`). `tests/test_proxy_auth.py::test_a_loop_whose_every_step_needs_one_retry_still_trips_at_four` (429, 503, 401) |
 | R2 | Medium | Regression from the lifeline shim: the shim is a Python process (Python sets SIGPIPE and SIGXFSZ to `SIG_IGN` at startup) and `execvp` keeps an ignored signal ignored, so every agent ran with SIGPIPE ignored; a direct `Popen` (0.2.2) restores both. Measured: `while ...; do echo y; done \| head -n 1` gave 199,649 `echo: I/O error` lines instead of the producer dying; an endless producer spins forever. Node and Rust agents reset signals for their own tool children; shell/script agents and anything they exec inherited it. | `_lifeline_exec.py` restores SIGPIPE/SIGXFZ/SIGXFSZ to `SIG_DFL` before `execvp`, as `restore_signals` does (`d344e5b`). `tests/test_lifeline.py::test_spawned_agent_gets_the_signal_dispositions_a_direct_popen_gives` |
 | R3 | Low (docs) | README/CHANGELOG did not match the code: exit 5 promised for any internal error (a `--cap` run stops the agent but exits 2 for a `RuntimeError`, measured); "Free only warns" read as covering the quota lock (a Free quota job is refused with exit 2, measured); the stop ladder described only quota/harness (`--cap` is SIGTERM, then SIGKILL after 5 s); "no success between them" (any other answer, a 429 too, resets the auth streak); "the Claude Code hook denies" a Bash self-approve (only the `agentcap run --quota -- claude` hook does, see R4). | README and CHANGELOG corrected (`feb30d9`) |
+| R4 | Medium | The Claude Code plugin had no self-approve guard. After a Pro loop stop, the model's next Bash call `python3 <plugin>/scripts/agentcap_cc.py approve --session <id>` passed the plugin's `PreToolUse` hook and printed `approved (1/2): limit raised to 7.5% ...; loop breaker cleared`; `quota 100%` and `off` worked the same way. The `--quota` hook regex does not match the script, and `cmd_approve` cannot use the environment markers because `/agentcap:approve` itself runs inside Claude Code. | Measured first (Claude Code 2.1.318, headless, `--plugin-dir`, `--setting-sources project`, scratch state): a probe plugin's slash command `!` line containing the deny marker ran and its `PreToolUse` hook was never called, while the model's Bash call to the same script hit the hook and was denied. `scripts/agentcap_cc.py` `self_guard()` now runs first in `hook_pre` (Free and Pro, no turn end): it denies a model tool call whose `command` (Bash, Monitor, any tool) names the script (`agentcap_cc`, an `agentcap*` glob, `CLAUDE_PLUGIN_ROOT`, the plugin cache path), the state dir (its path forms, `state/agentcap`, `AGENTCAP_QUOTA_DIR`) or the installed plugin root, after the `--quota` hook's normaliser (quotes, escapes, `$IFS`), unless every command in it is a plain read (`cat`/`grep`/`ls`/`jq`/... and `git` without `-c`/config/checkout-style subcommands; no `$(`, backtick, `>` or `<(`); and Write/Edit/MultiEdit/NotebookEdit (any non-read tool with a path) inside the state dir or the installed plugin root (not when the session works inside the plugin's own checkout). End to end with the real plugin in one headless session: `/agentcap:approve` printed `approved (1/2): limit raised to 7.5% ...; loop breaker cleared`, the model's Bash approve was denied and `approvals` stayed 1. Remaining: a command that never names the script or the state dir (a script the agent writes elsewhere that builds the path at run time, `$(printf ...)` path pieces, other globs) and tools that execute code without a `command` field; same-OS-user limit as before. `tests/test_cc_plugin.py` (56 new cases: 30 denied self-calls incl. obfuscations, 7 state-dir tamper commands, file tools, the `!`-line approve path, the hook as a subprocess, read-only and dev-checkout passes) |
 
 Open, needs a decision (no code changed):
 
-- **R4 (medium): the Claude Code plugin has no self-approve guard.** After a
-  Pro loop stop, the model's next Bash call
-  `python3 <plugin>/scripts/agentcap_cc.py approve --session <id>` passes the
-  plugin's `PreToolUse` hook (no output) and, run with `CLAUDECODE=1`, prints
-  `approved (1/2): limit raised to 7.5% ...; loop breaker cleared` (scratch
-  run, temp state and a test licence fixture). `quota 100%` and `off` work the
-  same way before a limit is hit. The `--quota` hook regex does not match
-  `agentcap_cc.py approve`, and `cmd_approve` cannot use the environment
-  markers because `/agentcap:approve` itself runs inside Claude Code. Now
-  documented in README/CHANGELOG. Possible fix: deny those script commands in
-  the plugin hook, after a real Claude Code check that a slash command's `!`
-  line does not pass through `PreToolUse`.
 - **R5 (low): AgentCap's own state errors are reported as
   `could not start the command`, exit 127.** A symlinked `quota.lock`
   (`O_NOFOLLOW`) or an unwritable `HOME` made

@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -30,8 +31,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from agentcap.quota import (  # noqa: E402
+    STATE_ENV,
     ShareTracker,
     _atomic_write,
+    _normalized_shell_text,
     _read_json,
     baseline_from_last,
     claude_readings,
@@ -292,7 +295,121 @@ def hook_post(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
     return 0
 
 
+# ------------------------------------------------------------ self guard
+# Claude Code (measured on 2.1.318) runs a slash command's `!` line WITHOUT
+# PreToolUse hooks, while every tool call the model makes goes through them.
+# So the user's /agentcap:approve|quota|off keep working, and any model-made
+# tool call that would run this script or touch its state can be denied here.
+SELF_GUARD_REASON = (
+    "agentcap: the agent may not run AgentCap's plugin script or change its state files; "
+    "approve, quota and off belong to the user. Stop and ask the user to run "
+    "/agentcap:approve, /agentcap:quota or /agentcap:off themselves."
+)
+# the script itself (any path, `python -m agentcap_cc`, `import agentcap_cc`) or a glob for it
+_SCRIPT_RE = re.compile(r"agentcap_cc\b|agentcap\S*[*?]|CLAUDE_PLUGIN_ROOT|\.claude/plugins\S*agentcap")
+_STATE_RE = re.compile(r"state/agentcap\b|" + re.escape(STATE_ENV))
+# only plain reads of those paths may pass; anything that can execute or write is denied
+_EXEC_OR_WRITE_RE = re.compile(r"\$\(|`|>|<\(")
+_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|[;&|()]")
+READ_ONLY_HEADS = frozenset({
+    "cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "wc", "nl", "file", "stat",
+    "ls", "tree", "du", "diff", "cmp", "sha256sum", "sha1sum", "md5sum", "realpath", "readlink",
+    "basename", "dirname", "cd", "pwd", "echo", "true", "jq",
+})
+_GIT_RISKY_RE = re.compile(r"(?:^|\s)-c\b|config|alias|!|exec|upload-pack|receive-pack|ssh|checkout|restore|reset|apply|\bam\b")
+READ_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "NotebookRead"})
+PATH_KEYS = ("file_path", "notebook_path", "path")
+
+
+def _real(path: str | Path) -> str:
+    return os.path.realpath(os.path.expanduser(str(path)))
+
+
+def _inside(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _path_forms(path: Path) -> set[str]:
+    """How a command line may spell ``path``: absolute, real, ``~/``, ``$HOME/``."""
+
+    forms = {str(path).rstrip("/"), _real(path).rstrip("/")}
+    home = str(Path.home()).rstrip("/")
+    for p in list(forms):
+        if home and p.startswith(home + "/"):
+            rel = p[len(home) + 1:]
+            forms.update({f"~/{rel}", f"$HOME/{rel}", f"${{HOME}}/{rel}"})
+    return {f for f in forms if len(f) > 1}
+
+
+def _protected_roots(cwd: str) -> list[Path]:
+    """State dir always; the plugin's own code unless the session works inside its checkout."""
+
+    roots = [state_root()]
+    if not _inside(_real(cwd or "/"), _real(ROOT)):
+        roots.append(ROOT)
+    return roots
+
+
+def _read_only(command: str) -> bool:
+    """Every command in ``command`` is a plain read (the normaliser joins lines, so split first)."""
+
+    segments = [seg for line in command.splitlines()
+                for seg in _SEGMENT_SPLIT_RE.split(_normalized_shell_text(line))]
+    if any(_EXEC_OR_WRITE_RE.search(seg) for seg in segments):
+        return False
+    for seg in segments:
+        words = seg.split()
+        if not words:
+            continue
+        head = os.path.basename(words[0])
+        if head == "git" and not _GIT_RISKY_RE.search(seg):
+            continue
+        if head not in READ_ONLY_HEADS:
+            return False
+    return True
+
+
+def command_touches_plugin(command: str, cwd: str) -> bool:
+    """True when a model-made shell command would run the plugin script or alter its state."""
+
+    text = _normalized_shell_text(command)
+    hit = bool(_SCRIPT_RE.search(text) or _STATE_RE.search(text))
+    if not hit:
+        hit = any(form in text for root in _protected_roots(cwd) for form in _path_forms(root))
+    return hit and not _read_only(command)
+
+
+def path_touches_plugin(raw: str, cwd: str) -> bool:
+    base = cwd if cwd and os.path.isabs(cwd) else os.getcwd()
+    target = _real(os.path.join(base, os.path.expanduser(raw)))
+    return any(_inside(target, _real(root)) for root in _protected_roots(cwd))
+
+
+def self_guard(payload: Mapping[str, Any]) -> bool:
+    """Deny a model tool call that would approve/raise/clear its own limit (True if denied)."""
+
+    tool = payload.get("tool_name")
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool, str) or not isinstance(tool_input, Mapping):
+        return False
+    cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
+    command = tool_input.get("command")
+    if isinstance(command, str) and command_touches_plugin(command, cwd):
+        return True
+    if tool in READ_TOOLS:
+        return False
+    return any(isinstance(tool_input.get(k), str) and tool_input[k] and path_touches_plugin(tool_input[k], cwd)
+               for k in PATH_KEYS)
+
+
 def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bool) -> int:
+    if self_guard(payload):  # every tier: these settings are the user's, never the agent's
+        _emit(stdout, {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                              "permissionDecisionReason": SELF_GUARD_REASON}})
+        return 0
     if loop_pre(payload, stdout, now=now, pro=pro):
         return 0
     sid = payload.get("session_id")

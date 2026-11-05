@@ -304,3 +304,168 @@ def test_stop_receipt_has_last_tool(env):
 def test_approve_command_file_exists():
     text = (ROOT / "commands" / "approve.md").read_text()
     assert "approve" in text and "disable-model-invocation: true" in text
+
+
+# ------------------------------- 0.3.0: the model may not approve/raise/clear itself
+# Measured with Claude Code 2.1.318 (headless, --plugin-dir): a slash command's
+# `!` line runs WITHOUT going through PreToolUse hooks, while the model's own Bash
+# call to the same script does hit them.  So hook_pre can deny every model-made
+# invocation of the plugin script and /agentcap:approve etc. keep working.
+P = "/home/u/.claude/plugins/cache/agentcap/agentcap/0.3.0/scripts/agentcap_cc.py"
+
+MODEL_SELF_CALLS = [
+    f"python3 {P} approve --session {SID}",
+    f'python3 "${{CLAUDE_PLUGIN_ROOT}}/scripts/agentcap_cc.py" approve --session "{SID}"',
+    f"python3 {P} 'approve'",
+    f'python3 {P} "approve"',
+    f"python3 {P} a''pprove",
+    f"python3 {P} \\approve",
+    f"python3${{IFS}}{P}${{IFS}}approve",
+    f"python3 {P} quota 50%",
+    f"python3 {P} quota 100% week --session {SID}",
+    f"python3 {P} off --session {SID}",
+    f"python3 {P} unsetup",
+    f"python3 {P} setup",
+    f"echo '{{}}' | python3 {P} statusline",
+    f"echo '{{}}' | python3 {P} hook post",
+    f"bash -c \"python3 {P} approve\"",
+    f"sh -c 'python3 {P} approve'",
+    f"cd /home/u/.claude/plugins/cache/agentcap/agentcap/0.3.0/scripts && python3 -m agentcap_cc approve",
+    f"cd /x && python3 ./agentcap_cc.py approve",
+    f"{P} approve",
+    f"env -u CLAUDECODE /usr/bin/python3.12 {P} approve",
+    f"A=approve; python3 {P} $A",
+    f"python3 {P} $(printf appr; printf ove)",
+    "python3 /home/u/.claude/plugins/cache/agentcap/agentcap/0.3.0/scripts/agentcap*.py approve",
+    f"python3 -c \"import runpy,sys; sys.argv=['x','approve']; runpy.run_path('{P}')\"",
+    f"python3 -c 'import sys; sys.path.insert(0, \"/p/scripts\"); import agentcap_cc; agentcap_cc.main([\"approve\"])'",
+    f"sed -i 's/APPROVE_MAX = 2/APPROVE_MAX = 99/' {P}",
+    f"cp /tmp/evil.py {P}",
+    f"cat {P}\npython3 {P} approve",  # the normaliser joins lines; a newline is still a new command
+    f"git -c core.pager='python3 {P} approve' log -1",
+    f"cat {P} > /tmp/copy.py",
+]
+
+
+def _deny_reason(d):
+    assert d is not None, "expected a deny, got silence"
+    hs = d["hookSpecificOutput"]
+    assert hs["hookEventName"] == "PreToolUse" and hs["permissionDecision"] == "deny"
+    return hs["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("command", MODEL_SELF_CALLS)
+def test_model_bash_call_to_plugin_script_is_denied(env, command):
+    pro(env)
+    reason = _deny_reason(_pre(command))
+    assert "/agentcap:approve" in reason and "user" in reason
+
+
+@pytest.mark.parametrize("command", MODEL_SELF_CALLS[:3])
+def test_model_self_call_is_denied_on_free_too(env, command):
+    reason = _deny_reason(_pre(command))
+    assert "user" in reason
+
+
+def test_model_self_approve_after_pro_loop_stop_is_denied_and_changes_nothing(env):
+    pro(env)
+    statusline(sl_payload(1.0)); cmd("quota", "5%"); statusline(sl_payload(2.0))
+    for _ in range(4):
+        d = _pre()
+    assert d["continue"] is False  # loop breaker stopped the agent
+    before_loop = json.loads(cc._loop_path(SID).read_text())
+    before_state = cc.load(SID)
+    d = _pre(f"python3 {SCRIPT} approve --session {SID}")
+    _deny_reason(d)
+    assert json.loads(cc._loop_path(SID).read_text()) == before_loop
+    assert cc.load(SID) == before_state and cc.load(SID)["quota"] == 5.0
+
+
+def test_user_slash_command_path_still_approves(env):
+    """/agentcap:approve runs the script from a `!` line, outside PreToolUse."""
+    pro(env)
+    statusline(sl_payload(1.0)); cmd("quota", "5%"); statusline(sl_payload(2.0))
+    for _ in range(4):
+        _pre()
+    _deny_reason(_pre(f"python3 {SCRIPT} approve --session {SID}"))
+    out = cmd("approve")  # what the `!` line executes
+    assert "approved (1/2)" in out and "loop breaker cleared" in out
+    assert cc.load(SID)["quota"] == 7.5
+
+
+def test_state_changing_slash_commands_run_from_bang_lines():
+    for name in ("approve", "quota", "off", "setup", "unsetup"):
+        text = (ROOT / "commands" / f"{name}.md").read_text()
+        bang = [ln for ln in text.splitlines() if ln.startswith("!`") and "agentcap_cc.py" in ln]
+        assert len(bang) == 1 and f"agentcap_cc.py\" {name}" in bang[0], name
+        assert "disable-model-invocation: true" in text
+
+
+def test_hook_subprocess_denies_self_approve(env):
+    """Exactly how hooks.json runs it: `python3 <root>/scripts/agentcap_cc.py hook pre`."""
+    pro(env)
+    payload = dict(PRE, tool_input={"command": f"python3 {SCRIPT} approve --session {SID}"})
+    res = subprocess.run([sys.executable, str(SCRIPT), "hook", "pre"], input=json.dumps(payload),
+                         capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("tool", ["Monitor", "PowerShell", "mcp__shell__run"])
+def test_any_tool_with_a_command_field_is_checked(env, tool):
+    _deny_reason(hook("pre", dict(PRE, tool_name=tool, tool_input={"command": f"python3 {P} approve"})))
+
+
+def test_bash_tampering_with_state_dir_is_denied(env):
+    state = cc.state_root()
+    for command in (
+        f"rm {state}/cc/loops/{SID}.json",
+        f"echo '{{}}' > {cc.cc_dir()}/sessions/{SID}.json",
+        f"sed -i s/approvals/x/ {cc.session_path(SID)}",
+        "rm -rf ~/.local/state/agentcap/quota/cc",
+        "rm -rf $HOME/.local/state/agentcap/quota/cc/loops",
+        "python3 -c \"import os; os.remove(os.environ['AGENTCAP_QUOTA_DIR'] + '/cc/loops/x.json')\"",
+        "rm -rf $AGENTCAP_QUOTA_DIR/cc",
+    ):
+        _deny_reason(_pre(command))
+
+
+@pytest.mark.parametrize("tool,key", [("Write", "file_path"), ("Edit", "file_path"),
+                                      ("MultiEdit", "file_path"), ("NotebookEdit", "notebook_path")])
+def test_file_tools_on_state_dir_are_denied(env, tool, key):
+    pro(env)
+    for target in (str(cc.session_path(SID)), str(cc._loop_path(SID)), str(cc.state_root() / "claude_last.json")):
+        _deny_reason(hook("pre", dict(PRE, tool_name=tool, tool_input={key: target, "content": "{}"})))
+    rel = dict(PRE, cwd=str(cc.state_root()), tool_name=tool, tool_input={key: "cc/sessions/x.json"})
+    _deny_reason(hook("pre", rel))
+
+
+def test_file_tools_on_installed_plugin_code_are_denied(env):
+    for name in ("scripts/agentcap_cc.py", "hooks/hooks.json", "commands/approve.md"):
+        _deny_reason(hook("pre", dict(PRE, tool_name="Edit", tool_input={"file_path": str(ROOT / name)})))
+
+
+ALLOWED = [
+    "pytest -q",
+    "git commit -m 'approve the quota change'",
+    "agentcap status",
+    f"cat {SCRIPT}",
+    f"grep -n hook_pre {SCRIPT} | head -5",
+    "ls ~/.claude/plugins",
+    f"ls {P.rsplit('/', 1)[0]}",
+    "cat ${HOME}/.local/state/agentcap/quota/cc/sessions/x.json | jq .quota",
+    "git add scripts/agentcap_cc.py tests/test_cc_plugin.py && git diff --cached --stat",
+]
+
+
+@pytest.mark.parametrize("command", ALLOWED)
+def test_ordinary_and_read_only_commands_pass(env, command):
+    pro(env)
+    assert _pre(command) is None
+
+
+def test_ordinary_file_edits_pass_and_plugin_dev_checkout_is_editable(env):
+    assert hook("pre", dict(PRE, tool_name="Write", tool_input={"file_path": "/w/notes.md", "content": "x"})) is None
+    assert hook("pre", dict(PRE, tool_name="Read", tool_input={"file_path": str(cc.session_path(SID))})) is None
+    dev = dict(PRE, cwd=str(ROOT), tool_name="Edit", tool_input={"file_path": str(ROOT / "scripts" / "agentcap_cc.py")})
+    assert hook("pre", dev) is None  # working on the plugin itself, from its checkout
