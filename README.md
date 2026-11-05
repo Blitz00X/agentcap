@@ -445,8 +445,12 @@ period AgentCap sends SIGINT and the session ends; Codex's sandbox can't run com
    running; real usage still settles the reservation. Clamping is on by default
    and can be disabled with `--no-clamp`.
 6. If even a minimal clamped request cannot fit, the request is blocked and the
-   whole child process group is terminated (`SIGTERM`, then `SIGKILL` after
-   5s). `agentcap run` exits with code `3`. Pro's loop/burn breaker exits
+   whole child process group is terminated. In proxy (`--cap`) mode that is
+   `SIGTERM`, then `SIGKILL` after 5 s. Quota and harness (`--quota`,
+   `--tokens`, `--log-cap`) modes use `SIGINT` → `SIGTERM` → `SIGKILL`
+   (5 s / 3 s / 2 s) so a headless agent can end its turn; both paths are
+   described under "Stopping, fail-closed and self-approval". `agentcap run`
+   exits with code `3`. Pro's loop/burn breaker exits
    with `4` (same step 4 times in a row, 8 failing tool results in a row, or a
    burn rate above `--max-burn` $/min; see Free vs Pro).
    The kill and its red alert fire at most once per run; later rejected
@@ -495,15 +499,27 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   tokenizer differences), the final spend can exceed the cap by that one
   request's estimation error. AgentCap emits an `overshoot` alert when a
   settlement exceeds its reservation.
-- The ledger lives at `~/.local/share/agentcap/ledger.sqlite3`
+- The ledger lives at `~/.local/state/agentcap/ledger.sqlite3`
   (override with `$AGENTCAP_DB`).
 
 ### Stopping, fail-closed and self-approval (0.3, Linux-verified)
 
 - **Whole process tree.** A stop sends SIGINT to the agent's process group, then SIGTERM, then
   SIGKILL (5 s / 3 s / 2 s). Helpers the agent left behind in its group are also killed after a
-  normal exit, so a dev server started by the agent does not outlive the run. A process that
-  calls `setsid()` or daemonizes itself leaves the group and is not tracked. Interrupting a job
+  normal exit, so a dev server started by the agent does not outlive the run.
+  On Linux AgentCap also enables `PR_SET_CHILD_SUBREAPER` for the run: descendants that call
+  `setsid()` or double-fork are adopted, matched against a pre-run snapshot (PID + start time),
+  and swept with SIGTERM then SIGKILL after a normal exit or a stop. It prints
+  `killed N process(es) that left the agent's process group` when that happens. Daemons the agent
+  starts (a dev server, a `tmux` server, a Gradle daemon) are part of its tree and stop with the run.
+  If AgentCap itself is SIGKILLed or OOM-killed, the parent-death lifeline (`PR_SET_PDEATHSIG`)
+  kills the direct agent and a small watchdog SIGKILLs the agent's process group, which also covers
+  a real agent started by a launcher (Codex's npm wrapper on Node without `process.execve`) and
+  the agent's tool processes.
+  Limits: on non-Linux only the process group is cleaned and there is no lifeline. A process that
+  left the agent's group (`setsid`/daemonized) before AgentCap itself was SIGKILLed can still
+  escape: no userspace process can clean up after its own SIGKILL. Use a container/cgroup or a
+  separate OS user when the agent is not trusted. Interrupting a job
   can leave its work half done (a migration, a deploy): that is the job's responsibility, so
   commit before a guarded run.
 - **Fail-closed.** On Pro the agent is stopped with exit code 5 instead of running unguarded when

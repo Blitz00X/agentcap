@@ -1,14 +1,28 @@
 # Changelog
 
-## Unreleased (harness-adapters)
+## 0.3.0
+- **Fail-closed guards for unattended runs.** A second quota job on the same account is refused (exit 2; `AGENTCAP_ALLOW_PARALLEL=1` opts out); unknown opencode/agy log schemas, an unreadable Codex rollout log and AgentCap internal errors stop the agent with exit 5 on Pro instead of running unguarded.
+- **Whole-process-tree stops.** Quota/harness stops send SIGINT to the process group, then SIGTERM, then SIGKILL (5 s / 3 s / 2 s); proxy (`--cap`) stops send SIGTERM then SIGKILL (5 s). Helpers left in the group are reaped after a normal exit. A process that changes its uid or enters another PID namespace is still out of scope.
+- **Parent-death lifeline.** On Linux the guarded process starts through a small shim that arms `PR_SET_PDEATHSIG`, and a watchdog process SIGKILLs the agent's whole process group if AgentCap dies. So a SIGKILLed or OOM-killed AgentCap takes the agent with it, including a real agent started by a launcher (Codex's npm wrapper spawns the native binary as a child on Node without `process.execve`) and the agent's tool processes. A command that cannot start is still reported as "could not start the command" (exit 127).
+- **Escaped-descendant sweep (T3).** On Linux AgentCap sets `PR_SET_CHILD_SUBREAPER` for the run, adopts descendants that call `setsid()`/double-fork, and sweeps them (SIGTERM → SIGKILL, PID start-time checked) after a normal exit or stop. The same `(pid, start)` identity is held through TERM, wait and KILL, so a reused PID is never signalled. Adopted helpers that already exited are reaped, so they no longer stretch the stop/cleanup waits. Unrelated children present before the run, and anything they start, are excluded. Daemons the agent starts (a dev server, a `tmux` server, a Gradle daemon) are part of its tree and are stopped at the end of the run. Residual: a process that left the agent's group (`setsid`/daemonized) before AgentCap itself is SIGKILLed can still escape; use a container/cgroup against hostile agents.
+- **Self-approval guard.** `agentcap approve` refuses inside an agent session (`AGENTCAP_QUOTA_JOB`, `AGENTCAP_GUARDED`, `CLAUDECODE`); the Claude Code hook denies a Bash call that runs `agentcap approve`, including quoted, escaped and `$IFS`-obfuscated forms. Honest limit: a determined agent with the same OS user can still edit state; use a separate user/container against hostile agents.
+- **Harness log contracts.** opencode, agy, Claude Code statusline/PreToolUse and Codex rollout fields are pinned in `agentcap/logschema.py` and checked against recorded fixtures, with an opt-in live check (`AGENTCAP_LIVE_CONTRACT=1`).
+- **Private local state.** `~/.local/state/agentcap`, quota job files, the ledger, receipts and history are created 0700/0600 instead of inheriting a permissive umask.
+- **Clearer approve message.** Approving after a loop/error stop says which breaker was cleared; at 100% it says the quota no longer stops the job instead of showing "150% of the quota".
+- **opencode harness runs use `--standalone`.** Token/quota mode no longer fails when another opencode instance owns the shared managed-service port.
 - Fix: proxy loop breaker missed tool loops when tool-call ids look like `call-<uuid>` (OpenRouter/opencode); hyphenated and UUID ids are now treated as volatile.
 - Fix: harness token/quota cap alerts no longer print `$?` placeholders; quota alerts show the limit and a rounded share.
 - Fix: harness quota share never goes backwards between polls (final summary showed 0.00%).
 - Fix: no spurious "reported an API error" line after agentcap's own stop.
+- Fix: quota deny is a pause the model resumes after `agentcap approve`, not a permanent stop.
+- Fix: same-window % jitter (12→13→12) no longer counts as a window reset (inflated share to 13%).
+- Fix: failing tool calls are counted live via Claude Code `PostToolUse`/`PostToolUseFailure` hooks, so parallel batches reach the error breaker.
+- Fix: 429/5xx retries (identical resends) count neither as a repeated step nor as failing tool calls.
 - `--quota` help now lists agy and says opencode exposes no quota.
 - **opencode and agy (Antigravity CLI) support.** `agentcap run --tokens N -- opencode run ...` / `-- agy -p ...` reads the agent's own JSON event stream (`opencode run --format json`, `agy --output-format stream-json`) and enforces a token cap, the loop breaker (same tool call 4x) and the error breaker (8 failing tool calls in a row); stop is SIGINT. `--log-cap USD` caps on opencode's own cost estimate (for subscriptions such as opencode Go).
 - **agy quota mode:** `agentcap run --quota 5% --window 5h -- agy -p ...` reads `remaining_fraction` from `agy -p /quota --output-format json` (no agent turn, no quota spent) for the model's group. opencode exposes no quota %, so `--quota` is refused for it with a pointer to `--tokens`/`--log-cap`.
 - **$ mode:** `agentcap run --cap 1 -- opencode run -m agentcap/<model> ...` injects a provider through `OPENCODE_CONFIG_CONTENT` (user config untouched, run forced `--standalone`); `agy` is routed through the Gemini API route (`modelProvider: gemini`, `GEMINI_API_KEY`).
+- Version 0.3.0 (package and plugin manifest).
 
 ## 0.2.2
 - Codex quota under 1% (`--quota 0.5%`) now prints a warning at start. Codex reports quota in whole percent, so such a cap cannot trigger until a full 1% is used (seen in a real ChatGPT-plan run). README note added.
