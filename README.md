@@ -521,7 +521,12 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   Limits: on non-Linux only the process group is cleaned and there is no lifeline. A process that
   left the agent's group (`setsid`/daemonized) before AgentCap itself was SIGKILLed can still
   escape: no userspace process can clean up after its own SIGKILL. Use a container/cgroup or a
-  separate OS user when the agent is not trusted. Interrupting a job
+  separate OS user when the agent is not trusted. Adopted helpers that exit during a run stay
+  zombies until it ends (the agent's group is reaped once the agent exits, the rest by the final
+  sweep): `/proc` cannot tell an adopted `setsid` helper from a child AgentCap's own process
+  started in a new session, and taking that child's exit status would make it report 0. A long
+  run whose agent keeps leaving short-lived detached helpers holds one PID per finished helper,
+  counted against `ulimit -u`, until the run ends. Interrupting a job
   can leave its work half done (a migration, a deploy): that is the job's responsibility, so
   commit before a guarded run.
 - **Fail-closed.** On Pro the agent is stopped with exit code 5 instead of running unguarded when

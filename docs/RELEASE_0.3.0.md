@@ -323,6 +323,87 @@ Not verified against a live provider. A 403 that is not about credentials
 (e.g. a region block) is treated the same way; the agent cannot make progress
 in that case either.
 
+### Known limit: adopted zombies wait for the end of the run (evaluated 2026-11-05)
+
+As subreaper AgentCap adopts the agent's orphaned helpers; once one exits it
+is AgentCap's zombie and only AgentCap can reap it. None is reaped while the
+run is going on: helpers still in the agent's process group are reaped by
+`_reap_group_zombies` once the leader's `Popen` has reaped the leader (F0), the
+rest by the end-of-run sweep. A long run whose agent keeps leaving short-lived
+detached helpers therefore accumulates zombies. Each holds a PID, counts
+against the user's `ulimit -u` (RLIMIT_NPROC) and its cgroup's `pids.max`, and
+still answers `kill(pid, 0)` until the run ends; then all are reaped.
+Measured: 40 unreaped exited children raised the cgroup's `pids.current` from
+29 to 69, and with `ulimit -u` set 20 above the user's task count `fork`
+failed with EAGAIN after 19 of them.
+
+Reaping them during the run was evaluated and is **not provably safe**:
+
+- AgentCap's process has children whose exit status it must not take. During
+  a run: the agent (`lifeline.spawn`, its own session; reaped by
+  `Popen.poll/wait` in the monitor loop, `_terminate` and `stop_tree`), the
+  group watchdog (its own session; `GroupWatchdog.disarm`) and, in harness
+  quota mode, `agy -p /quota` (`subprocess.run` in AgentCap's own group,
+  synchronous in the monitor loop, every 20 s). The proxy, alert and
+  log-reader threads start nothing; the Claude statusline/hook helpers are
+  children of the agent, not of AgentCap; `agentcap.ops` is not part of a run.
+  An embedding program (the test suite runs `Runner` in-process) and libraries
+  can add any child at any time.
+- Taking such a child's status is silent. In CPython 3.11.15, 3.12.3 and
+  3.14.4 (sources and a run on this machine; 3.13 has the same code)
+  `Popen._internal_poll` maps ECHILD to `returncode = 0` and `_try_wait` maps
+  `ChildProcessError` to status 0: a child that exited 7 reported 0 from both
+  `poll()` and `wait()` after another `waitpid` took it. asyncio's child
+  watchers report 255. A blanket `waitpid(-1)` or SIGCHLD reaper does this to
+  every child.
+- A per-PID reaper has to tell "adopted" from "forked by this process", and in
+  the reported case it cannot. `/proc/<pid>/stat` holds only the current
+  parent. Measured under `PR_SET_CHILD_SUBREAPER`: an adopted `setsid` helper
+  whose shell had exited and a child started with
+  `subprocess.Popen(..., start_new_session=True)` were both zombies with PPid =
+  AgentCap, pgrp = session = their own PID and the same start tick (a zombie's
+  `/proc/<pid>/environ` is empty). A registry of AgentCap's own spawns cannot
+  be complete: `os.register_at_fork` sees `os.fork()` but not
+  `subprocess.Popen` (`_posixsubprocess.fork_exec`) or `os.posix_spawn`
+  (verified), and `multiprocessing`'s spawn, forkserver and resource tracker
+  call `_posixsubprocess.fork_exec` directly.
+- What *is* provable, and was not shipped: a process forked by any thread of
+  AgentCap's process stays in AgentCap's session or, after `setsid()`, in a
+  session it leads. A zombie child whose session ID is neither AgentCap's nor
+  its own PID (any member of the agent's session, its process group included,
+  and any non-leader of another session: a double-fork daemon, a background
+  job of a detached shell) therefore cannot be AgentCap's own child, and
+  reaping exactly those needs no registry. It still leaves the `setsid` helper
+  itself, a session leader, for the end-of-run sweep, which is the reported
+  case, so it is a candidate for a later release rather than part of 0.3.0.
+
+F0 re-checked: `_reap_group_zombies` (`waitpid(-pgid, WNOHANG)`) reaps only
+AgentCap's children in the agent's process group. A group never spans two
+sessions; the agent leads its own session, the watchdog leads another (now
+asserted by a test), and any other child of AgentCap's process is in
+AgentCap's session or leads a new one, so none of them can be in that group.
+Besides adopted helpers it can only take the leader's status, and every caller
+runs it after the leader's `Popen` reaped the leader, except `Runner.run`'s
+cleanup when the leader outlived the stop (the SIGKILL wait expired) or an
+exception ended the run; there the exit code is already decided and nothing
+reads the leader's status afterwards. Theoretical residual: if the agent's
+group has emptied and the kernel gives its number to a new group of
+AgentCap's within one 50 ms poll, `waitpid(-pgid)` (and `killpg`) would reach
+that group; that needs a full PID wrap (pid_max 4194304 here) in that window.
+
+Tests: `tests/test_child_status.py` (`--cap`, `--tokens` and `--quota` runs:
+the agent leaves an in-group background job, a `setsid` helper and a
+double-fork daemon behind; children started during the run in AgentCap's
+group, in a new session and in a new group keep exit codes 7, 9 and 11 after
+1.5 s of monitor ticks; the agent keeps exit code 5; nothing adopted outlives
+the run) and `tests/test_procstop.py::test_group_reaping_takes_only_the_agents_adopted_zombie`.
+RED was checked by injecting reapers into the three monitor loops from a
+scratch pytest plugin (not committed): blanket `waitpid(-1)`, "every zombie
+child except the agent and the watchdog" and "every zombie child outside
+AgentCap's session" each failed all three modes, having taken the statuses 7,
+9 and 11; the session-ID rule above passed and reaped the background job and
+the daemon during the run. Replacing F0 with `waitpid(-1)` fails the F0 test.
+
 ## Remaining human steps
 
 1. Review the uncommitted diff (no commit was made). The commit must include
@@ -341,3 +422,7 @@ in that case either.
    daemonized) before AgentCap itself is SIGKILLed can still escape; a
    cgroup/container or separate OS user is required for that threat model
    (documented in the README).
+7. Optional: decide whether to ship the session-ID reaper described under
+   "Known limit: adopted zombies wait for the end of the run". It would reap
+   the agent's in-session helpers and double-fork daemons during a run;
+   `setsid` helpers would still wait for the end of the run.

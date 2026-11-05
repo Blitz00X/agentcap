@@ -24,6 +24,7 @@ from agentcap.procstop import (
     subreaper_supported,
 )
 from agentcap import procstop as procstop_module
+from agentcap.lifeline import GroupWatchdog
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix", reason="POSIX process groups and signals are required"
@@ -553,6 +554,61 @@ def test_stop_tree_does_not_escalate_because_of_an_adopted_zombie():
     finally:
         _cleanup_adopted(job)
         _kill_group(proc, pgid)
+        guard.close()
+
+
+@pytest.mark.skipif(not subreaper_supported(), reason="Linux subreaper is required")
+def test_group_reaping_takes_only_the_agents_adopted_zombie():
+    """``waitpid(-pgid)`` must never take a status that belongs to AgentCap.
+
+    A process group never spans two sessions.  The agent leads its own
+    session, the watchdog runs in a session of its own, and every other child
+    this process starts is in AgentCap's session (its group or a new one) or
+    leads a new session.  So once the leader's Popen has reaped it, only the
+    agent's adopted helpers can be in its group: the watchdog and children
+    started during the run keep their exit statuses.
+    """
+    watchdog = GroupWatchdog()
+    guard = ProcessTreeGuard()
+    own: list[tuple[subprocess.Popen, int]] = []
+    proc = job = None
+    try:
+        assert watchdog.start() is True  # before the guard, as in every run path
+        assert guard.start() is True
+        proc, pgid, job = _spawn_background_job(0.2)  # the leader is already reaped
+        keeper = watchdog._proc
+        assert keeper is not None
+        assert os.getsid(keeper.pid) == keeper.pid == os.getpgid(keeper.pid)
+        assert os.getpgid(keeper.pid) != pgid, "the watchdog is in the agent's process group"
+        own = [
+            (subprocess.Popen([sys.executable, "-c", "raise SystemExit(7)"]), 7),
+            (subprocess.Popen([sys.executable, "-c", "raise SystemExit(9)"],
+                              start_new_session=True), 9),
+            (subprocess.Popen([sys.executable, "-c", "raise SystemExit(11)"],
+                              process_group=0), 11),
+        ]
+        watchdog._send(b"done\n")  # it exits and stays our zombie until disarm()
+        exited = [job, keeper.pid, *(child.pid for child, _ in own)]
+        assert _wait_until(lambda: all(_proc_state(pid) == "Z" for pid in exited), SPAWN_TIMEOUT)
+
+        procstop_module._reap_group_zombies(pgid)
+
+        assert _proc_state(job) is None, "the adopted zombie in the agent's group was left"
+        assert _proc_state(keeper.pid) == "Z", "group reaping took the watchdog's exit status"
+        for child, code in own:
+            assert _proc_state(child.pid) == "Z", f"group reaping took child {child.pid}'s status"
+            assert child.wait(timeout=SPAWN_TIMEOUT) == code
+    finally:
+        for child, _code in own:
+            try:
+                child.wait(timeout=SPAWN_TIMEOUT)
+            except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+                child.kill()
+        watchdog.disarm()
+        if job is not None:
+            _cleanup_adopted(job)
+        if proc is not None:
+            _kill_group(proc, proc.pid)
         guard.close()
 
 
