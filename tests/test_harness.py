@@ -247,6 +247,11 @@ def _pro(monkeypatch):
     monkeypatch.setattr(cli, "status_from_environment", lambda: LicenseStatus(True, "pro", "test"))
 
 
+def _free(monkeypatch):
+    from agentcap.license import LicenseStatus
+    monkeypatch.setattr(cli, "status_from_environment", lambda: LicenseStatus(False, "free", "test"))
+
+
 def test_cli_tokens_cap_opencode_pro(fakebin, tmp_path, monkeypatch, capsys):
     _pro(monkeypatch)
     monkeypatch.setenv("FAKE_N", "20")
@@ -269,6 +274,7 @@ def test_cli_quota_agy_pro(fakebin, tmp_path, monkeypatch, capsys):
 
 
 def test_cli_tokens_free_observes(fakebin, monkeypatch, capsys):
+    _free(monkeypatch)
     monkeypatch.setenv("FAKE_N", "6"); monkeypatch.setenv("FAKE_SLEEP", "0.05")
     assert cli.main(["run", "--tokens", "2500", "--", "opencode", "run", "hi"]) == 0
     assert "would have stopped" in capsys.readouterr().err
