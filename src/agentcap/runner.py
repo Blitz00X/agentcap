@@ -55,10 +55,15 @@ from .proxy import (
 
 EXIT_CAP_EXCEEDED = 3
 EXIT_LOOP_DETECTED = 4
+#: The provider refused the credentials/account (401/402/403) several times in
+#: a row.  Like AgentCap's other exit-2 refusals this is a setup problem a
+#: human has to fix; rerunning unchanged cannot help.
+EXIT_UPSTREAM_AUTH_FAILED = 2
 
 EXIT_REASONS = {
     "cap_exceeded": EXIT_CAP_EXCEEDED,
     "loop_detected": EXIT_LOOP_DETECTED,
+    "upstream_auth_failed": EXIT_UPSTREAM_AUTH_FAILED,
 }
 
 CAP_ENV = "AGENTCAP_CAP"
@@ -272,6 +277,7 @@ class Runner:
                 raise TypeError("config must be a ProxyConfig")
             config.on_cap_exceeded = self._on_cap_exceeded
             config.on_loop_detected = self._on_loop_detected
+            config.on_upstream_auth_failed = self._on_upstream_auth_failed
             if openai_upstream:
                 config.openai_upstream = openai_upstream.rstrip("/")
             if gemini_upstream:
@@ -303,6 +309,7 @@ class Runner:
                 clock=self.clock,
                 on_cap_exceeded=self._on_cap_exceeded,
                 on_loop_detected=self._on_loop_detected,
+                on_upstream_auth_failed=self._on_upstream_auth_failed,
                 openai_upstream=openai_upstream or DEFAULT_OPENAI_UPSTREAM,
                 gemini_upstream=gemini_upstream or DEFAULT_GEMINI_UPSTREAM,
                 anthropic_upstream=anthropic_upstream or DEFAULT_ANTHROPIC_UPSTREAM,
@@ -324,6 +331,9 @@ class Runner:
 
     def _on_loop_detected(self, payload: Mapping[str, Any]) -> None:
         self._trip("loop_detected", payload)
+
+    def _on_upstream_auth_failed(self, payload: Mapping[str, Any]) -> None:
+        self._trip("upstream_auth_failed", payload)
 
     def _emit_event(self, event: Mapping[str, Any]) -> None:
         """Attach the run id before handing an accounting event to alerts."""
@@ -587,15 +597,44 @@ class Runner:
             elif self._proxy is not None and self._proxy.cap_reached():
                 reason = "cap_exceeded"
                 exit_code = EXIT_CAP_EXCEEDED
+            elif (
+                reason == "child_exit"
+                and self._proxy is not None
+                and getattr(self._proxy, "auth_reject_streak", 0) > 0
+            ):
+                # The agent gave up on its own after the upstream refused its
+                # credentials: say why, but keep the agent's own exit code.
+                reason = "upstream_auth_failed"
             self.summary = self._build_summary(reason, exit_code)
             self._print_summary(self.summary)
             if self.child is not None and self.summary.requests == 0:
                 self._warn_no_requests()
                 self._hint_no_requests()
             self._hint_first_request_refused(self.summary)
+            self._hint_upstream_rejected(self.summary)
             self._repeat_loop_nudge()
             self._spend_receipt(self.summary)
         return exit_code
+
+    def _hint_upstream_rejected(self, summary: RunSummary) -> None:
+        """Repeat the plain "upstream rejected" line under the summary."""
+
+        if summary.reason != "upstream_auth_failed" or self._proxy is None:
+            return
+        rejection = getattr(self._proxy, "auth_rejection", None)
+        if not rejection:
+            return
+        from .alerts import format_alert
+
+        self._print_hint(
+            format_alert(
+                {
+                    **rejection,
+                    "run_id": self.run_id,
+                    "spent_usd": str(summary.spent_usd),
+                }
+            )
+        )
 
     # ------------------------------------------------------------ 0.1.5 extras
     def _repeat_loop_nudge(self) -> None:
@@ -754,5 +793,6 @@ __all__ = [
     "RunSummary",
     "EXIT_CAP_EXCEEDED",
     "EXIT_LOOP_DETECTED",
+    "EXIT_UPSTREAM_AUTH_FAILED",
     "cap_from_env",
 ]

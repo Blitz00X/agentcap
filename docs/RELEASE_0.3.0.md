@@ -298,6 +298,31 @@ timeouts if only an unsignallable member keeps the group alive. Tests: the F5
 block in `tests/test_procstop.py` (mocked `/proc`, `os.kill` and clock) and one
 warning test each in `test_runner.py`, `test_harness.py`, `test_quota.py`.
 
+F8 (fixed on `hardening-0.3`): a real Codex CLI 0.166 run against OpenRouter
+with a key the upstream rejected (HTTP 401 `User not found.`) was stopped as
+`loop_detected` (exit 4) after Codex's "Reconnecting..." resends: the
+identical resends hit the exact-hash loop detector, because only
+408/429/5xx/529 answers were forgiven. Now 401, 402, 403 and Gemini's 400
+`API_KEY_INVALID` are detected once, on the response returned by both the
+streaming and non-streaming senders, for the OpenAI (chat/Responses),
+Anthropic and Gemini routes. They are forgiven like retryable statuses and
+printed as `upstream rejected the request (HTTP 401: User not found.) — check
+the API key for openrouter.ai; nothing was spent.` Only a JSON
+`error.message` is shown: control characters removed, key-shaped text
+(`sk-…`, `AIza…`, bearer tokens, `key=…`, long digit-bearing tokens) redacted,
+120 characters at most; headers are never read. Three rejections in a row
+(no other answer between them) stop the run on Free and Pro with reason
+`upstream_auth_failed` and exit 2, AgentCap's existing "setup problem, fix and
+rerun" code. No new exit code: 5 means AgentCap itself could not guard, which
+would blame AgentCap for a bad key. If the agent exits first, the reason is
+still `upstream_auth_failed` and its exit code is kept. Real loops on 200
+answers still stop at the 4th step (exit 4). Tests:
+`tests/test_proxy_auth.py` (38, including the local fake Anthropic upstream;
+`agentcap serve` reports only and never marks itself stopped).
+Not verified against a live provider. A 403 that is not about credentials
+(e.g. a region block) is treated the same way; the agent cannot make progress
+in that case either.
+
 ## Remaining human steps
 
 1. Review the uncommitted diff (no commit was made). The commit must include

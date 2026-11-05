@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import ROUND_CEILING, Decimal
 from typing import Any, AsyncIterator, Callable, Iterable, Mapping
+from urllib.parse import urlsplit
 
 import httpx
 from starlette.applications import Starlette
@@ -74,6 +75,26 @@ from .usage import (
 )
 
 __all__ = ["ProxyConfig", "create_app"]
+
+#: Upstream answers that mean the credentials or the account were refused
+#: (401 bad key, 402 no credits on OpenRouter, 403 no access).  Resending the
+#: same request cannot fix them, so they are reported as such, never as a loop.
+AUTH_REJECTED_STATUSES = frozenset({401, 402, 403})
+#: Gemini answers an invalid API key with 400 + this ErrorInfo reason.
+_GEMINI_KEY_INVALID = "API_KEY_INVALID"
+_ERROR_BODY_MAX = 65536
+_ERROR_MESSAGE_MAX = 120
+_KEY_SHAPED = (
+    re.compile(r"(?i)\bbearer\s+\S+"),
+    re.compile(r"(?i)\b(?:sk|pk|rk)-[A-Za-z0-9_\-*.]{4,}"),
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{10,}"),
+    re.compile(
+        r"(?i)\b(?:x-goog-api-key|x-api-key|api[_-]?key|authorization|token|"
+        r"secret|password)\s*[:=]\s*\S+"
+    ),
+)
+#: Any long token-like run that contains a digit (GitHub, JWT parts, ...).
+_LONG_TOKEN = re.compile(r"[A-Za-z0-9_\-]{20,}")
 
 DEFAULT_OPENAI_UPSTREAM = "https://api.openai.com"
 DEFAULT_GEMINI_UPSTREAM = "https://generativelanguage.googleapis.com"
@@ -169,6 +190,10 @@ class ProxyConfig:
     allow_unmetered: bool = False
     on_cap_exceeded: KillCallback | None = None
     on_loop_detected: KillCallback | None = None
+    #: Called once when ``auth_reject_threshold`` consecutive upstream answers
+    #: rejected the credentials/account (401/402/403).
+    on_upstream_auth_failed: KillCallback | None = None
+    auth_reject_threshold: int = 3
     pricing: PricingStore | None = None
     request_timeout_s: float = 600.0
     clock: Callable[[], datetime] | None = None
@@ -186,6 +211,12 @@ class ProxyConfig:
             or self.min_clamp_output <= 0
         ):
             raise ValueError("min_clamp_output must be a positive integer")
+        if (
+            isinstance(self.auth_reject_threshold, bool)
+            or not isinstance(self.auth_reject_threshold, int)
+            or self.auth_reject_threshold < 1
+        ):
+            raise ValueError("auth_reject_threshold must be a positive integer")
         if isinstance(self.input_safety_factor, bool) or not isinstance(
             self.input_safety_factor, Decimal
         ):
@@ -236,6 +267,68 @@ def _agentcap_error(
         {"error": error},
         status_code=status_code,
         headers=dict(headers or {}),
+    )
+
+
+def _error_object(body: bytes) -> Mapping[str, Any] | None:
+    """The ``error`` object of a small JSON error body, or None."""
+
+    if not isinstance(body, (bytes, bytearray)) or not body or len(body) > _ERROR_BODY_MAX:
+        return None
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    # Gemini's non-SSE stream endpoint wraps the error in a JSON array.
+    if isinstance(payload, list) and payload and isinstance(payload[0], Mapping):
+        payload = payload[0]
+    if not isinstance(payload, Mapping):
+        return None
+    error = payload.get("error")
+    return error if isinstance(error, Mapping) else None
+
+
+def _redact_long_token(match: re.Match[str]) -> str:
+    text = match.group(0)
+    return "[redacted]" if any(ch.isdigit() for ch in text) else text
+
+
+def upstream_error_message(body: bytes) -> str | None:
+    """A short, printable, key-free ``error.message`` from an upstream body.
+
+    Only a JSON ``{"error": {"message": "..."}}`` body is used; headers are
+    never read.  Control characters are removed, anything that looks like a
+    credential is replaced with ``[redacted]`` and the result is truncated.
+    """
+
+    error = _error_object(body)
+    if error is None:
+        return None
+    message = error.get("message")
+    if not isinstance(message, str):
+        return None
+    text = "".join(ch if ch.isprintable() else " " for ch in message[:2000])
+    text = " ".join(text.split())
+    for pattern in _KEY_SHAPED:
+        text = pattern.sub("[redacted]", text)
+    text = _LONG_TOKEN.sub(_redact_long_token, text)
+    if not text:
+        return None
+    if len(text) > _ERROR_MESSAGE_MAX:
+        text = text[: _ERROR_MESSAGE_MAX - 1].rstrip() + "\u2026"
+    return text
+
+
+def _is_auth_rejection(status: int, body: bytes) -> bool:
+    if status in AUTH_REJECTED_STATUSES:
+        return True
+    if status != 400:
+        return False
+    error = _error_object(body)
+    details = error.get("details") if error is not None else None
+    return isinstance(details, list) and any(
+        isinstance(item, Mapping) and item.get("reason") == _GEMINI_KEY_INVALID
+        for item in details
     )
 
 
@@ -293,6 +386,10 @@ class _Proxy:
         else:
             self.shadow_loop = detector
         self._burn_seen = Decimal("0")
+        #: Consecutive upstream answers that rejected the credentials/account.
+        self.auth_reject_streak = 0
+        #: The latest such rejection (status, host, short message), or None.
+        self.auth_rejection: dict[str, Any] | None = None
         self.blocked_count = 0
         #: Model requests the proxy actually saw (forwarded or refused).
         self.observed_requests = 0
@@ -1019,13 +1116,66 @@ class _Proxy:
             kind=kind,
             provider=provider,
         )
-        if getattr(result, "status_code", 200) in RETRYABLE_STATUSES:
+        status = getattr(result, "status_code", 200)
+        body = getattr(result, "body", b"")
+        rejected = _is_auth_rejection(status, body)
+        if status in RETRYABLE_STATUSES or rejected:
             # A rate-limited/overloaded call is resent unchanged by the agent;
-            # that retry is not a stuck step and not a failing tool call.
+            # that retry is not a stuck step and not a failing tool call.  The
+            # same holds for a call the upstream refused (bad key, no credits):
+            # the model never ran, so the resend is not a loop either.
             for detector in (self.loop, self.shadow_loop):
                 if detector is not None:
                     detector.forgive_last()
+        if rejected:
+            self._upstream_rejected(status, body, provider, model)
+        else:
+            self.auth_reject_streak = 0
         return result
+
+    def _upstream_host(self, provider: str) -> str:
+        try:
+            parts = urlsplit(self._upstream_base(provider))
+            host = parts.hostname or ""
+            port = parts.port
+        except ValueError:
+            return ""
+        return f"{host}:{port}" if host and port else host
+
+    def _upstream_rejected(
+        self, status: int, body: bytes, provider: str, model: str
+    ) -> None:
+        """Report a credentials/payment rejection; stop after a streak of them."""
+
+        self.auth_reject_streak += 1
+        info: dict[str, Any] = {
+            "type": "upstream_rejected",
+            "provider": provider,
+            "model": model,
+            "http_status": status,
+            "upstream_host": self._upstream_host(provider),
+            "detail": upstream_error_message(body),
+            "spent_usd": self._run_spent(),
+        }
+        self.auth_rejection = dict(info)
+        self._emit(info)
+        callback = self.config.on_upstream_auth_failed
+        # Only a caller that asked for it (the runner) stops on this; a bare
+        # proxy (``agentcap serve``) keeps serving and just reports it.
+        if (
+            callback is None
+            or self.auth_reject_streak < self.config.auth_reject_threshold
+        ):
+            return
+        payload = {
+            **info,
+            "type": "upstream_auth_failed",
+            "reason": "upstream_auth_failed",
+            "count": self.auth_reject_streak,
+        }
+        if not self.killed:
+            self._emit(dict(payload))
+        self._kill_once(callback, payload)
 
     # ----------------------------------------------------------- forwarding
     def _upstream_base(self, provider: str) -> str:

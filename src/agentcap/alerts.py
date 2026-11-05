@@ -16,6 +16,7 @@ import re
 import sys
 import threading
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Mapping, TextIO
 
 import httpx
@@ -40,6 +41,8 @@ TERMINAL_EVENTS = frozenset(
         "quota_parallel",
         "quota_receipt",
         "cap_eta",
+        "upstream_rejected",
+        "upstream_auth_failed",
     }
 )
 
@@ -55,7 +58,8 @@ PRICING_URL = "https://agentcap.launchbench.studio/#pricing"
 # budget-clamp notice, no matter how many later requests are rejected).
 ONCE_EVENTS = frozenset(
     {"cap_exceeded", "loop_detected", "output_clamped", "loop_nudge", "run_receipt",
-     "quota_threshold", "quota_exceeded", "quota_parallel", "quota_receipt", "cap_eta"}
+     "quota_threshold", "quota_exceeded", "quota_parallel", "quota_receipt", "cap_eta",
+     "upstream_rejected", "upstream_auth_failed"}
 )
 
 # Only these fields may appear in an alert payload.  Anything else is dropped.
@@ -85,6 +89,9 @@ ALLOWED_FIELDS = frozenset(
         "quota_pct",
         "share_pct",
         "eta_minutes",
+        "http_status",
+        "upstream_host",
+        "count",
     }
 )
 
@@ -122,6 +129,36 @@ def sanitize(payload: Mapping[str, Any]) -> dict[str, Any]:
     return clean
 
 
+_REJECTION_ADVICE = {
+    402: "check the account's credits/billing",
+    403: "check the API key and its access",
+}
+
+
+def _format_rejection(prefix: str, event: Mapping[str, Any]) -> str:
+    status = event.get("http_status", "?")
+    host = redact(str(event.get("upstream_host") or "")) or "the upstream"
+    if event.get("type") == "upstream_auth_failed":
+        return (
+            f"{prefix}: upstream rejected {event.get('count', '?')} requests in a row "
+            f"(HTTP {status} from {host}). Stopping the agent."
+        )
+    detail = event.get("detail")
+    what = f"HTTP {status}" + (f": {redact(str(detail))}" if detail else "")
+    advice = _REJECTION_ADVICE.get(status, "check the API key")
+    spent = event.get("spent_usd")
+    try:
+        amount = Decimal(str(spent)) if spent is not None else Decimal("0")
+    except InvalidOperation:
+        amount = Decimal("0")
+    charged = (
+        "nothing was spent"
+        if amount == 0
+        else f"this request was not charged (${amount:.4f} spent so far)"
+    )
+    return f"{prefix}: upstream rejected the request ({what}) \u2014 {advice} for {host}; {charged}."
+
+
 def format_alert(event: Mapping[str, Any]) -> str:
     """One-line, human-readable terminal message for an event."""
 
@@ -157,6 +194,8 @@ def format_alert(event: Mapping[str, Any]) -> str:
             f"{prefix}: runaway loop detected ("
             f"{event.get('detail') or 'identical request repeated'}). Stopping the agent."
         )
+    if kind in ("upstream_rejected", "upstream_auth_failed"):
+        return _format_rejection(prefix, event)
     if kind == "loop_nudge":
         spent = event.get("spent_usd")
         try:

@@ -529,6 +529,16 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   AgentCap itself hits an internal error. Two quota jobs at once are refused (exit 2), since the
   quota % is account-wide; `AGENTCAP_ALLOW_PARALLEL=1` turns that lock off. Free only warns.
   Not covered yet: a stale Claude statusline (no fresh `rate_limits`) is reported, not stopped.
+- **Rejected credentials (`--cap` proxy mode).** When the provider answers HTTP 401, 402
+  (OpenRouter: no credits), 403, or Gemini's 400 `API_KEY_INVALID`, AgentCap prints
+  `upstream rejected the request (HTTP 401: User not found.) — check the API key for <host>;
+  nothing was spent.` (the provider's short `error.message`, truncated, key-shaped text redacted,
+  headers never read). The agent's resends of such a request never count toward the loop breaker.
+  After 3 rejections in a row with no success between them, the run is stopped on Free and Pro
+  with reason `upstream_auth_failed` and exit 2 (like AgentCap's other exit-2 refusals: a setup
+  problem to fix, rerunning unchanged cannot help). If the agent gives up first, the reason is
+  still `upstream_auth_failed` and its own exit code is kept. One rejection followed by a
+  success changes nothing. `agentcap serve` only reports it and keeps serving.
 - **Self-approval.** `agentcap approve` refuses (exit 2) when it runs inside an agent session
   (`AGENTCAP_QUOTA_JOB`, `AGENTCAP_GUARDED` or `CLAUDECODE` in its environment), and the Claude
   Code hook denies a Bash call that runs `agentcap approve`; `/agentcap:approve` cannot be invoked
