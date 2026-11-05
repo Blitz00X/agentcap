@@ -502,3 +502,10 @@ tests; the skips are the opt-in live log-contract tests).
 Verdict: no blocker left in the code for 0.3.0 once R1 and R2 are in; before
 packaging, decide R4 (fix or keep it documented) and rebuild the artifacts
 (R10). R5-R9 can wait for a later release.
+
+## Live checks, 5 Nov 2026 (Codex 0.166 + OpenRouter, free model `cohere/north-mini-code:free`, real cost $0)
+
+- Rejected key (management key, HTTP 401 "User not found."): the run stopped with `upstream rejected the request (HTTP 401: User not found.) — check the API key for openrouter.ai; nothing was spent.`, reason `upstream_auth_failed`, exit 2 (before F8 the same run was reported as a runaway loop, exit 4).
+- Loop breaker: the model ran `ls /agentcap-loop-probe .` six times; the first two steps differed by reasoning items, so the streak started at the third call and AgentCap stopped at 4 identical steps in a row (exit 4, 7 requests, 1 refused).
+- Error breaker: the model ran 8 different failing commands (`ls /agentcap-err-1` … `-8`); AgentCap stopped on the 8th consecutive failing tool result (exit 4).
+- Runs used `--cap 0.50` with a local test price for the free model; the key's real OpenRouter usage stayed $0.

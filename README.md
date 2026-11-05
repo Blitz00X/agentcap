@@ -398,7 +398,7 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 | opencode + OpenRouter (free model) | ✅ | ✅ | n/a | ✅ $ cap |
 | opencode + Ollama Cloud | ✅ | ✅ | n/a | ⚠️ needs a user price (`AGENTCAP_PRICING_FILE`): Ollama publishes none |
 | Codex + Ollama | ✅ (exit 4 on 4th identical exec) | ✅ | n/a | ✅ $ cap (user price) |
-| Codex + OpenRouter | **not run**: test key expired (401) | **not run**: test key expired | n/a | ✅ $ cap stop (earlier release run, free model) |
+| Codex + OpenRouter | ✅ (exit 4 after 4 identical steps in a row; Codex 0.166, free model, 5 Nov 2026) | ✅ (exit 4 on the 8th failing command) | n/a | ✅ $ cap stop (earlier release run, free model); a rejected key stops with `upstream_auth_failed` (exit 2) |
 | agy + Gemini API | **not provable on a free key**: agy sends >5 req/min and exits on the first 429 (no retry); needs a paid key | same | n/a | ✅ $ cap (exit 3) |
 | Claude Code + `ANTHROPIC_API_KEY` | **needs an Anthropic API key** (proxy path; only a local fake API so far) | **needs an Anthropic API key** | n/a | **needs an Anthropic API key** |
 
