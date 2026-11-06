@@ -23,6 +23,7 @@
 - **opencode and agy (Antigravity CLI) support.** `agentcap run --tokens N -- opencode run ...` / `-- agy -p ...` reads the agent's own JSON event stream (`opencode run --format json`, `agy --output-format stream-json`) and enforces a token cap, the loop breaker (same tool call 4x) and the error breaker (8 failing tool calls in a row); stop is SIGINT. `--log-cap USD` caps on opencode's own cost estimate (for subscriptions such as opencode Go).
 - **agy quota mode:** `agentcap run --quota 5% --window 5h -- agy -p ...` reads `remaining_fraction` from `agy -p /quota --output-format json` (no agent turn, no quota spent) for the model's group. opencode exposes no quota %, so `--quota` is refused for it with a pointer to `--tokens`/`--log-cap`.
 - **$ mode:** `agentcap run --cap 1 -- opencode run -m agentcap/<model> ...` injects a provider through `OPENCODE_CONFIG_CONTENT` (user config untouched, run forced `--standalone`); `agy` is routed through the Gemini API route (`modelProvider: gemini`, `GEMINI_API_KEY`).
+- Pricing: the launch-week end date is no longer hard-coded in the package; the pricing page shows the current date.
 - Version 0.3.0 (package and plugin manifest).
 - Packaging: the internal task/notification tracker `agentcap.ops` is no longer shipped in the wheel or sdist (it stays in the repository).
 

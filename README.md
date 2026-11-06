@@ -657,7 +657,7 @@ steps are noisy. No team aggregation: everything stays on your machine.
 When the Pro detectors below would have fired on a Free run, AgentCap does not stop it.
 It prints one line: `Pro's loop breaker would have stopped this at $X.XX`.
 
-**Pro, $12 one-time (launch week, until 10 Nov; then $19): stop runs that loop or eat your quota.**
+**Pro, $12 one-time (launch week; $19 after): stop runs that loop or eat your quota.**
 
 **Get Pro:** buy at https://agentcap.launchbench.studio/#pricing (Polar checkout). Polar then
 emails you an **Access purchase** link; the key is in the Polar customer portal (not in the
@@ -686,7 +686,7 @@ The VS Code/Cursor extension and the Claude Code plugin use the same CLI licence
 
 ### Purchase terms
 
-- Pro is $12 one-time (launch week, until 10 Nov; then $19), no subscription.
+- Pro is $12 one-time (launch week; $19 after), no subscription. The current launch-week end date is on the pricing page.
 - 14-day no-questions refund — email
   [kutaykarahan6@gmail.com](mailto:kutaykarahan6@gmail.com).
 - One licence key activates on up to 3 machines.
@@ -755,7 +755,7 @@ prices and reported usage; when usage is missing it charges the full reservation
 **Is the day cap shared across machines?** No. Hour/day caps are per machine
 (local SQLite ledger). A license covers 3 machines, each with its own budget.
 
-**What does one-time purchase include?** $12 once in launch week ($19 after 10 Nov), all 0.x updates; not a
+**What does one-time purchase include?** $12 once in launch week ($19 after), all 0.x updates; not a
 promise of future major versions. 14-day refund window per purchase terms.
 
 ## License
