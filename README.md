@@ -470,6 +470,19 @@ raised. Everything else is forwarded byte-for-byte, including credentials.
 Reasoning/thinking tokens are billed as output and count against the same
 output limit, so a clamp also caps them.
 
+### Exit codes
+
+`agentcap run` uses the same codes in `--cap`, `--quota`, `--tokens` and
+`--log-cap` modes (0.3.1). Otherwise it returns the agent's own exit code.
+
+| Code | Meaning |
+| --- | --- |
+| `2` | Setup or auth refusal: bad flags, a Pro-only flag on Free, a conflicting CLI config, a second quota job, or the provider rejected the credentials (`upstream_auth_failed`). |
+| `3` | A cap stopped the agent (`--cap`, `--quota`, `--tokens`, `--log-cap`). |
+| `4` | Pro's loop/error/burn breaker stopped the agent. |
+| `5` | Internal error: AgentCap could not use its own state (HOME, `quota.lock`, ledger, license or job files), its proxy could not start, an opencode/agy log schema or Codex rollout log could not be read (fail-closed), or AgentCap hit an internal fault. The message names the failed action and path (`internal state error: could not open the quota lock ...`); the agent was not started, or was stopped (reason `internal_error`). |
+| `127` | The command itself could not be started (not found, not executable): `could not start the command (...)`. |
+
 ## Metered endpoints
 
 | Provider | Endpoints |
@@ -534,7 +547,7 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   agent with exit code 5 instead of letting it run unguarded when opencode/agy output matches no
   known log schema, the Codex session log becomes unreadable, or AgentCap itself hits an internal
   error; Free only warns about these. In `--cap` mode an internal AgentCap error stops the agent
-  too, but the exit code is not 5. Two quota jobs at once are refused on Free and Pro (exit 2),
+  too, with exit code 5 and reason `internal_error` (since 0.3.1; see "Exit codes"). Two quota jobs at once are refused on Free and Pro (exit 2),
   since the quota % is account-wide; `AGENTCAP_ALLOW_PARALLEL=1` turns that lock off.
   Not covered yet: a stale Claude statusline (no fresh `rate_limits`) is reported, not stopped.
 - **Rejected credentials (`--cap` proxy mode).** When the provider answers HTTP 401, 402

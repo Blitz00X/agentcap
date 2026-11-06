@@ -71,6 +71,28 @@ def _discard(child: subprocess.Popen, *, kill: bool) -> None:
                 pass
 
 
+_CHILD_START_ATTR = "agentcap_child_start_failure"
+
+
+def mark_child_start_failure(exc: BaseException) -> BaseException:
+    """Tag ``exc`` as "the child command itself could not be started".
+
+    Only spawn call sites tag errors, and the exception keeps its type
+    (``FileNotFoundError``, ``PermissionError``, ...).  The CLI maps a tagged
+    error to exit 127 and any other ``OSError`` to an internal error (exit 5).
+    """
+
+    try:
+        setattr(exc, _CHILD_START_ATTR, True)
+    except (AttributeError, TypeError):
+        pass
+    return exc
+
+
+def is_child_start_failure(exc: BaseException) -> bool:
+    return bool(getattr(exc, _CHILD_START_ATTR, False))
+
+
 def spawn(argv: Sequence[str], **popen_kwargs: Any) -> subprocess.Popen:
     """``subprocess.Popen(argv, ...)`` behind the lifeline, same start-failure contract.
 
@@ -78,18 +100,25 @@ def spawn(argv: Sequence[str], **popen_kwargs: Any) -> subprocess.Popen:
     ``execvp`` failure (missing command, no exec permission, ...) back over a
     close-on-exec pipe.  It is raised here as the ``OSError`` subclass Popen
     raises for a direct spawn, so a typo is still reported as "could not start
-    the command" and never as an agent that ran and made no requests.
+    the command" and never as an agent that ran and made no requests.  Popen
+    and exec failures are tagged with :func:`mark_child_start_failure`.
     """
 
     command = [str(part) for part in argv]
     if not supported() or not command:
-        return subprocess.Popen(command, **popen_kwargs)
+        try:
+            return subprocess.Popen(command, **popen_kwargs)
+        except OSError as exc:
+            raise mark_child_start_failure(exc)
     read_fd, write_fd = os.pipe()
     try:
         pass_fds = (*popen_kwargs.pop("pass_fds", ()), write_fd)
         child = subprocess.Popen(
             guarded_argv(command, errfd=write_fd), pass_fds=pass_fds, **popen_kwargs
         )
+    except OSError as exc:
+        os.close(read_fd)
+        raise mark_child_start_failure(exc)
     except BaseException:
         os.close(read_fd)
         raise
@@ -111,7 +140,7 @@ def spawn(argv: Sequence[str], **popen_kwargs: Any) -> subprocess.Popen:
         code = 0
     if code <= 0:
         code = errno.ENOEXEC
-    raise OSError(code, os.strerror(code), command[0])
+    raise mark_child_start_failure(OSError(code, os.strerror(code), command[0]))
 
 
 class GroupWatchdog:

@@ -23,6 +23,38 @@ class GuardFailure(Exception):
     """A guard refused to let the run continue."""
 
 
+class InternalStateError(OSError):
+    """AgentCap could not use one of its own state files (exit 5).
+
+    Raised for a lock/state/license path AgentCap itself manages -- never for
+    the child command -- so the CLI can name the path and the failed action
+    instead of reporting it as "could not start the command".  It stays an
+    ``OSError`` so existing ``except OSError`` callers keep working.
+    """
+
+    def __init__(self, action: str, path: os.PathLike[str] | str | None, cause: BaseException | None = None) -> None:
+        reason = _strerror(cause)
+        where = f" {Path(path)}" if path is not None else ""
+        detail = f" ({reason})" if reason else ""
+        super().__init__(f"could not {action}{where}{detail}")
+        self.action = action
+        self.path = Path(path) if path is not None else None
+        self.errno = getattr(cause, "errno", None)
+        self.strerror = reason
+
+    def __str__(self) -> str:
+        # OSError would render "[Errno N] strerror" once errno is set.
+        return str(self.args[0])
+
+
+def _strerror(exc: BaseException | None) -> str:
+    if exc is None:
+        return ""
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror
+    return str(exc) or type(exc).__name__
+
+
 class JobLock:
     """Exclusive cross-process lock for a single quota job."""
 
@@ -35,9 +67,12 @@ class JobLock:
         """Take the lock, or raise :class:`GuardFailure` if another job holds it."""
         if os.environ.get(_PARALLEL_ENV) == "1":
             return
-        ensure_private_dir(self.path.parent)
-        fd = open_private(self.path, os.O_RDWR | os.O_CREAT)
-        fh = os.fdopen(fd, "a+")
+        try:
+            ensure_private_dir(self.path.parent)
+            fd = open_private(self.path, os.O_RDWR | os.O_CREAT)
+            fh = os.fdopen(fd, "a+")
+        except OSError as exc:
+            raise InternalStateError("open the quota lock", self.path, exc) from exc
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -49,14 +84,18 @@ class JobLock:
                 "separately. Wait for it to finish or set "
                 f"{_PARALLEL_ENV}=1 to run without this lock."
             ) from None
-        except OSError:
+        except OSError as exc:
             fh.close()
-            raise
+            raise InternalStateError("lock", self.path, exc) from exc
         self._fh = fh
-        fh.seek(0)
-        fh.truncate()
-        fh.write(str(os.getpid()))
-        fh.flush()
+        try:
+            fh.seek(0)
+            fh.truncate()
+            fh.write(str(os.getpid()))
+            fh.flush()
+        except OSError as exc:
+            self.release()
+            raise InternalStateError("write the quota lock", self.path, exc) from exc
 
     @staticmethod
     def _read_pid(fh) -> str:

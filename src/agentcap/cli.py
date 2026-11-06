@@ -468,6 +468,41 @@ def _warn_alerts_need_pro(active_features: set[str]) -> None:
     print(PRO_HINT, file=sys.stderr)
 
 
+#: Exit codes of ``agentcap run`` (documented once, in README "Exit codes").
+EXIT_SETUP = 2
+EXIT_INTERNAL = 5
+EXIT_START_FAILED = 127
+
+
+def _run_failure(exc: BaseException) -> int | None:
+    """Shared ``agentcap run`` classification for errors that reach the CLI.
+
+    127 only when the child command itself could not be started (the spawn
+    call sites tag those errors); any other OSError, a SQLite error or an
+    :class:`~agentcap.failsafe.InternalStateError` is AgentCap's own state
+    (HOME, lock, ledger, license file) and exits 5.  Returns None for errors
+    this handler does not own.
+    """
+
+    import sqlite3
+
+    from .failsafe import InternalStateError
+    from .lifeline import is_child_start_failure
+    from .runner import describe_internal_error
+
+    if isinstance(exc, OSError) and is_child_start_failure(exc):
+        print(f"agentcap: could not start the command ({exc.strerror or exc})", file=sys.stderr)
+        return EXIT_START_FAILED
+    if isinstance(exc, (OSError, sqlite3.Error, InternalStateError)):
+        print(
+            f"agentcap: internal state error: {describe_internal_error(exc)}; "
+            "the command was not started or was stopped.",
+            file=sys.stderr,
+        )
+        return EXIT_INTERNAL
+    return None
+
+
 def _run(args: argparse.Namespace) -> int:
     if _windows_unsupported():
         print(WINDOWS_UNSUPPORTED, file=sys.stderr)
@@ -560,15 +595,15 @@ def _run(args: argparse.Namespace) -> int:
             max_burn_per_min=max_burn,
         )
         return runner.run()
-    except OSError as exc:
-        print(
-            f"agentcap: could not start the command ({exc.strerror or exc})",
-            file=sys.stderr,
-        )
-        return 127
-    except (ValueError, RuntimeError, PricingError) as exc:
-        print(f"agentcap: {exc}", file=sys.stderr)
-        return 2
+    except Exception as exc:
+        code = _run_failure(exc)
+        if code is not None:
+            return code
+        if isinstance(exc, (ValueError, RuntimeError, PricingError)):
+            # Raised while building the run (bad argv/host/pricing): setup.
+            print(f"agentcap: {exc}", file=sys.stderr)
+            return EXIT_SETUP
+        raise
 
 
 QUOTA_CONFLICT = (
@@ -627,12 +662,14 @@ def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
             receipt_dir=default_receipt_dir() if "spend_receipt" in active_features else None,
         )
         code = runner.run()
-    except OSError as exc:
-        print(f"agentcap: could not start the command ({exc.strerror or exc})", file=sys.stderr)
-        return 127
-    except ValueError as exc:
-        print(f"agentcap: {exc}", file=sys.stderr)
-        return 2
+    except Exception as exc:
+        failure = _run_failure(exc)
+        if failure is not None:
+            return failure
+        if isinstance(exc, ValueError):
+            print(f"agentcap: {exc}", file=sys.stderr)
+            return EXIT_SETUP
+        raise
     alerts.wait()
     return code
 
@@ -692,12 +729,14 @@ def _run_harness(args: argparse.Namespace, argv: list[str], *, breakers_only: bo
                   "add --quota N% for a quota cap, or set GEMINI_API_KEY and --cap for API spend).",
                   file=sys.stderr)
         code = runner.run()
-    except OSError as exc:
-        print(f"agentcap: could not start the command ({exc.strerror or exc})", file=sys.stderr)
-        return 127
-    except ValueError as exc:
-        print(f"agentcap: {exc}", file=sys.stderr)
-        return 2
+    except Exception as exc:
+        failure = _run_failure(exc)
+        if failure is not None:
+            return failure
+        if isinstance(exc, ValueError):
+            print(f"agentcap: {exc}", file=sys.stderr)
+            return EXIT_SETUP
+        raise
     alerts.wait()
     return code
 

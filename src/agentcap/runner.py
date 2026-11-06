@@ -38,7 +38,7 @@ from .adapters import (
 )
 from .alerts import AlertDispatcher, dispatcher_from_env
 from .ledger import Caps, Ledger
-from .lifeline import GroupWatchdog
+from .lifeline import GroupWatchdog, is_child_start_failure, mark_child_start_failure
 from .lifeline import spawn as lifeline_spawn
 from .license import features as license_features
 from .license import status_from_environment
@@ -59,12 +59,37 @@ EXIT_LOOP_DETECTED = 4
 #: a row.  Like AgentCap's other exit-2 refusals this is a setup problem a
 #: human has to fix; rerunning unchanged cannot help.
 EXIT_UPSTREAM_AUTH_FAILED = 2
+#: AgentCap itself failed (state/lock/license file, HOME, proxy start or an
+#: internal fault).  Same value as ``failsafe.EXIT_GUARD_FAILED``.
+EXIT_INTERNAL_ERROR = 5
+#: The child command itself could not be started (missing, not executable).
+EXIT_START_FAILED = 127
 
 EXIT_REASONS = {
     "cap_exceeded": EXIT_CAP_EXCEEDED,
     "loop_detected": EXIT_LOOP_DETECTED,
     "upstream_auth_failed": EXIT_UPSTREAM_AUTH_FAILED,
+    "internal_error": EXIT_INTERNAL_ERROR,
 }
+
+INTERNAL_ERROR_MESSAGE = (
+    "agentcap: agent stopped by an internal error ({detail}); exit {code}. "
+    "The agent was not left running unguarded."
+)
+
+
+def describe_internal_error(exc: BaseException) -> str:
+    """One line naming the failed action/path, never a secret or traceback."""
+
+    from .failsafe import InternalStateError
+
+    if isinstance(exc, InternalStateError):
+        return str(exc)
+    if isinstance(exc, OSError):
+        path = exc.filename
+        strerror = exc.strerror or str(exc) or type(exc).__name__
+        return f"could not access {path} ({strerror})" if path else f"{type(exc).__name__}: {strerror}"
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 CAP_ENV = "AGENTCAP_CAP"
 DEFAULT_CAP = Decimal("5")
@@ -265,6 +290,8 @@ class Runner:
         #: signalled after the leader has exited (orphaned grandchildren).
         self._pgid: int | None = None
         self.summary: RunSummary | None = None
+        #: The internal error that stopped the run (exit 5), if any.
+        self._internal_error: BaseException | None = None
 
         self.alerts = alerts or dispatcher_from_env(
             features=self.features,
@@ -445,10 +472,13 @@ class Runner:
     def _spawn(
         self, argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     ) -> subprocess.Popen:
-        child = self.popen_factory(
-            self.argv if argv is None else argv,
-            self.child_env() if env is None else env,
-        )
+        argv = self.argv if argv is None else argv
+        env = self.child_env() if env is None else env
+        try:
+            child = self.popen_factory(argv, env)
+        except OSError as exc:
+            # Only this call means "the command itself could not be started".
+            raise mark_child_start_failure(exc)
         # Capture the group now: once the leader exits, os.getpgid(pid) fails
         # even though the group (and its children) may still be alive.
         try:
@@ -526,15 +556,17 @@ class Runner:
             print(f"agentcap: {exc}", file=self.stderr, flush=True)
             return 2
 
-        self._start_proxy()
-        # Started before the tree guard so its baseline excludes the watchdog.
         watchdog = GroupWatchdog()
-        watchdog.start()
         tree_guard = ProcessTreeGuard()
-        tree_guard.start()
         reason = "child_exit"
         exit_code = 1
         try:
+            # Everything that can fail inside AgentCap -- proxy start, adapter
+            # preparation, monitoring -- is classified in one place below.
+            self._start_proxy()
+            # Started before the tree guard so its baseline excludes the watchdog.
+            watchdog.start()
+            tree_guard.start()
             prepared = prepare_child(
                 self.argv,
                 port=self.port or 0,
@@ -561,6 +593,28 @@ class Runner:
                 exit_code = EXIT_REASONS.get(reason, exit_code)
             else:
                 reason = "child_exit"
+        except AdapterConflict as exc:
+            # A setup refusal found while preparing the child: exit 2, as before.
+            print(f"agentcap: {exc}", file=self.stderr, flush=True)
+            reason = "setup_refused"
+            exit_code = 2
+        except Exception as exc:
+            if is_child_start_failure(exc):
+                # The command itself could not be started: the CLI reports it
+                # as "could not start the command" with exit 127.
+                reason = "start_failed"
+                exit_code = EXIT_START_FAILED
+                raise
+            reason = "internal_error"
+            exit_code = EXIT_INTERNAL_ERROR
+            self._internal_error = exc
+            if self.child is not None:
+                self._terminate()
+            self._print_hint(
+                INTERNAL_ERROR_MESSAGE.format(
+                    detail=describe_internal_error(exc), code=exit_code
+                )
+            )
         finally:
             # No orphans: grandchildren left in the agent's process group after
             # the leader exited (or was stopped) are terminated too.
@@ -590,8 +644,11 @@ class Runner:
                     pass
             # A streaming request can settle after the child has already exited
             # 0 (and after ``_monitor`` returned).  Re-check here so a cap hit
-            # during the run is always the final reason and exit code.
-            if self.kill_event.is_set():
+            # during the run is always the final reason and exit code.  An
+            # internal error, a setup refusal or a start failure is final.
+            if reason in ("internal_error", "setup_refused", "start_failed"):
+                pass
+            elif self.kill_event.is_set():
                 reason = self.kill_reason or reason
                 exit_code = EXIT_REASONS.get(reason, exit_code)
             elif self._proxy is not None and self._proxy.cap_reached():
@@ -607,7 +664,14 @@ class Runner:
                 reason = "upstream_auth_failed"
             self.summary = self._build_summary(reason, exit_code)
             self._print_summary(self.summary)
-            if self.child is not None and self.summary.requests == 0:
+            if reason == "internal_error":
+                # The agent did not finish on its own: "no model requests" hints
+                # would point at the wrong cause.
+                self._print_hint(
+                    "agentcap: the agent was stopped by an internal AgentCap error "
+                    f"(exit {EXIT_INTERNAL_ERROR}); see the message above."
+                )
+            elif self.child is not None and self.summary.requests == 0:
                 self._warn_no_requests()
                 self._hint_no_requests()
             self._hint_first_request_refused(self.summary)
@@ -794,5 +858,8 @@ __all__ = [
     "EXIT_CAP_EXCEEDED",
     "EXIT_LOOP_DETECTED",
     "EXIT_UPSTREAM_AUTH_FAILED",
+    "EXIT_INTERNAL_ERROR",
+    "EXIT_START_FAILED",
     "cap_from_env",
+    "describe_internal_error",
 ]

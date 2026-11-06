@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.1 (unreleased)
+- **R5/R6: one exit-code policy for `agentcap run`** (README "Exit codes"): 2 setup/auth refusal, 3 cap, 4 loop/error/burn breaker, 5 internal error, 127 only when the command itself cannot be started. **Behaviour change for scripts:** a state/lock/HOME/ledger error (a symlinked or unreadable `quota.lock`, an unwritable `HOME`, a busy `--port`) used to print "could not start the command" and exit 127; it now prints `internal state error: could not <action> <path> (<reason>)` and exits 5. In `--cap` mode an internal `RuntimeError`/`ValueError`/`OSError` during the run used to exit 1, 2 or 127 with a summary that could say `exit code: 1`; it now stops the agent, exits 5 with reason `internal_error`, and the summary shows `exit code: 5`. The "no model requests observed" hints are no longer printed after such a stop. A missing or non-executable command still exits 127 with the same message.
+
 ## 0.3.0
 - **Fail-closed guards for unattended runs.** A second quota job on the same account is refused (exit 2; `AGENTCAP_ALLOW_PARALLEL=1` opts out); in quota/harness runs, unknown opencode/agy log schemas, an unreadable Codex rollout log and AgentCap internal errors stop the agent with exit 5 on Pro instead of running unguarded (in `--cap` mode an internal error also stops the agent, but not with exit 5).
 - **Whole-process-tree stops.** Quota/harness stops send SIGINT to the process group, then SIGTERM, then SIGKILL (5 s / 3 s / 2 s); proxy (`--cap`) stops send SIGTERM then SIGKILL (5 s). Helpers left in the group are reaped after a normal exit. A process that changes its uid or enters another PID namespace is still out of scope.

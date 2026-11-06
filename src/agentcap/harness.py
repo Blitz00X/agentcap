@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
 from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock, SchemaWatch
-from .lifeline import GroupWatchdog
+from .lifeline import GroupWatchdog, mark_child_start_failure
 from .lifeline import spawn as lifeline_spawn
 from .procstop import ProcessTreeGuard, denied_warning, reap_group, stop_tree
 from .quota import LoopWatch, WARN_FRACTION, _atomic_write, state_root
@@ -368,9 +368,12 @@ class HarnessRunner:
                 if baseline is None:
                     self._say("agentcap: agy reported no quota for this model/window; quota cap is "
                               "not active (token/USD caps and breakers still are).")
-            self.child = lifeline_spawn(self.argv, stdout=subprocess.PIPE, text=True, bufsize=1,
-                                        start_new_session=True,
-                                        env={**os.environ, "AGENTCAP_GUARDED": "1"})
+            try:
+                self.child = lifeline_spawn(self.argv, stdout=subprocess.PIPE, text=True, bufsize=1,
+                                            start_new_session=True,
+                                            env={**os.environ, "AGENTCAP_GUARDED": "1"})
+            except OSError as exc:
+                raise mark_child_start_failure(exc)
             try:
                 self._pgid = os.getpgid(self.child.pid)
             except OSError:

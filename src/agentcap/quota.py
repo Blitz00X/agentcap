@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence, TextIO
 
 from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock
-from .lifeline import GroupWatchdog
+from .lifeline import GroupWatchdog, mark_child_start_failure
 from .lifeline import spawn as lifeline_spawn
 from .private import ensure_private_dir, open_private, write_private_text
 from .procstop import ProcessTreeGuard, denied_warning, reap_group, stop_tree
@@ -1026,7 +1026,10 @@ class QuotaRunner:
                           "Use --quota 1% or more for Claude Code.")
             watchdog.start()  # before the tree guard, so its baseline excludes it
             tree_guard.start()
-            self.child = lifeline_spawn(argv, env=env, start_new_session=True, cwd=self.cwd)
+            try:
+                self.child = lifeline_spawn(argv, env=env, start_new_session=True, cwd=self.cwd)
+            except OSError as exc:
+                raise mark_child_start_failure(exc)
             try:
                 self._pgid = os.getpgid(self.child.pid)
             except OSError:
