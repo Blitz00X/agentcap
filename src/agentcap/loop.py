@@ -6,7 +6,8 @@ import hashlib
 import json
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Callable, Mapping
 
@@ -51,14 +52,14 @@ class LoopDetector:
         self._hits: dict[str, deque[float]] = {}
         self._lock = threading.Lock()
 
-    def record(self, request_hash: str | Mapping[str, Any]) -> bool:
+    def record(self, request_hash: str | Mapping[str, Any], *, now: float | None = None) -> bool:
         """Record a hash (or a body); True when the threshold is reached."""
 
         if isinstance(request_hash, Mapping):
             request_hash = _hash_body(request_hash)
         if not isinstance(request_hash, str) or not request_hash:
             raise ValueError("request_hash must be a non-empty string")
-        now = self._clock()
+        now = self._clock() if now is None else now
         cutoff = now - self.window_s
         with self._lock:
             hits = self._hits.setdefault(request_hash, deque())
@@ -75,6 +76,20 @@ class LoopDetector:
 
     def record_request(self, body: Mapping[str, Any]) -> bool:
         return self.record(request_hash(body))
+
+    def forget(self, request_hash: str, at: float) -> bool:
+        """Remove one hit recorded at ``at`` for ``request_hash`` (if still held)."""
+
+        with self._lock:
+            hits = self._hits.get(request_hash)
+            if not hits:
+                return False
+            # Newest first: the hit being forgiven is usually the latest one.
+            for index in range(len(hits) - 1, -1, -1):
+                if hits[index] == at:
+                    del hits[index]
+                    return True
+            return False
 
     def reset(self, request_hash: str | None = None) -> None:
         with self._lock:
@@ -288,6 +303,29 @@ def last_tool_result_error(body: Mapping[str, Any]) -> bool | None:
     return None
 
 
+#: In-flight check records kept for :meth:`RunawayDetector.forgive`.
+_MAX_PENDING = 256
+
+
+@dataclass(eq=False)
+class _Check:
+    """What one ``RunawayDetector.check`` changed, so it alone can be undone."""
+
+    token: Any
+    exact: str
+    at: float
+    gen: int
+    #: (last_tail, last_tail_t, tail_streak, error_streak, last_exact,
+    #:  tail_epoch, error_epoch) just before the check.
+    before: tuple
+    tail_epoch: int
+    error_epoch: int
+    tail_digest: str | None = None
+    tail_incremented: bool = False
+    error_delta: int = 0
+    error_reset: bool = False
+
+
 class RunawayDetector:
     """Stateful per-run detector.  ``check`` returns a trip dict or None."""
 
@@ -320,8 +358,14 @@ class RunawayDetector:
         self._tail_streak = 0
         self._exact = LoopDetector(threshold=repeat_threshold, window_s=repeat_window_s, clock=self._clock)
         self._error_streak = 0
-        self._snapshot: tuple | None = None
         self._last_exact: str | None = None
+        #: Per-request check records, so a 429'd request forgives only its own
+        #: check (R7).  Bounded: a token that never comes back is dropped.
+        self._pending: OrderedDict[Any, _Check] = OrderedDict()
+        self._last_check: _Check | None = None
+        self._gen = 0
+        self._tail_epoch = 0
+        self._error_epoch = 0
         self._spend: deque[tuple[float, Decimal]] = deque()
         self._lock = threading.Lock()
 
@@ -347,30 +391,106 @@ class RunawayDetector:
 
     # -- requests ------------------------------------------------------
     def forgive_last(self) -> None:
-        """Undo the last ``check`` (its call hit a 429/5xx and will be retried)."""
+        """Undo the most recent ``check`` (sequential callers only).
 
-        snap = self._snapshot
-        if snap is None:
+        Concurrent callers pass a ``token`` to :meth:`check` and call
+        :meth:`forgive` with it, so a request can only undo its own check.
+        """
+
+        with self._lock:
+            record = self._last_check
+            if record is None:
+                return
+            self._undo(record)
+
+    def forgive(self, token: Any) -> None:
+        """Undo the ``check`` made with ``token`` (its call hit a 429/5xx/refusal).
+
+        If no other check ran since, the detector is restored exactly to its
+        state before that check.  Otherwise only this request's own
+        contribution is removed -- its repeat hit, its step in the current
+        streak, its failing-tool-result count -- and a parallel request's
+        check is left alone.  Unknown or already-forgiven tokens are ignored.
+        """
+
+        if token is None:
             return
         with self._lock:
-            # Also undo ``_last_exact``: otherwise the identical retry of the
-            # forgiven call looks like a resend and its step never counts.
-            (self._last_tail, self._last_tail_t, self._tail_streak,
-             self._error_streak, self._last_exact) = snap[1:]
-        hits = self._exact._hits.get(snap[0])
-        if hits:
-            hits.pop()
-        self._snapshot = None
+            record = self._pending.get(token)
+            if record is not None:
+                self._undo(record)
 
-    def check(self, body: Mapping[str, Any]) -> dict[str, Any] | None:
+    def done(self, token: Any) -> None:
+        """Forget the record of a check that will not be forgiven."""
+
+        if token is None:
+            return
+        with self._lock:
+            record = self._pending.pop(token, None)
+            if record is not None and self._last_check is record:
+                self._last_check = None
+
+    def _undo(self, record: "_Check") -> None:
+        # Caller holds ``self._lock``.
+        if record.token is not None:
+            self._pending.pop(record.token, None)
+        if self._last_check is record:
+            self._last_check = None
+        self._exact.forget(record.exact, record.at)
+        if self._gen == record.gen:
+            # Nothing else was checked since: restore the exact prior state.
+            # That includes ``_last_exact``: otherwise the identical retry of
+            # the forgiven call looks like a resend and its step never counts.
+            (self._last_tail, self._last_tail_t, self._tail_streak,
+             self._error_streak, self._last_exact,
+             self._tail_epoch, self._error_epoch) = record.before
+            return
+        # Another request was checked in between: take back only this one's
+        # own contribution.
+        if record.tail_digest is not None and self._tail_epoch == record.tail_epoch:
+            if self._tail_streak > 1:
+                self._tail_streak -= 1
+            elif not record.tail_incremented:
+                self._last_tail, self._last_tail_t, self._tail_streak = record.before[:3]
+                self._tail_epoch += 1
+        if self._error_epoch == record.error_epoch:
+            if record.error_delta > 0 and self._error_streak > 0:
+                self._error_streak -= 1
+            elif record.error_reset:
+                # Undo this request's reset: streaks counted since are kept.
+                self._error_streak += record.before[3]
+
+    def check(self, body: Mapping[str, Any], *, token: Any = None) -> dict[str, Any] | None:
+        """Account for one request; return a trip dict or None.
+
+        ``token`` identifies the request so :meth:`forgive` can undo exactly
+        this check later; it must be unique per request (any hashable).
+        """
+
         now = self._clock()
         exact = request_hash(body)
         with self._lock:
-            resend = self._snapshot is not None and self._snapshot[0] == exact or self._last_exact == exact
-            self._snapshot = (exact, self._last_tail, self._last_tail_t,
-                              self._tail_streak, self._error_streak, self._last_exact)
+            resend = self._last_exact == exact
+            self._gen += 1
+            record = _Check(
+                token=token,
+                exact=exact,
+                at=now,
+                gen=self._gen,
+                before=(self._last_tail, self._last_tail_t, self._tail_streak,
+                        self._error_streak, self._last_exact,
+                        self._tail_epoch, self._error_epoch),
+                tail_epoch=self._tail_epoch,
+                error_epoch=self._error_epoch,
+            )
             self._last_exact = exact
-        if self._exact.record(exact):
+            self._last_check = record
+            if token is not None:
+                self._pending.pop(token, None)
+                self._pending[token] = record
+                while len(self._pending) > _MAX_PENDING:
+                    self._pending.popitem(last=False)
+        if self._exact.record(exact, now=now):
             return {"kind": "repeat", "count": self.repeat_threshold,
                     "window_s": self.repeat_window_s}
         if resend:
@@ -384,9 +504,13 @@ class RunawayDetector:
             with self._lock:
                 if digest == self._last_tail and now - self._last_tail_t <= self.repeat_window_s:
                     self._tail_streak += 1
+                    record.tail_incremented = True
                 else:
                     self._tail_streak = 1
+                    self._tail_epoch += 1
                 self._last_tail, self._last_tail_t = digest, now
+                record.tail_digest = digest
+                record.tail_epoch = self._tail_epoch
                 streak = self._tail_streak
             if streak >= self.repeat_threshold:
                 return {"kind": "repeat", "count": streak,
@@ -395,8 +519,12 @@ class RunawayDetector:
         with self._lock:
             if err is True:
                 self._error_streak += 1
+                record.error_delta = 1
             elif err is False:
                 self._error_streak = 0
+                self._error_epoch += 1
+                record.error_reset = True
+            record.error_epoch = self._error_epoch
             streak = self._error_streak
         if streak >= self.tool_error_threshold:
             return {"kind": "tool_errors", "count": streak}

@@ -957,17 +957,20 @@ class _Proxy:
 
         now = self._now()
         cache_write = cache_write_requested(parsed)
+        # Identifies this request's loop check, so a 429/refusal forgives only
+        # this request's check, never a parallel one's (R7).
+        loop_token = object()
 
         if self.shadow_loop is not None and self.loop_nudge is None:
             self._feed_burn(self.shadow_loop)
-            shadow_trip = self.shadow_loop.check(parsed)
+            shadow_trip = self.shadow_loop.check(parsed, token=loop_token)
             if shadow_trip is not None:
                 self._loop_nudge(model, provider, shadow_trip)
 
         # Loop detection happens before money is reserved.
         if self.loop is not None:
             self._feed_burn(self.loop)
-            trip = self.loop.check(parsed)
+            trip = self.loop.check(parsed, token=loop_token)
             if trip is not None:
                 self._count_blocked()
                 # ``on_loop_detected`` is the specific hook; a generic kill
@@ -1184,10 +1187,15 @@ class _Proxy:
             # A rate-limited/overloaded call is resent unchanged by the agent;
             # that retry is not a stuck step and not a failing tool call.  The
             # same holds for a call the upstream refused (bad key, no credits):
-            # the model never ran, so the resend is not a loop either.
+            # the model never ran, so the resend is not a loop either.  Only
+            # this request's own check is undone (R7).
             for detector in (self.loop, self.shadow_loop):
                 if detector is not None:
-                    detector.forgive_last()
+                    detector.forgive(loop_token)
+        else:
+            for detector in (self.loop, self.shadow_loop):
+                if detector is not None:
+                    detector.done(loop_token)
         if rejection is not None:
             self._upstream_rejected(status, body, provider, model, rejection)
         elif status not in RETRYABLE_STATUSES:

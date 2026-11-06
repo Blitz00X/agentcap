@@ -194,4 +194,5 @@ def test_proxy_forgives_detector_on_429():
     import inspect
     from agentcap import proxy
     assert 429 in proxy.RETRYABLE_STATUSES
-    assert "forgive_last" in inspect.getsource(proxy)
+    # R7: per-request forgiveness, not the single-slot forgive_last().
+    assert "forgive(loop_token)" in inspect.getsource(proxy)
