@@ -43,6 +43,7 @@ TERMINAL_EVENTS = frozenset(
         "cap_eta",
         "upstream_rejected",
         "upstream_auth_failed",
+        "upstream_refused",
     }
 )
 
@@ -59,7 +60,7 @@ PRICING_URL = "https://agentcap.launchbench.studio/#pricing"
 ONCE_EVENTS = frozenset(
     {"cap_exceeded", "loop_detected", "output_clamped", "loop_nudge", "run_receipt",
      "quota_threshold", "quota_exceeded", "quota_parallel", "quota_receipt", "cap_eta",
-     "upstream_rejected", "upstream_auth_failed"}
+     "upstream_rejected", "upstream_auth_failed", "upstream_refused"}
 )
 
 # Only these fields may appear in an alert payload.  Anything else is dropped.
@@ -92,6 +93,7 @@ ALLOWED_FIELDS = frozenset(
         "http_status",
         "upstream_host",
         "count",
+        "rejection",
     }
 )
 
@@ -138,14 +140,24 @@ _REJECTION_ADVICE = {
 def _format_rejection(prefix: str, event: Mapping[str, Any]) -> str:
     status = event.get("http_status", "?")
     host = redact(str(event.get("upstream_host") or "")) or "the upstream"
+    refused = event.get("type") == "upstream_refused" or event.get("rejection") == "refused"
     if event.get("type") == "upstream_auth_failed":
         return (
             f"{prefix}: upstream rejected {event.get('count', '?')} requests in a row "
             f"(HTTP {status} from {host}). Stopping the agent."
         )
+    if event.get("type") == "upstream_refused":
+        return (
+            f"{prefix}: provider refused {event.get('count', '?')} requests in a row "
+            f"(HTTP {status} from {host}; not a key problem: region, moderation or "
+            "policy). Stopping the agent."
+        )
     detail = event.get("detail")
     what = f"HTTP {status}" + (f": {redact(str(detail))}" if detail else "")
-    advice = _REJECTION_ADVICE.get(status, "check the API key")
+    if refused:
+        advice = "provider refused the request (region, moderation or policy; not the API key)"
+    else:
+        advice = _REJECTION_ADVICE.get(status, "check the API key")
     spent = event.get("spent_usd")
     try:
         amount = Decimal(str(spent)) if spent is not None else Decimal("0")
@@ -194,7 +206,7 @@ def format_alert(event: Mapping[str, Any]) -> str:
             f"{prefix}: runaway loop detected ("
             f"{event.get('detail') or 'identical request repeated'}). Stopping the agent."
         )
-    if kind in ("upstream_rejected", "upstream_auth_failed"):
+    if kind in ("upstream_rejected", "upstream_auth_failed", "upstream_refused"):
         return _format_rejection(prefix, event)
     if kind == "loop_nudge":
         spent = event.get("spent_usd")

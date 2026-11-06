@@ -1,0 +1,1 @@
+{"status": 403, "body": {"error": {"code": 403, "message": "openai/gpt-4o-mini requires moderation on OpenRouter. Your input was flagged for \"harassment\". No credits were charged.", "metadata": {"reasons": ["harassment"], "flagged_input": "[redacted]", "provider_name": "OpenAI", "model_slug": "openai/gpt-4o-mini"}}}}

@@ -69,6 +69,9 @@ EXIT_REASONS = {
     "cap_exceeded": EXIT_CAP_EXCEEDED,
     "loop_detected": EXIT_LOOP_DETECTED,
     "upstream_auth_failed": EXIT_UPSTREAM_AUTH_FAILED,
+    #: A 403 that refused the request itself (region, moderation), several
+    #: times in a row: also a refusal a human has to resolve.
+    "upstream_refused": EXIT_UPSTREAM_AUTH_FAILED,
     "internal_error": EXIT_INTERNAL_ERROR,
 }
 
@@ -360,7 +363,10 @@ class Runner:
         self._trip("loop_detected", payload)
 
     def _on_upstream_auth_failed(self, payload: Mapping[str, Any]) -> None:
-        self._trip("upstream_auth_failed", payload)
+        reason = payload.get("reason")
+        if reason not in ("upstream_auth_failed", "upstream_refused"):
+            reason = "upstream_auth_failed"
+        self._trip(str(reason), payload)
 
     def _emit_event(self, event: Mapping[str, Any]) -> None:
         """Attach the run id before handing an accounting event to alerts."""
@@ -654,14 +660,14 @@ class Runner:
             elif self._proxy is not None and self._proxy.cap_reached():
                 reason = "cap_exceeded"
                 exit_code = EXIT_CAP_EXCEEDED
-            elif (
-                reason == "child_exit"
-                and self._proxy is not None
-                and getattr(self._proxy, "auth_reject_streak", 0) > 0
-            ):
-                # The agent gave up on its own after the upstream refused its
-                # credentials: say why, but keep the agent's own exit code.
-                reason = "upstream_auth_failed"
+            elif reason == "child_exit" and self._proxy is not None and exit_code != 0:
+                # The agent gave up on its own after the upstream refused it:
+                # say why, but keep the agent's own exit code.  An agent that
+                # exits 0 succeeded; a background rejection is only a warning.
+                if getattr(self._proxy, "auth_reject_streak", 0) > 0:
+                    reason = "upstream_auth_failed"
+                elif getattr(self._proxy, "refused_streak", 0) > 0:
+                    reason = "upstream_refused"
             self.summary = self._build_summary(reason, exit_code)
             self._print_summary(self.summary)
             if reason == "internal_error":
@@ -683,12 +689,33 @@ class Runner:
     def _hint_upstream_rejected(self, summary: RunSummary) -> None:
         """Repeat the plain "upstream rejected" line under the summary."""
 
-        if summary.reason != "upstream_auth_failed" or self._proxy is None:
+        if self._proxy is None:
             return
         rejection = getattr(self._proxy, "auth_rejection", None)
         if not rejection:
             return
-        from .alerts import format_alert
+        from .alerts import format_alert, redact
+
+        pending = (
+            getattr(self._proxy, "auth_reject_streak", 0) > 0
+            or getattr(self._proxy, "refused_streak", 0) > 0
+        )
+        if summary.reason == "child_exit" and summary.exit_code == 0 and pending:
+            # The agent finished successfully; the rejected request was a
+            # background one.  Report it, but do not relabel the run.
+            detail = rejection.get("detail")
+            what = f"HTTP {rejection.get('http_status', '?')}" + (
+                f": {redact(str(detail))}" if detail else ""
+            )
+            host = redact(str(rejection.get("upstream_host") or "")) or "the upstream"
+            self._print_hint(
+                "agentcap: WARNING: the upstream rejected a request during this run "
+                f"({what} from {host}); the agent exited 0, so the run is reported as "
+                "child_exit."
+            )
+            return
+        if summary.reason not in ("upstream_auth_failed", "upstream_refused"):
+            return
 
         self._print_hint(
             format_alert(

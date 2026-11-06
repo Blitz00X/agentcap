@@ -557,9 +557,14 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   headers never read). The agent's resends of such a request never count toward the loop breaker.
   After 3 rejections in a row with no other answer between them, the run is stopped on Free and Pro
   with reason `upstream_auth_failed` and exit 2 (like AgentCap's other exit-2 refusals: a setup
-  problem to fix, rerunning unchanged cannot help). If the agent gives up first, the reason is
-  still `upstream_auth_failed` and its own exit code is kept. One rejection followed by a
-  success changes nothing. `agentcap serve` only reports it and keeps serving.
+  problem to fix, rerunning unchanged cannot help). 429/5xx answers in between neither count nor
+  break the streak, so 401/429/401/429/401 still stops. A 403 whose body is not about the key,
+  permission or account (a region/country block, a moderation or policy refusal, or no readable
+  body) is reported as `provider refused the request` instead, and three in a row stop the run with
+  reason `upstream_refused` (exit 2). If the agent gives up first with a non-zero exit code, the
+  reason is still `upstream_auth_failed`/`upstream_refused` and its own exit code is kept; if it
+  exits 0, the reason stays `child_exit` and the rejection is printed as a separate warning. One
+  rejection followed by a success changes nothing. `agentcap serve` only reports it and keeps serving.
 - **Self-approval.** `agentcap approve` refuses (exit 2) when it runs inside an agent session
   (`AGENTCAP_QUOTA_JOB`, `AGENTCAP_GUARDED` or `CLAUDECODE` in its environment), and the hook of
   `agentcap run --quota -- claude` denies a Bash call that runs `agentcap approve`;

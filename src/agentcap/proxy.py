@@ -319,6 +319,63 @@ def upstream_error_message(body: bytes) -> str | None:
     return text
 
 
+#: A 403 body that says the request itself (where it came from, what it said)
+#: was refused, not the key: region/country blocks, moderation/policy flags.
+_REFUSED_403 = re.compile(
+    r"countr|region|territor|location|moderat|flagged|content[\s_-]?polic"
+    r"|safety|violat|prohibited",
+    re.IGNORECASE,
+)
+#: A 403 body about the key, the identity or the account behind it.
+_IDENTITY_403 = re.compile(
+    r"api[\s_-]?key|\bkeys?\b|credential|authenti|unauthori[sz]|\bauth\b"
+    r"|permission|\bscopes?\b|\baccount\b|organi[sz]ation|\bproject\b|\btoken\b"
+    r"|credit|billing|payment",
+    re.IGNORECASE,
+)
+
+
+def _rejection_text(body: bytes) -> str:
+    """The short descriptive fields of a JSON error body, joined (or '')."""
+
+    error = _error_object(body)
+    if error is None:
+        return ""
+    parts: list[str] = []
+    for key in ("type", "code", "status", "message"):
+        value = error.get(key)
+        if isinstance(value, (str, int)) and not isinstance(value, bool):
+            parts.append(str(value)[:2000])
+    details = error.get("details")
+    if isinstance(details, list):
+        for item in details[:10]:
+            if isinstance(item, Mapping) and isinstance(item.get("reason"), str):
+                parts.append(item["reason"])
+    return " ".join(parts)
+
+
+def classify_rejection(status: int, body: bytes) -> str | None:
+    """``"auth"``, ``"refused"`` or None for an upstream answer.
+
+    ``"auth"``: the key/identity/account was rejected (401, 402, a 403 whose
+    body is about the key/permission/account, Gemini's 400
+    ``API_KEY_INVALID``).  ``"refused"``: a 403 that is not about the key --
+    a region block, a moderation/policy refusal, or no usable body.  429 and
+    5xx are neither.
+    """
+
+    if status in (401, 402):
+        return "auth"
+    if status == 403:
+        text = _rejection_text(body)
+        if not text or _REFUSED_403.search(text):
+            return "refused"
+        return "auth" if _IDENTITY_403.search(text) else "refused"
+    if status != 400:
+        return None
+    return "auth" if _is_auth_rejection(status, body) else None
+
+
 def _is_auth_rejection(status: int, body: bytes) -> bool:
     if status in AUTH_REJECTED_STATUSES:
         return True
@@ -388,7 +445,11 @@ class _Proxy:
         self._burn_seen = Decimal("0")
         #: Consecutive upstream answers that rejected the credentials/account.
         self.auth_reject_streak = 0
-        #: The latest such rejection (status, host, short message), or None.
+        #: Consecutive 403s that refused the request itself (region block,
+        #: moderation), not the key.  429/5xx neither count nor reset either.
+        self.refused_streak = 0
+        #: The latest rejection of either kind (status, host, short message,
+        #: ``rejection``: "auth" or "refused"), or None.
         self.auth_rejection: dict[str, Any] | None = None
         self.blocked_count = 0
         #: Model requests the proxy actually saw (forwarded or refused).
@@ -1118,8 +1179,8 @@ class _Proxy:
         )
         status = getattr(result, "status_code", 200)
         body = getattr(result, "body", b"")
-        rejected = _is_auth_rejection(status, body)
-        if status in RETRYABLE_STATUSES or rejected:
+        rejection = classify_rejection(status, body)
+        if status in RETRYABLE_STATUSES or rejection is not None:
             # A rate-limited/overloaded call is resent unchanged by the agent;
             # that retry is not a stuck step and not a failing tool call.  The
             # same holds for a call the upstream refused (bad key, no credits):
@@ -1127,10 +1188,14 @@ class _Proxy:
             for detector in (self.loop, self.shadow_loop):
                 if detector is not None:
                     detector.forgive_last()
-        if rejected:
-            self._upstream_rejected(status, body, provider, model)
-        else:
+        if rejection is not None:
+            self._upstream_rejected(status, body, provider, model, rejection)
+        elif status not in RETRYABLE_STATUSES:
+            # Any real answer ends both streaks.  A 429/5xx is a transient
+            # resend: it neither counts toward nor resets them, so 401/429
+            # alternating still stops on the third 401.
             self.auth_reject_streak = 0
+            self.refused_streak = 0
         return result
 
     def _upstream_host(self, provider: str) -> str:
@@ -1143,13 +1208,26 @@ class _Proxy:
         return f"{host}:{port}" if host and port else host
 
     def _upstream_rejected(
-        self, status: int, body: bytes, provider: str, model: str
+        self, status: int, body: bytes, provider: str, model: str, rejection: str = "auth"
     ) -> None:
-        """Report a credentials/payment rejection; stop after a streak of them."""
+        """Report an upstream rejection; stop after a streak of the same kind.
 
-        self.auth_reject_streak += 1
+        ``rejection`` is ``"auth"`` (key/identity/account) or ``"refused"`` (a
+        403 about the request, not the key).  Each kind has its own streak and
+        its own stop reason: ``upstream_auth_failed`` / ``upstream_refused``.
+        """
+
+        if rejection == "refused":
+            self.refused_streak += 1
+            streak = self.refused_streak
+            reason = "upstream_refused"
+        else:
+            self.auth_reject_streak += 1
+            streak = self.auth_reject_streak
+            reason = "upstream_auth_failed"
         info: dict[str, Any] = {
             "type": "upstream_rejected",
+            "rejection": rejection,
             "provider": provider,
             "model": model,
             "http_status": status,
@@ -1162,16 +1240,13 @@ class _Proxy:
         callback = self.config.on_upstream_auth_failed
         # Only a caller that asked for it (the runner) stops on this; a bare
         # proxy (``agentcap serve``) keeps serving and just reports it.
-        if (
-            callback is None
-            or self.auth_reject_streak < self.config.auth_reject_threshold
-        ):
+        if callback is None or streak < self.config.auth_reject_threshold:
             return
         payload = {
             **info,
-            "type": "upstream_auth_failed",
-            "reason": "upstream_auth_failed",
-            "count": self.auth_reject_streak,
+            "type": reason,
+            "reason": reason,
+            "count": streak,
         }
         if not self.killed:
             self._emit(dict(payload))
