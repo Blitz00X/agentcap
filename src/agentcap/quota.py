@@ -43,7 +43,7 @@ from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock
 from .lifeline import GroupWatchdog, mark_child_start_failure
 from .lifeline import spawn as lifeline_spawn
 from .private import ensure_private_dir, open_private, write_private_text
-from .procstop import ProcessTreeGuard, denied_warning, reap_group, stop_tree
+from .procstop import ProcessTreeGuard, ZombieCollector, denied_warning, reap_group, stop_tree
 
 WINDOWS = ("week", "5h")
 WARN_FRACTION = 0.8
@@ -975,6 +975,7 @@ class QuotaRunner:
             return 2
         watchdog = GroupWatchdog()
         tree_guard = ProcessTreeGuard()
+        zombies = ZombieCollector()
         try:
             started = time.time()
             ensure_private_dir(self.job_dir)
@@ -1150,6 +1151,7 @@ class QuotaRunner:
                     self._live(share, observed, hit)
                     if code is not None:
                         break
+                    zombies.tick()  # no-op unless AGENTCAP_COLLECT_ZOMBIES=1
                     time.sleep(self.poll_s)
             except KeyboardInterrupt:
                 self._stop()

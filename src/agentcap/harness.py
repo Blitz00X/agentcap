@@ -36,7 +36,7 @@ from typing import Any, Callable, Mapping, Sequence, TextIO
 from .failsafe import EXIT_GUARD_FAILED, GuardFailure, JobLock, SchemaWatch
 from .lifeline import GroupWatchdog, mark_child_start_failure
 from .lifeline import spawn as lifeline_spawn
-from .procstop import ProcessTreeGuard, denied_warning, reap_group, stop_tree
+from .procstop import ProcessTreeGuard, ZombieCollector, denied_warning, reap_group, stop_tree
 from .quota import LoopWatch, WARN_FRACTION, _atomic_write, state_root
 
 EXIT_CAP_EXCEEDED = 3
@@ -358,6 +358,7 @@ class HarnessRunner:
             lock = self._joblock
         watchdog = GroupWatchdog()
         tree_guard = ProcessTreeGuard()
+        zombies = ZombieCollector()
         try:
             watchdog.start()  # before the tree guard, so its baseline excludes it
             tree_guard.start()
@@ -457,6 +458,7 @@ class HarnessRunner:
                             self._stop()
                     if code is not None:
                         break
+                    zombies.tick()  # no-op unless AGENTCAP_COLLECT_ZOMBIES=1
                     time.sleep(self.poll_s)
             except KeyboardInterrupt:
                 self._stop()

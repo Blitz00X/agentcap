@@ -44,7 +44,7 @@ from .license import features as license_features
 from .license import status_from_environment
 from .pricing import PricingStore
 from .private import write_private_text
-from .procstop import ProcessTreeGuard, denied_warning, reap_group
+from .procstop import ProcessTreeGuard, ZombieCollector, denied_warning, reap_group
 from .proxy import (
     DEFAULT_ANTHROPIC_UPSTREAM,
     DEFAULT_GEMINI_UPSTREAM,
@@ -295,6 +295,8 @@ class Runner:
         self.summary: RunSummary | None = None
         #: The internal error that stopped the run (exit 5), if any.
         self._internal_error: BaseException | None = None
+        #: Opt-in in-run reaping of adopted zombies (default OFF).
+        self._zombies = ZombieCollector()
 
         self.alerts = alerts or dispatcher_from_env(
             features=self.features,
@@ -546,6 +548,7 @@ class Runner:
                 if self.kill_event.is_set():
                     return EXIT_REASONS.get(self.kill_reason or "", 1)
                 return int(code)
+            self._zombies.tick()  # no-op unless AGENTCAP_COLLECT_ZOMBIES=1
             time.sleep(self.poll_interval)
 
     # -------------------------------------------------------------------- run

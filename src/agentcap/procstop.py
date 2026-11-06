@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from typing import Mapping
 
 POLL_INTERVAL = 0.05
 
@@ -395,6 +396,94 @@ def group_alive(pgid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+#: Opt-in (default OFF): reap adopted zombies during the run, not only at its end.
+ZOMBIE_COLLECTOR_ENV = "AGENTCAP_COLLECT_ZOMBIES"
+
+
+def _zombie_identity(pid: int) -> tuple[int, int, int, bool] | None:
+    """``(ppid, sid, start, zombie)`` from one ``/proc/<pid>/stat`` read."""
+
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
+            fields = handle.read().rsplit(")", 1)[1].split()
+        # state (3), ppid (4), session (6), starttime (22).
+        return int(fields[1]), int(fields[3]), int(fields[19]), fields[0] == "Z"
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def collect_adopted_zombies() -> int:
+    """Reap exited helpers AgentCap adopted as subreaper; return how many.
+
+    Only a zombie that is our child *and* whose session id is neither
+    AgentCap's own nor its own pid is reaped: an in-group background job or a
+    double-forked daemon of the agent.  The agent (started in its own
+    session), a ``setsid`` helper (a session leader) and any child AgentCap
+    started itself are never waited for here, so their exit statuses stay with
+    their ``Popen``/final sweep.  Each candidate's ``(pid, start)`` identity is
+    re-read just before ``waitpid`` so a reused PID is never reaped.
+    """
+
+    if not subreaper_supported():
+        return 0
+    me = os.getpid()
+    try:
+        my_sid = os.getsid(0)
+        names = os.listdir("/proc")
+    except OSError:
+        return 0
+    collected = 0
+    for name in names:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        first = _zombie_identity(pid)
+        if first is None:
+            continue
+        ppid, sid, _start, zombie = first
+        if ppid != me or not zombie or sid in (my_sid, pid):
+            continue
+        if _zombie_identity(pid) != first:
+            continue  # changed under us: never wait on a different process
+        try:
+            got, _status = os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            continue
+        if got == pid:
+            collected += 1
+    return collected
+
+
+class ZombieCollector:
+    """Throttled :func:`collect_adopted_zombies`, enabled by an env flag.
+
+    Off unless ``AGENTCAP_COLLECT_ZOMBIES=1``; when off :meth:`tick` does
+    nothing at all, so the run behaves exactly as before.
+    """
+
+    def __init__(self, *, interval: float = 1.0, env: Mapping[str, str] | None = None) -> None:
+        source = os.environ if env is None else env
+        self.enabled = source.get(ZOMBIE_COLLECTOR_ENV, "").strip() == "1"
+        self.interval = float(interval)
+        self.collected = 0
+        self._next = 0.0
+
+    def tick(self) -> int:
+        if not self.enabled:
+            return 0
+        now = time.monotonic()
+        if now < self._next:
+            return 0
+        self._next = now + self.interval
+        try:
+            # Looked up at call time so tests can observe it.
+            count = sys.modules[__name__].collect_adopted_zombies()
+        except Exception:
+            return 0
+        self.collected += count
+        return count
 
 
 def _reap_group_zombies(pgid: int | None) -> None:

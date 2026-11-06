@@ -540,7 +540,12 @@ Request bodies are billed at price-book rates; embeddings are input-only.
   sweep): `/proc` cannot tell an adopted `setsid` helper from a child AgentCap's own process
   started in a new session, and taking that child's exit status would make it report 0. A long
   run whose agent keeps leaving short-lived detached helpers holds one PID per finished helper,
-  counted against `ulimit -u`, until the run ends. Interrupting a job
+  counted against `ulimit -u`, until the run ends. Opt-in (0.3.1, default off):
+  `AGENTCAP_COLLECT_ZOMBIES=1` reaps, about once a second during the run, adopted zombies whose
+  session id is neither AgentCap's nor their own pid (an in-group background job, a double-forked
+  daemon), after re-checking their PID + start time. The agent, `setsid` helpers (session leaders)
+  and AgentCap's own children are never reaped early, so their exit codes are kept; `setsid`
+  helpers are still collected by the final sweep. Interrupting a job
   can leave its work half done (a migration, a deploy): that is the job's responsibility, so
   commit before a guarded run.
 - **Fail-closed.** On Pro, quota and harness runs (`--quota`, `--tokens`, `--log-cap`) stop the
