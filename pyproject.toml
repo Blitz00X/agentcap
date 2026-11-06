@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentcap-cli"
-version = "0.3.0"
-description = "API-key spend guard for unattended Codex CLI, Gemini CLI and Claude Code runs: hard per-run cap, kills the process at the limit."
+version = "0.3.1"
+description = "Local-first quota and cost guard for coding agents: per-job share of Claude Code/Codex/Gemini subscription quota, loop breaker, evidence receipt."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

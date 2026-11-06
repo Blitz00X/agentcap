@@ -477,7 +477,7 @@ output limit, so a clamp also caps them.
 
 | Code | Meaning |
 | --- | --- |
-| `2` | Setup or auth refusal: bad flags, a Pro-only flag on Free, a conflicting CLI config, a second quota job, or the provider rejected the credentials (`upstream_auth_failed`). |
+| `2` | Setup or auth refusal: bad flags, a Pro-only flag on Free, a conflicting CLI config, a second quota job, the provider rejected the credentials (`upstream_auth_failed`), or it refused the request for another reason (`upstream_refused`). |
 | `3` | A cap stopped the agent (`--cap`, `--quota`, `--tokens`, `--log-cap`). |
 | `4` | Pro's loop/error/burn breaker stopped the agent. |
 | `5` | Internal error: AgentCap could not use its own state (HOME, `quota.lock`, ledger, license or job files), its proxy could not start, an opencode/agy log schema or Codex rollout log could not be read (fail-closed), or AgentCap hit an internal fault. The message names the failed action and path (`internal state error: could not open the quota lock ...`); the agent was not started, or was stopped (reason `internal_error`). |
