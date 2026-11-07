@@ -249,7 +249,11 @@ The easiest path on a Claude Max or Pro plan. Inside Claude Code:
 /agentcap:off            # clear it;  /agentcap:unsetup restores your old statusLine
 ```
 
-No pip install: the plugin is stdlib Python (`python3` on PATH). How it works:
+No pip install: the plugin is stdlib Python (`python3` on PATH). The marketplace installs only
+the self-contained `plugin/` folder (commands, hooks, the script and the few `agentcap` modules it
+imports), not the whole repo. Contributors: `plugin/` is generated, edit the sources and run
+`python3 scripts/build_plugin.py` (`--check` verifies; `claude --plugin-dir plugin` loads it locally).
+How it works:
 
 - Claude Code only exposes the subscription `rate_limits` % to the **statusLine** command, and a
   plugin can't set the main statusLine. So `/agentcap:setup` asks once and writes it to

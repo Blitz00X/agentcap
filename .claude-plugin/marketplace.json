@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "agentcap",
-      "source": "./",
+      "source": "./plugin",
       "description": "Per-session quota caps for Claude Code on Max/Pro subscriptions."
     }
   ],
