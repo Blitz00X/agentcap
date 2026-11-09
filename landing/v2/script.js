@@ -1,3 +1,17 @@
+(function () {
+  var allowed = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'];
+  var buy = document.querySelector('a[href^="https://buy.polar.sh/"]');
+  if (!buy) return;
+  var incoming = new URLSearchParams(window.location.search);
+  var outgoing = new URL(buy.href);
+  allowed.forEach(function (key) {
+    var value = incoming.get(key);
+    if (!value) return;
+    outgoing.searchParams.set(key, value.slice(0, 200));
+  });
+  buy.href = outgoing.toString();
+})();
+
 document.querySelectorAll('[data-copy]').forEach(function (button) {
   button.addEventListener('click', function () {
     var text = button.getAttribute('data-copy');
