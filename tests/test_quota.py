@@ -872,3 +872,31 @@ def test_missing_quota_agent_binary_is_still_a_start_failure(tmp_path, monkeypat
     r, _events, _err = make_runner(["codex", "exec", "hi"], tmp_path)
     with pytest.raises(FileNotFoundError):
         r.run()
+
+
+def test_no_80pct_warning_when_whole_percent_jumps_straight_to_the_limit(fakebin, tmp_path, monkeypatch):
+    # live Codex 10 Nov 2026: 0% -> 1% in one response printed the 80% warning and the stop together
+    monkeypatch.setenv("FAKE_N", "4")
+    r, events, err = make_runner(["codex"], tmp_path, quota=1.0)
+    assert r.run() == 3
+    types = [e["type"] for e in events]
+    assert "quota_exceeded" in types and "quota_threshold" not in types
+
+
+def test_80pct_warning_still_fires_before_the_limit(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "8")
+    r, events, err = make_runner(["codex"], tmp_path, quota=5.0)
+    assert r.run() == 3
+    types = [e["type"] for e in events]
+    assert types.index("quota_threshold") < types.index("quota_exceeded")
+
+
+def test_small_cap_note_between_1_and_3_percent(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "2")
+    r, events, err = make_runner(["codex"], tmp_path, quota=2.0)
+    r.run()
+    assert "may stop the job after its first response" in err.getvalue()
+    (tmp_path / "b").mkdir()
+    r2, _, err2 = make_runner(["codex"], tmp_path / "b", quota=3.0)
+    r2.run()
+    assert "first response" not in err2.getvalue()

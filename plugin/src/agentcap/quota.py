@@ -47,6 +47,9 @@ from .procstop import ProcessTreeGuard, ZombieCollector, denied_warning, reap_gr
 
 WINDOWS = ("week", "5h")
 WARN_FRACTION = 0.8
+# Below this a whole-percent cap leaves room for about one model response (Codex, 10 Nov 2026:
+# one gpt-6.1-sol high response used 1% of the 5-hour window).
+SMALL_CAP_PCT = 3.0
 EXIT_QUOTA_EXCEEDED = 3
 EXIT_LOOP_DETECTED = 4
 BASELINE_MAX_AGE_S = 15 * 60
@@ -1019,6 +1022,10 @@ class QuotaRunner:
             if self.agent == "codex" and self.quota < 1:
                 self._say(f"agentcap: WARNING: Codex reports quota in whole percent, so a {self.quota:g}% cap "
                           "cannot trigger until the job has used a full 1%. Use --quota 1% or more for Codex.")
+            if 1 <= self.quota < SMALL_CAP_PCT and not (self.agent == "claude" and self.headless):
+                self._say(f"agentcap: note: {self.agent} reports quota in 1% steps and one model response "
+                          f"can use a full 1%, so a {self.quota:g}% cap may stop the job after its first "
+                          f"response. Use about {SMALL_CAP_PCT:g}% or more for room to work.")
             if self.agent == "claude" and self.headless:
                 self._say(HEADLESS_CLAUDE_QUOTA_WARNING)
             elif self.agent == "claude" and self.quota < 1:
@@ -1104,7 +1111,9 @@ class QuotaRunner:
                         no_data_warned = True
                         self._say("agentcap: no quota data yet; protection not verified "
                                   "(Claude: interactive mode with statusline; Codex: ChatGPT login).")
-                    if observed and not warned and share >= self.quota * WARN_FRACTION:
+                    # Whole-percent sources can jump straight past 80% to the limit; a warning
+                    # printed together with the stop tells the user nothing, so skip it then.
+                    if observed and not warned and self.quota * WARN_FRACTION <= share < self.quota:
                         warned = True
                         self._event("quota_threshold", share, threshold=80)
                     if observed and not hit and share >= self.quota:
