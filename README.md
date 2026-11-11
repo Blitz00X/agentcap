@@ -45,17 +45,20 @@ your subscription quota % and Codex support.
   proxy also catches identical requests and `--max-burn` $/min spikes.
 - **Per-job quota %.** Stop one job at its share of the account's weekly or 5-hour limit.
 - **Evidence receipt.** Each stop prints and saves why (`same tool call 4 times in a row (Bash)`,
-  `this job used 5.1% of the weekly quota`) and the last tool call's name, as numbers and tool
+  `the account's weekly quota rose 5.1% while this job ran`) and the last tool call's name, as numbers and tool
   names only, never prompts or tool inputs.
 - **Approve.** After a stop, `agentcap approve` (or `/agentcap:approve` in the plugin) raises the
   limit by 50%, at most twice, and the run continues. This works for interactive Claude Code,
   which stays open after a stop. Codex and headless `claude -p` jobs are stopped with SIGINT, so
   there approve only helps before the limit is hit; after a stop it says so and changes nothing.
+  Run it from your own shell while the job runs (live Codex test: `1% -> 1.5% -> 2.25%`, the third
+  approve refused). With whole-percent quota steps a 1.5% limit stops at the next step, 2%.
 - **Free** runs the same detectors in observe-only mode and prints what Pro would have done.
 
 Honest limits: Claude tool-error streaks are only caught on API-key runs (the subscription hook sees
 the call, not its result); the stop can be one request late; quota % is account-level; verified on
-fixtures, fake CLIs and real Claude Code 2.1.197 hooks, **not yet on a real Max/ChatGPT account.**
+fixtures, fake CLIs and real Claude Code hooks; quota stops verified on real Claude Pro and ChatGPT
+Plus accounts (see "Supported & tested").
 
 ## The API-key cap
 
@@ -328,6 +331,12 @@ Values arrive once per model response, so a job **can overshoot by up to one req
 Claude Code only reports `rate_limits` for Pro/Max logins and only in interactive sessions
 (the statusline does not run in `claude -p`). Codex's rollout format is undocumented and may change. Codex reports `used_percent` in whole percent, so a Codex cap under 1% cannot trigger until the job has used a full 1% (AgentCap warns at start). Use `--quota 1%` or more for Codex.
 Claude Code reports whole percents too: a cap under 1% trips at the next 1% step (AgentCap warns).
+One response can move the account by a full step, so a 2.25% limit can end at 3%.
+The interactive Codex TUI ignores SIGINT mid-turn, so AgentCap escalates to SIGTERM; the
+interrupted response's usage may then be missing from the receipt (`final_read: incomplete`),
+while the account increase it reports stays correct. AgentCap restores the terminal afterwards.
+Codex's own sandbox (bubblewrap) fails inside some agent shells on Ubuntu
+(`kernel.apparmor_restrict_unprivileged_userns=1`); in a normal terminal it works.
 Verified on real accounts: see the harness support matrix under "Supported & tested".
 
 ## opencode and agy (Antigravity CLI)
@@ -407,7 +416,7 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 | --- | --- | --- | --- | --- |
 | Claude Code, Pro/Max sub, interactive | ✅ (deny keeps the session; resumes after approve) | ✅ | ✅ whole-% steps (deny keeps the session); `agentcap approve` ✅ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
 | Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ❌ interactive only (warns at start) | ❌ by design (refused) |
-| Codex, ChatGPT sub | ✅ | ✅ | ✅ (whole %; warns under 1%) | ❌ by design (no proxy on a subscription) |
+| Codex, ChatGPT sub | ✅ | ✅ | ✅ `exec` and interactive TUI (whole %; warns under 1%; one-response timeout, default 5m; terminal restored after a TUI stop; approve mid-run). Live, Codex 0.167.1, 11 Nov 2026 | ❌ by design (no proxy on a subscription) |
 | opencode Go | ✅ | ✅ | ❌ not yet: opencode 1.x's session log reports Go cost as 0 and leaves out subagents (live test, 11 Nov 2026), so a Go % cap cannot be measured; do not rely on `--quota` with opencode | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
 | agy, Google sub (plain `agentcap run -- agy` needs no key: breakers only) | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
 | opencode + OpenRouter (free model) | ✅ | ✅ | n/a | ✅ $ cap |

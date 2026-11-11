@@ -50,10 +50,13 @@ Real ChatGPT Plus / Claude Pro accounts, Codex 0.166-0.167.1, Claude Code intera
 | Codex parallel session | warning printed |
 | B1: Codex 5h 2% (low effort, MCP tools), commit 01c7937 | exit 3 in 22 s, receipt `final_read=complete`; found the stale-baseline undercount fixed in 01c7937 |
 | B2: Codex max effort, `--response-timeout 2m` | cut after 2 min, exit 4 `response_timeout`, no leftover; the interrupted response's usage did not show (5h stayed 3%) |
+| B4: Codex Free observe-only, 5h 1% | not stopped, exit 0, "Pro's quota mode would have stopped this job at 1%"; 62-min-old same-window baseline used |
+| B3: Codex `approve` x3 mid-run, 5h 1% | 1% -> 1.5% -> 2.25%, third refused, stopped at 3.0% (whole-% step), exit 3 |
+| B5: Codex multi-turn with shell tools + `sleep 901 &`, 5h 3% | exit 3, no leftover sleep or codex (Codex's sandbox likely ended the sleep itself) |
+| B6: interactive Codex TUI, 5h 2% | exit 3, no leftover; first run left the shell in raw mode, fixed in 72bf25f, re-run clean |
 | Claude interactive 5h 2% | 17 -> 19, tool call denied, session stayed open, exit 3 |
 
-Still open (each needs Kutay's approval first): Codex `approve` mid-run, multi-turn with shell
-tools + process-tree cleanup, interactive Codex TUI, Free observe-only; Claude approve flow,
+Codex quota stopping is done. Still open (each needs Kutay's approval first): Claude approve flow,
 weekly window, headless warning, own statusline chain, plugin self-guard, plugin `/agentcap:quota`.
 
 - **Codex sandbox in an agent shell:** shell tool calls fail with
