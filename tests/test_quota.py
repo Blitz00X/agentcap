@@ -1110,3 +1110,13 @@ def test_codex_reading_from_an_ended_window_is_not_the_baseline(fakebin, tmp_pat
     r, events, err = make_runner(["codex"], tmp_path, quota=50.0)
     assert r.run() == 0
     assert not r.summary.baseline_exact and r.summary.share == 0.0
+
+
+def test_codex_long_first_response_is_not_reported_as_missing_data(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "0")       # task_started, then one long response, no token_count yet
+    monkeypatch.setenv("FAKE_HANG", "5")
+    # warn window longer than the fake's start-up (slow under a loaded suite), shorter than its response
+    r, events, err = make_runner(["codex", "exec", "x"], tmp_path, quota=5.0, no_data_warn_s=2.5)
+    assert r.run() == 0
+    assert "no quota data yet" not in err.getvalue()
+    assert "guard cannot see" not in err.getvalue()

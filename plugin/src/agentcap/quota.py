@@ -1281,8 +1281,13 @@ class QuotaRunner:
                         self._say("agentcap: WARNING: another session is using the same account; "
                                   "quota % is account-level, so its usage counts against this job.")
                         self._event("quota_parallel", share)
+                    # Codex: a first response still in flight is not missing data (live B2, 11 Nov
+                    # 2026: max effort thought 2 min before its first token_count).
+                    codex_waiting = (tailer is not None and tailer.own is not None
+                                     and (tailer.response_open or tailer.token_counts > 0))
                     if (not observed and not no_data_warned and now - started > self.no_data_warn_s
-                            and not (self.agent == "claude" and self.headless)):
+                            and not (self.agent == "claude" and self.headless) and not codex_waiting
+                            and code is None):  # after exit the receipt says it
                         no_data_warned = True
                         self._say("agentcap: no quota data yet; protection not verified "
                                   "(Claude: interactive mode with statusline; Codex: ChatGPT login).")
