@@ -56,6 +56,35 @@ EXIT_LOOP_DETECTED = 4
 BASELINE_MAX_AGE_S = 15 * 60
 APPROVE_FACTOR = 1.5
 APPROVE_MAX = 2
+
+# ------------------------------------------------------ measurement contract
+# One reading record is the only quota representation used by the product.
+# Every surface (status line, `agentcap quota`, the hook, the receipt and the
+# Claude Code plugin) renders these fields through the same state function;
+# none of them invents a share, an age or a state of its own.
+READING_MAX_AGE_S = {"claude": 60.0, "codex": 600.0}
+READING_RESOLUTION_PCT = 1.0           # both supported sources report whole percent
+READING_UNCERTAINTY_PCT = (1.0, 3.0)   # one source step + up to one model response
+DEFAULT_MAX_AGE_S = READING_MAX_AGE_S["codex"]
+
+STATE_STARTING = "starting"
+STATE_PROTECTED = "protected"
+STATE_STALE = "stale"
+STATE_STOPPED = "stopped"
+
+STATE_TEXT = {
+    STATE_STARTING: "waiting for the first reading",
+    STATE_PROTECTED: "protection active",
+    STATE_STALE: "data stale (protection not verified)",
+    STATE_STOPPED: "stopped",
+}
+
+
+def uncertainty_text() -> str:
+    """The honesty marker printed next to every measured percentage."""
+
+    low, high = READING_UNCERTAINTY_PCT
+    return f"±{low:g}-{high:g}%"
 # Codex writes usage only when a model response ends; at high reasoning effort one response
 # ran 6+ minutes with no reading (11 Nov 2026, gpt-6-astra max).  Quota mode cuts a single
 # response after this long (Pro) so the job cannot spend an unseen amount; SIGINT makes Codex
