@@ -238,7 +238,7 @@ FAKE_CLAUDE = textwrap.dedent('''\
 FAKE_CODEX = textwrap.dedent('''\
     #!{python}
     """Mimics Codex CLI: appends token_count events to a new rollout file."""
-    import json, os, sys, time, datetime
+    import json, os, signal, sys, time, datetime
     home = os.environ["CODEX_HOME"]
     day = datetime.date.today()
     d = os.path.join(home, "sessions", f"{{day:%Y}}", f"{{day:%m}}", f"{{day:%d}}")
@@ -247,8 +247,26 @@ FAKE_CODEX = textwrap.dedent('''\
     week = float(os.environ.get("FAKE_START", "40"))
     step = float(os.environ.get("FAKE_STEP", "1"))
     reset_at = int(os.environ.get("FAKE_RESET_AT", "0"))
-    with open(path, "a") as fh:
+    def token_count(week):
+        limits = {{"primary": {{"used_percent": 10.0, "window_minutes": 300, "resets_at": int(time.time() + 3600)}},
+                  "secondary": {{"used_percent": week, "window_minutes": 10080, "resets_at": int(time.time() + 86400)}}}}
+        payload = {{"type": "token_count", "info": {{}}}}
+        if not os.environ.get("FAKE_NO_LIMITS"):
+            payload["rate_limits"] = limits
+        return {{"timestamp": "t", "type": "event_msg", "payload": payload}}
+    if os.environ.get("FAKE_NO_LOG"):
+        time.sleep(float(os.environ.get("FAKE_HANG", "0"))); sys.exit(0)
+    fh = open(path, "a")
+    def on_int(sig, frame):
+        # real Codex writes the interrupted response's usage, then turn_aborted
+        fh.write(json.dumps(token_count(week + float(os.environ.get("FAKE_INT_STEP", "0")))) + "\\n")
+        fh.write(json.dumps({{"timestamp": "t", "type": "event_msg", "payload": {{"type": "turn_aborted"}}}}) + "\\n")
+        fh.flush(); os._exit(130)
+    signal.signal(signal.SIGINT, on_int)
+    if True:
         fh.write(json.dumps({{"type": "session_meta", "payload": {{"id": "x"}}}}) + "\\n")
+        fh.write(json.dumps({{"type": "turn_context", "payload": {{"effort": os.environ.get("FAKE_EFFORT", "medium")}}}}) + "\\n")
+        fh.write(json.dumps({{"type": "event_msg", "payload": {{"type": "task_started"}}}}) + "\\n"); fh.flush()
         for i in range(int(os.environ.get("FAKE_N", "40"))):
             week += step
             resets = time.time() + 86400
@@ -256,9 +274,9 @@ FAKE_CODEX = textwrap.dedent('''\
                 if i == reset_at:
                     week = step
                 resets += 7 * 86400
-            line = {{"timestamp": "t", "type": "event_msg", "payload": {{"type": "token_count", "rate_limits": {{
-                "primary": {{"used_percent": 10.0, "window_minutes": 300, "resets_at": int(time.time() + 3600)}},
-                "secondary": {{"used_percent": week, "window_minutes": 10080, "resets_at": int(resets)}}}}}}}}
+            line = token_count(week)
+            if "rate_limits" in line["payload"]:
+                line["payload"]["rate_limits"]["secondary"]["resets_at"] = int(resets)
             fh.write(json.dumps(line) + "\\n"); fh.flush()
             if os.environ.get("FAKE_LOOP"):
                 fc = {{"timestamp": "t", "type": "response_item", "payload": {{"type": "function_call",
@@ -268,6 +286,8 @@ FAKE_CODEX = textwrap.dedent('''\
                 fh.write(json.dumps(fc) + "\\n" + json.dumps(fo) + "\\n"); fh.flush()
             print("TURN", i, flush=True)
             time.sleep(0.15)
+        time.sleep(float(os.environ.get("FAKE_HANG", "0")))  # one long response, no usage yet
+        fh.write(json.dumps({{"type": "event_msg", "payload": {{"type": "task_complete"}}}}) + "\\n"); fh.flush()
 ''')
 
 
@@ -303,7 +323,7 @@ def test_e2e_claude_denied_at_quota(fakebin, tmp_path):
     assert code == 3
     assert "quota_threshold" in types and "quota_exceeded" in types and types[-1] == "quota_receipt"
     assert r.summary.share >= 5.0 and r.summary.share < 7
-    assert "this job used" in err.getvalue() and "weekly quota" in err.getvalue()
+    assert "weekly quota rose" in err.getvalue() and "while this job ran" in err.getvalue()
     receipt = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
     assert receipt["type"] == "agentcap_quota_receipt" and receipt["exit_code"] == 3
     assert (r.job_dir / "denies.log").exists()
@@ -900,3 +920,162 @@ def test_small_cap_note_between_1_and_3_percent(fakebin, tmp_path, monkeypatch):
     r2, _, err2 = make_runner(["codex"], tmp_path / "b", quota=3.0)
     r2.run()
     assert "first response" not in err2.getvalue()
+
+
+# ------------------------------------------- Codex readiness fixes (11 Nov 2026 live runs)
+def test_tailer_tracks_model_time_not_tool_time():
+    t = q.CodexTailer(Path("/nonexistent"), 0.0)
+    ev = lambda kind, ptype=None, **p: {"type": kind, "payload": dict({"type": ptype} if ptype else {}, **p)}
+    t.track(ev("turn_context", effort="max"), 1.0)
+    assert t.effort == "max" and t.response_since is None
+    t.track(ev("event_msg", "task_started"), 2.0)
+    assert t.response_since == 2.0
+    t.track(ev("response_item", "custom_tool_call"), 5.0)
+    assert t.response_since is None          # a tool runs: no model time
+    t.track(ev("event_msg", "token_count"), 6.0)
+    assert t.response_since is None          # usage of the call, tool still pending
+    t.track(ev("response_item", "custom_tool_call_output"), 60.0)
+    assert t.response_since == 60.0          # next model response starts
+    t.track(ev("event_msg", "token_count"), 70.0)
+    assert t.response_since == 70.0
+    t.track(ev("event_msg", "task_complete"), 71.0)
+    assert t.response_since is None and t.token_counts == 2
+
+
+def test_codex_response_timeout_stops_and_reads_the_interrupted_usage(fakebin, tmp_path, monkeypatch):
+    # live 11 Nov 2026: one max-effort response ran 6+ min with no usage reading
+    monkeypatch.setenv("FAKE_N", "1")
+    monkeypatch.setenv("FAKE_HANG", "20")
+    monkeypatch.setenv("FAKE_INT_STEP", "2")
+    r, events, err = make_runner(["codex", "exec", "x"], tmp_path, quota=50.0, response_timeout_s=0.5)
+    start = time.time()
+    assert r.run() == 4
+    assert time.time() - start < 10
+    assert r.summary.reason == "response_timeout"
+    assert r.summary.share == 2.0 and r.summary.final_read == "complete"
+    assert "response_timeout" in [e["type"] for e in events]
+    assert "no usage reading" in err.getvalue()
+    receipt = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
+    assert receipt["reason"] == "response_timeout" and receipt["final_read"] == "complete"
+    assert receipt["measure"] == "account_increase"
+
+
+def test_codex_response_timeout_free_only_warns(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "1")
+    monkeypatch.setenv("FAKE_HANG", "1.5")
+    r, events, err = make_runner(["codex", "exec", "x"], tmp_path, quota=50.0, response_timeout_s=0.3,
+                                 enforce=False)
+    assert r.run() == 0
+    assert "Pro would stop it here" in err.getvalue() and events == []
+
+
+def test_codex_response_timeout_off(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "1")
+    monkeypatch.setenv("FAKE_HANG", "1")
+    r, events, err = make_runner(["codex", "exec", "x"], tmp_path, quota=50.0, response_timeout_s=None)
+    assert r.run() == 0 and r.summary.reason == "exited"
+
+
+def test_codex_long_effort_note(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "2")
+    monkeypatch.setenv("FAKE_EFFORT", "max")
+    r, events, err = make_runner(["codex", "exec", "x"], tmp_path, quota=50.0)
+    r.run()
+    assert "Codex runs at max effort" in err.getvalue() and r.summary.effort == "max"
+    (tmp_path / "b").mkdir()
+    monkeypatch.setenv("FAKE_EFFORT", "high")
+    r2, _, err2 = make_runner(["codex", "exec", "x"], tmp_path / "b", quota=50.0)
+    r2.run()
+    assert "effort" not in err2.getvalue()
+
+
+def test_codex_strict_stops_when_token_count_has_no_rate_limits(fakebin, tmp_path, monkeypatch):
+    from agentcap.failsafe import EXIT_GUARD_FAILED
+    monkeypatch.setenv("FAKE_NO_LIMITS", "1")
+    monkeypatch.setenv("FAKE_N", "30")
+    r, events, err = make_runner(["codex", "exec", "x"], tmp_path, quota=5.0)
+    assert r.run() == EXIT_GUARD_FAILED
+    assert r.summary.reason == "guard_failed"
+    assert "no subscription rate_limits" in err.getvalue()
+    (tmp_path / "b").mkdir()
+    monkeypatch.setenv("FAKE_N", "4")
+    r2, ev2, err2 = make_runner(["codex", "exec", "x"], tmp_path / "b", quota=5.0, enforce=False)
+    assert r2.run() == 0 and "Pro would stop it" in err2.getvalue()
+
+
+def test_codex_exec_strict_stops_when_no_session_log_appears(fakebin, tmp_path, monkeypatch):
+    from agentcap.failsafe import EXIT_GUARD_FAILED
+    monkeypatch.setenv("FAKE_NO_LOG", "1")
+    monkeypatch.setenv("FAKE_HANG", "20")
+    r, events, err = make_runner(["codex", "exec", "x"], tmp_path, quota=5.0, no_data_warn_s=0.5)
+    start = time.time()
+    assert r.run() == EXIT_GUARD_FAILED
+    assert time.time() - start < 10
+    assert "no Codex session log appeared" in err.getvalue()
+
+
+def test_codex_tui_without_session_log_only_warns(fakebin, tmp_path, monkeypatch):
+    # the interactive TUI may sit idle with no turn and no rollout yet: never stop it for that
+    monkeypatch.setenv("FAKE_NO_LOG", "1")
+    monkeypatch.setenv("FAKE_HANG", "1.2")
+    r, events, err = make_runner(["codex"], tmp_path, quota=5.0, no_data_warn_s=0.3)
+    assert r.run() == 0
+    assert "no quota data yet" in err.getvalue()
+
+
+def test_free_codex_nudge_without_tool_calls(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "8")
+    r, events, err = make_runner(["codex", "exec", "x"], tmp_path, quota=3.0, enforce=False)
+    assert r.run() == 0
+    assert "Pro's quota mode would have stopped this job at 3%" in err.getvalue()
+
+
+SIGTERM_DRIVER = textwrap.dedent('''\
+    import sys
+    from pathlib import Path
+    from agentcap import quota as q
+    tmp = Path(sys.argv[1])
+    r = q.QuotaRunner(["codex", "exec", "x"], quota=50.0, poll_s=0.05, receipt_dir=tmp / "receipts",
+                      cwd=tmp, home=tmp / "home")
+    print("CODE", r.run(), r.summary.reason, r.summary.share, r.summary.final_read, flush=True)
+''')
+
+
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGHUP"])
+def test_sigterm_and_sighup_stop_the_agent_and_write_the_receipt(fakebin, tmp_path, monkeypatch, sig):
+    import signal
+    import subprocess
+    monkeypatch.setenv("FAKE_N", "1")
+    monkeypatch.setenv("FAKE_HANG", "30")
+    monkeypatch.setenv("FAKE_INT_STEP", "1")
+    driver = tmp_path / "driver.py"
+    driver.write_text(SIGTERM_DRIVER)
+    proc = subprocess.Popen([sys.executable, str(driver), str(tmp_path)], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, start_new_session=True)
+    sessions = tmp_path / "codex" / "sessions"
+    deadline = time.time() + 10
+    while time.time() < deadline and not any(sessions.rglob("rollout-*.jsonl")):
+        time.sleep(0.05)
+    time.sleep(0.5)
+    proc.send_signal(getattr(signal, sig))
+    out, err = proc.communicate(timeout=20)
+    assert "received; stopping the agent" in err
+    assert "CODE" in out and "terminated" in out and "complete" in out
+    done = list((tmp_path / "state" / "jobs").glob("*/done.json"))
+    assert done, err
+    receipt = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
+    assert receipt["reason"] == "terminated" and receipt["share_pct"] == 1.0
+
+
+def test_parse_duration():
+    assert q.parse_duration("5m") == 300 and q.parse_duration("90s") == 90
+    assert q.parse_duration("120") == 120 and q.parse_duration("1h") == 3600
+    assert q.parse_duration("off") is None
+    for bad in ("5x", "10s", "-1m"):
+        with pytest.raises(ValueError):
+            q.parse_duration(bad)
+
+
+def test_cli_response_timeout_flag(fakebin, tmp_path, monkeypatch, capsys):
+    assert cli.main(["run", "--quota", "5%", "--response-timeout", "soon", "--", "codex", "exec", "x"]) == 2
+    assert "--response-timeout" in capsys.readouterr().err

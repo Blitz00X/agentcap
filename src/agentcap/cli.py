@@ -198,6 +198,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="quota window for --quota (default: budget window or week)",
     )
     run.add_argument(
+        "--response-timeout", default=None, metavar="DURATION",
+        help="Codex quota mode: stop the job when one model response runs longer than this "
+        "with no usage reading, e.g. 5m, 90s, off (default 5m)",
+    )
+    run.add_argument(
         "--tokens", type=int, default=None,
         help="opencode/agy (Pro): stop after this many tokens, read from the agent's own event log",
     )
@@ -644,6 +649,13 @@ def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
     if detect_quota_agent(argv) is None:
         print("agentcap: quota mode supports `claude` and `codex` only.", file=sys.stderr)
         return 2
+    from .quota import RESPONSE_TIMEOUT_S, parse_duration
+    try:
+        response_timeout = (RESPONSE_TIMEOUT_S if args.response_timeout is None
+                            else parse_duration(args.response_timeout))
+    except ValueError as exc:
+        print(f"agentcap: {exc}", file=sys.stderr)
+        return 2
     active_features = set(features(status_from_environment().tier))
     enforce = "quota_mode" in active_features
     from .quota import is_headless_claude
@@ -662,6 +674,7 @@ def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
             window=window,
             enforce=enforce,
             alerts=alerts.emit if enforce else None,
+            response_timeout_s=response_timeout,
             quiet=args.quiet,
             receipt_dir=default_receipt_dir() if "spend_receipt" in active_features else None,
         )

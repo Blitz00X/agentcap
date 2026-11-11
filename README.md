@@ -304,10 +304,21 @@ agentcap quota                                 # read-only: last seen usage (Fre
 - **Codex CLI:** AgentCap tails the `token_count` events Codex writes to
   `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits.primary/secondary.used_percent`,
   `window_minutes`, `resets_at`) and sends SIGINT at the limit. Exit code 3.
+  Codex writes usage only when a model response ends, so one long response (xhigh/max effort
+  ran 6+ minutes in our tests) is invisible until it finishes. In quota mode AgentCap therefore
+  stops the job when a single response runs longer than `--response-timeout` (default `5m`,
+  `off` disables; time spent running tools does not count) and notes xhigh/max effort at start.
+  The interrupted response's usage is read before the receipt is written. Exit code 4,
+  reason `response_timeout`.
+  **Fail-closed (Pro):** if Codex's `token_count` events carry no `rate_limits` (API-key login, a
+  changed log format) or `codex exec` writes no session log within 90 s, the job is stopped
+  (exit 5); Free only warns. The interactive TUI is never stopped just for being idle.
 - Baseline at job start (exact when a reading from the last 15 minutes exists, otherwise the
   first response is not counted), window resets mid-job are handled, 80% warning,
-  per-job receipt: `this job used 4.2% of the weekly quota`. Pro alerts (Telegram/webhook)
-  and receipt files work the same as for dollar caps.
+  per-job receipt: `the account's weekly quota rose 4.2% while this job ran`. Pro alerts
+  (Telegram/webhook) and receipt files work the same as for dollar caps. `agentcap` stopped by
+  Ctrl+C, SIGTERM (`timeout`) or SIGHUP (closed terminal) stops the agent and still writes the
+  receipt (reason `interrupted` / `terminated`).
 - **Free:** `agentcap quota` and observe-only runs that print the job's share and
   `Pro's quota mode would have stopped this job at 5%`. **Pro:** stopping at the limit.
 
@@ -397,7 +408,7 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 | Claude Code, Pro/Max sub, interactive | ✅ (deny keeps the session; resumes after approve) | ✅ | ✅ whole-% steps (deny keeps the session); `agentcap approve` ✅ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
 | Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ❌ interactive only (warns at start) | ❌ by design (refused) |
 | Codex, ChatGPT sub | ✅ | ✅ | ✅ (whole %; warns under 1%) | ❌ by design (no proxy on a subscription) |
-| opencode Go | ✅ | ✅ | ⚠️ estimated: `--quota N% --window 5h\|week\|month -- opencode run -m opencode-go/<model>`; share = opencode's own cost field / Go's published $ limit ($12 / $30 / $60; Go Plus via `AGENTCAP_OPENCODE_GO_LIMITS`); other sessions on the account are not counted | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
+| opencode Go | ✅ | ✅ | ❌ not yet: opencode 1.x's session log reports Go cost as 0 and leaves out subagents (live test, 11 Nov 2026), so a Go % cap cannot be measured; do not rely on `--quota` with opencode | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
 | agy, Google sub (plain `agentcap run -- agy` needs no key: breakers only) | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
 | opencode + OpenRouter (free model) | ✅ | ✅ | n/a | ✅ $ cap |
 | opencode + Ollama Cloud | ✅ | ✅ | n/a | ⚠️ needs a user price (`AGENTCAP_PRICING_FILE`): Ollama publishes none |
@@ -483,7 +494,7 @@ output limit, so a clamp also caps them.
 | --- | --- |
 | `2` | Setup or auth refusal: bad flags, a Pro-only flag on Free, a conflicting CLI config, a second quota job, the provider rejected the credentials (`upstream_auth_failed`), or it refused the request for another reason (`upstream_refused`). |
 | `3` | A cap stopped the agent (`--cap`, `--quota`, `--tokens`, `--log-cap`). |
-| `4` | Pro's loop/error/burn breaker stopped the agent. |
+| `4` | Pro's loop/error/burn breaker stopped the agent, or (Codex quota mode) one model response ran past `--response-timeout`. |
 | `5` | Internal error: AgentCap could not use its own state (HOME, `quota.lock`, ledger, license or job files), its proxy could not start, an opencode/agy log schema or Codex rollout log could not be read (fail-closed), or AgentCap hit an internal fault. The message names the failed action and path (`internal state error: could not open the quota lock ...`); the agent was not started, or was stopped (reason `internal_error`). |
 | `127` | The command itself could not be started (not found, not executable): `could not start the command (...)`. |
 

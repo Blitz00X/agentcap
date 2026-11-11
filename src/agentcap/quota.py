@@ -34,6 +34,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +56,13 @@ EXIT_LOOP_DETECTED = 4
 BASELINE_MAX_AGE_S = 15 * 60
 APPROVE_FACTOR = 1.5
 APPROVE_MAX = 2
+# Codex writes usage only when a model response ends; at high reasoning effort one response
+# ran 6+ minutes with no reading (11 Nov 2026, gpt-6-astra max).  Quota mode cuts a single
+# response after this long (Pro) so the job cannot spend an unseen amount; SIGINT makes Codex
+# write the response's usage, which the final read then picks up.
+RESPONSE_TIMEOUT_S = 300.0
+FINAL_READ_S = 10.0
+LONG_EFFORTS = ("xhigh", "max")
 
 
 HEADLESS_CLAUDE_QUOTA_WARNING = (
@@ -192,6 +200,21 @@ def parse_quota(raw: str) -> float:
         raise ValueError(f"--quota must look like 5% (got {raw!r})") from None
     if not (0 < value <= 100):
         raise ValueError("--quota must be between 0 and 100 percent")
+    return value
+
+
+def parse_duration(raw: str) -> float | None:
+    """'5m', '90s', '1h', '300' (seconds) or 'off' -> seconds (None = off)."""
+
+    text = str(raw).strip().lower()
+    if text in ("off", "0", "none", "no"):
+        return None
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(s|sec|m|min|h)?", text)
+    if not m:
+        raise ValueError(f"--response-timeout: use e.g. 5m, 90s or off, not {raw!r}")
+    value = float(m.group(1)) * {"s": 1, "sec": 1, None: 1, "m": 60, "min": 60, "h": 3600}[m.group(2)]
+    if value < 30:
+        raise ValueError("--response-timeout must be at least 30s (or off)")
     return value
 
 
@@ -784,6 +807,43 @@ class CodexTailer:
         self.others: set[Path] = set()
         self.loop = LoopWatch()
         self.read_errors = 0
+        # Turn state from the rollout events (Codex 0.167): a model response is "in flight"
+        # from task_started / a tool output / token_count until the next tool call or the
+        # end of the turn.  Usage (token_count) is only written when a response ends, so the
+        # in-flight time is AgentCap's blind spot.
+        self.response_since: float | None = None
+        self.pending_calls = 0
+        self.turns = 0
+        self.effort: str | None = None
+        self.token_counts = 0          # token_count events in this job's rollout
+        self.readings_seen = 0         # ... of which carried a reading for the window
+
+    def track(self, obj: Any, now: float) -> None:
+        if not isinstance(obj, dict):
+            return
+        kind = obj.get("type")
+        p = obj.get("payload")
+        ptype = p.get("type") if isinstance(p, dict) else None
+        if kind == "turn_context" and isinstance(p, dict) and isinstance(p.get("effort"), str):
+            self.effort = p["effort"]
+        elif kind == "event_msg" and ptype == "task_started":
+            self.turns += 1
+            self.pending_calls = 0
+            self.response_since = now
+        elif kind == "event_msg" and ptype in ("task_complete", "turn_aborted"):
+            self.pending_calls = 0
+            self.response_since = None
+        elif kind == "event_msg" and ptype == "token_count":
+            self.token_counts += 1
+            if self.pending_calls == 0 and self.turns:
+                self.response_since = now  # the previous response ended; the next one starts
+        elif kind == "response_item" and ptype in ("function_call", "custom_tool_call", "local_shell_call"):
+            self.pending_calls += 1
+            self.response_since = None     # a tool is running: no model time is being spent
+        elif kind == "response_item" and ptype in ("function_call_output", "custom_tool_call_output"):
+            self.pending_calls = max(0, self.pending_calls - 1)
+            if self.pending_calls == 0:
+                self.response_since = now
 
     def _files(self) -> list[Path]:
         if not self.dir.exists():
@@ -844,16 +904,23 @@ class CodexTailer:
         if end < 0:
             return readings
         self.offsets[self.own] = offset + end + 1
+        now = time.time()
         for line in chunk[: end + 1].decode("utf-8", "replace").splitlines():
             try:
                 obj = json.loads(line)
                 self.loop.feed_codex(obj)
+                self.track(obj, now)
                 reading = codex_readings(obj).get(window)
             except ValueError:
                 continue
             if reading:
+                self.readings_seen += 1
                 readings.append(reading)
         return readings
+
+    @property
+    def response_open(self) -> bool:
+        return self.response_since is not None
 
 
 # --------------------------------------------------------------- the runner
@@ -878,6 +945,16 @@ class QuotaSummary:
     resets_seen: int
     parallel: bool
     observed: bool
+    final_read: str = "n/a"        # codex: "complete" when the last turn's usage was read
+    effort: str | None = None
+
+
+class _Terminated(Exception):
+    """SIGTERM / SIGHUP reached AgentCap (e.g. `timeout`, a closed terminal)."""
+
+    def __init__(self, sig: int) -> None:
+        super().__init__(signal.Signals(sig).name)
+        self.sig = sig
 
 
 class QuotaRunner:
@@ -893,6 +970,8 @@ class QuotaRunner:
         poll_s: float = 0.5,
         claude_grace_s: float = 10.0,
         no_data_warn_s: float = 90.0,
+        response_timeout_s: float | None = RESPONSE_TIMEOUT_S,
+        final_read_s: float = FINAL_READ_S,
         quiet: bool = False,
         job_root: Path | None = None,
         sessions_dir: Path | None = None,
@@ -915,6 +994,8 @@ class QuotaRunner:
         self.poll_s = poll_s
         self.claude_grace_s = claude_grace_s
         self.no_data_warn_s = no_data_warn_s
+        self.response_timeout_s = response_timeout_s or None
+        self.final_read_s = final_read_s
         self.quiet = quiet
         self.job_root = job_root or state_root()
         self.sessions_dir = sessions_dir or (codex_home() / "sessions")
@@ -979,6 +1060,7 @@ class QuotaRunner:
         watchdog = GroupWatchdog()
         tree_guard = ProcessTreeGuard()
         zombies = ZombieCollector()
+        old_handlers: dict[int, Any] = {}
         try:
             started = time.time()
             ensure_private_dir(self.job_dir)
@@ -1044,6 +1126,17 @@ class QuotaRunner:
                 self._pgid = None
             watchdog.watch(self._pgid)
 
+            if threading.current_thread() is threading.main_thread():
+                def _term(sig: int, _frame: Any) -> None:
+                    raise _Terminated(sig)
+                for sig in (signal.SIGTERM, signal.SIGHUP):
+                    try:
+                        old_handlers[sig] = signal.signal(sig, _term)
+                    except (ValueError, OSError):
+                        pass
+            exec_mode = self.agent == "codex" and len(self.argv) > 1 and self.argv[1] in ("exec", "e")
+            effort_said = timeout_said = False
+            timed_out = False
             warned = hit = parallel = observed = no_data_warned = False
             loop_detail: str | None = None
             loop_at: float | None = None
@@ -1101,6 +1194,51 @@ class QuotaRunner:
                                     'stopping it (fail-closed)', 'Pro would stop it'))
                         if tailer.others and not parallel:
                             parallel = True
+                        strict = None
+                        if guard_msg is None and tailer.token_counts >= 2 and tailer.readings_seen == 0:
+                            strict = (f"Codex reports no subscription rate_limits for the {self.window} "
+                                      "window (API-key login, or a changed log format); the guard cannot "
+                                      "see this run, stopping it (fail-closed).")
+                        elif (guard_msg is None and exec_mode and tailer.own is None and code is None
+                              and now - started > self.no_data_warn_s):
+                            strict = (f"no Codex session log appeared in {int(self.no_data_warn_s)}s "
+                                      f"(looked in {self.sessions_dir}); the guard cannot see this run, "
+                                      "stopping it (fail-closed).")
+                        if strict:
+                            guard_msg = strict
+                            no_data_warned = True
+                            if self.enforce:
+                                self._say("agentcap: " + strict)
+                                self._event("guard_failed", share, detail=strict)
+                                self._stop()
+                                stopped = True
+                            else:
+                                self._say("agentcap: WARNING: " + strict.replace(
+                                    "stopping it (fail-closed)", "Pro would stop it"))
+                        if tailer.effort in LONG_EFFORTS and not effort_said:
+                            effort_said = True
+                            cut = (f"; AgentCap cuts a single response after "
+                                   f"{self.response_timeout_s / 60:g} min" if self.response_timeout_s else "")
+                            self._say(f"agentcap: note: Codex runs at {tailer.effort} effort. One response "
+                                      "can think for minutes and its quota use only shows when it ends, so "
+                                      f"the stop can come late{cut}. Use high or lower effort for tight caps.")
+                        if (self.response_timeout_s and tailer.response_since is not None
+                                and not stopped and code is None
+                                and now - tailer.response_since > self.response_timeout_s
+                                and not timeout_said):
+                            timeout_said = True
+                            mins = f"{self.response_timeout_s / 60:g} min"
+                            if self.enforce:
+                                timed_out = True
+                                self._say(f"agentcap: one model response has run for more than {mins} with "
+                                          "no usage reading; stopping the agent so it cannot spend an unseen "
+                                          "amount of quota (response timeout).")
+                                self._event("response_timeout", share, seconds=int(self.response_timeout_s))
+                                self._stop()
+                                stopped = True
+                            else:
+                                self._say(f"agentcap: WARNING: one model response has run for more than "
+                                          f"{mins} with no usage reading; Pro would stop it here.")
                     if parallel and not getattr(self, "_par_said", False):
                         self._par_said = True
                         self._say("agentcap: WARNING: another session is using the same account; "
@@ -1165,6 +1303,10 @@ class QuotaRunner:
             except KeyboardInterrupt:
                 self._stop()
                 reason = "interrupted"
+            except _Terminated as term:
+                self._say(f"agentcap: {term} received; stopping the agent and writing the receipt.")
+                self._stop()
+                reason = "terminated"
             except Exception as exc:
                 guard_msg = f'internal error ({type(exc).__name__}: {exc})'
                 if self.enforce:
@@ -1173,7 +1315,27 @@ class QuotaRunner:
                 else:
                     self._say(f'agentcap: {guard_msg}; observe-only run continues without AgentCap.')
             code = self.child.wait()
+            for sig in old_handlers:  # the stop is done; a second TERM must not cut the receipt
+                try:
+                    signal.signal(sig, signal.SIG_IGN)
+                except (ValueError, OSError):
+                    pass
             reap_group(self._pgid)
+            final_read = "n/a"
+            if tailer is not None:
+                deadline = time.time() + self.final_read_s
+                while True:
+                    for reading in tailer.poll(self.window):
+                        observed = True
+                        tracker.update(reading)
+                    if not tailer.response_open or tailer.own is None or time.time() >= deadline:
+                        break
+                    time.sleep(min(0.25, self.poll_s * 5))
+                share = tracker.share
+                final_read = ("complete" if tailer.own is not None and not tailer.response_open
+                              else "none" if tailer.own is None else "incomplete")
+                if self.enforce and observed and not hit and share >= self.quota:
+                    hit = True  # usage written as the agent stopped took the job over the limit
             try:
                 escaped = tree_guard.sweep()
             finally:
@@ -1192,6 +1354,9 @@ class QuotaRunner:
             elif hit and self.enforce:
                 reason = "quota_exceeded"
                 code = EXIT_QUOTA_EXCEEDED
+            elif timed_out and self.enforce:
+                reason = "response_timeout"
+                code = EXIT_LOOP_DETECTED
             elif guard_msg and self.enforce:
                 reason = "guard_failed"
                 code = EXIT_GUARD_FAILED
@@ -1201,6 +1366,7 @@ class QuotaRunner:
             self.summary = QuotaSummary(
                 self.agent, self.window, self.quota, share, code, reason,
                 tracker.baseline_exact, tracker.resets_seen, parallel, observed,
+                final_read, tailer.effort if tailer is not None else None,
             )
             self._receipt(self.summary)
             try:
@@ -1216,6 +1382,11 @@ class QuotaRunner:
             tree_guard.close()
             watchdog.disarm()
             lock.release()
+            for sig, handler in old_handlers.items():
+                try:
+                    signal.signal(sig, handler)
+                except (ValueError, OSError, TypeError):
+                    pass
 
     def _say_open(self, said: bool, what: str) -> bool:
         if not said:
@@ -1258,20 +1429,22 @@ class QuotaRunner:
             if s.resets_seen:
                 notes.append(f"window reset {s.resets_seen}x during the job")
             if s.parallel:
-                notes.append("parallel sessions included")
+                notes.append("includes other sessions on the same account")
+            if s.final_read == "incomplete":
+                notes.append("the last response's usage was not written yet, may undercount")
             self._say(
-                f"agentcap: this job used {s.share:.1f}% of the {label} quota"
+                f"agentcap: the account's {label} quota rose {s.share:.1f}% while this job ran"
                 + (f" (limit {s.quota:g}%)" if self.enforce else "")
                 + (f"; {'; '.join(notes)}" if notes else "") + "."
             )
         last = self._last_tool()
         if last:
             self._say(f"agentcap: last tool call: {last}")
-            if not self.enforce and s.share >= s.quota:
-                self._say(
-                    f"agentcap: Pro's quota mode would have stopped this job at {s.quota:g}%. "
-                    "https://agentcap.launchbench.studio/#pricing"
-                )
+        if not self.enforce and s.observed and s.share >= s.quota:
+            self._say(
+                f"agentcap: Pro's quota mode would have stopped this job at {s.quota:g}%. "
+                "https://agentcap.launchbench.studio/#pricing"
+            )
         if self.enforce:
             self._event("quota_receipt", s.share, reason=s.reason, exit_code=s.exit_code)
             if self.receipt_dir is not None:
@@ -1281,7 +1454,9 @@ class QuotaRunner:
                         "quota_pct": s.quota, "share_pct": s.share, "exit_code": s.exit_code,
                         "reason": s.reason, "baseline_exact": s.baseline_exact,
                         "parallel_sessions": s.parallel, "window_resets": s.resets_seen,
-                        "last_tool": last,
+                        "last_tool": last, "measure": "account_increase",
+                        "final_read": s.final_read, "effort": s.effort,
+                        "response_timeout_s": self.response_timeout_s if s.agent == "codex" else None,
                     })
                 except OSError:
                     pass
