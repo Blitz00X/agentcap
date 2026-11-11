@@ -31,7 +31,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from agentcap.quota import (  # noqa: E402
+    READING_MAX_AGE_S,
     STATE_ENV,
+    STATE_PROTECTED,
+    STATE_STALE,
+    STATE_TEXT,
+    Protection,
+    Reading,
     ShareTracker,
     _atomic_write,
     _normalized_shell_text,
@@ -39,7 +45,9 @@ from agentcap.quota import (  # noqa: E402
     baseline_from_last,
     claude_readings,
     parse_quota,
+    protection_state,
     state_root,
+    uncertainty_text,
 )
 
 WARN_FRACTION = 0.8
@@ -108,30 +116,67 @@ def resolve_session(raw: str | None, cwd: str | None = None) -> str | None:
     return sid if isinstance(sid, str) and sid else None
 
 
-def share_line(state: Mapping[str, Any]) -> str:
+def _protection(state: Mapping[str, Any], *, now: float | None = None) -> Protection:
+    """The shared state mapping: the plugin never invents its own wording."""
+
+    now = time.time() if now is None else now
+    window = str(state.get("window", "week"))
+    reading = None
+    block = (state.get("last_readings") or {}).get(window)
+    if isinstance(block, Mapping):
+        reading = Reading.from_dict(block)
+    elif state.get("used") is not None:
+        reading = Reading(
+            float(state["used"]), state.get("resets_at"), source="claude",
+            read_at=float(state.get("read_at") or state.get("readings_ts") or 0.0),
+            max_age=READING_MAX_AGE_S["claude"], window=window,
+        )
+    return protection_state(
+        started_at=float(state.get("set_at") or state.get("readings_ts") or now),
+        now=now, reading=reading, source="claude", window=window,
+        max_age=READING_MAX_AGE_S["claude"], stopped=bool(state.get("stopped")),
+    )
+
+
+def share_line(state: Mapping[str, Any], *, now: float | None = None) -> str:
     quota = state.get("quota")
     window = state.get("window", "week")
     if quota is None:
         return ""
     if state.get("used") is None:
-        return f"agentcap: quota {quota:g}% ({WINDOW_NAMES.get(window, window)}) — waiting for first reading"
-    return f"agentcap: session {float(state.get('share', 0)):.1f}% / {quota:g}% ({WINDOW_NAMES.get(window, window)})"
+        return f"agentcap: {STATE_TEXT['starting']}"
+    prot = _protection(state, now=now)
+    meter = (f"agentcap: session {float(state.get('share', 0)):.1f}% / {quota:g}% "
+             f"({WINDOW_NAMES.get(window, window)}) {uncertainty_text()}")
+    if prot.state != STATE_PROTECTED:
+        return f"{meter} — {prot.text}"
+    if not is_pro():
+        return f"{meter} — watch only (Pro stops at the limit)"
+    return f"{meter} — {prot.text}"
 
 
-def apply_readings(state: dict[str, Any], readings: Mapping[str, Any], now: float) -> None:
-    state["last_readings"] = {w: {"used": r.used, "resets_at": r.resets_at} for w, r in readings.items()}
+def apply_readings(state: dict[str, Any], readings: Mapping[str, Any], now: float) -> bool:
+    """Store the new readings; return True when a window reset was just seen."""
+
+    state["last_readings"] = {w: r.to_dict() for w, r in readings.items()}
     state["readings_ts"] = now
     quota = state.get("quota")
     window = state.get("window", "week")
     if quota is None or window not in readings:
-        return
+        return False
     reading = readings[window]
-    tracker = ShareTracker.from_dict(state.get("tracker"))
+    previous = state.get("tracker") or {}
+    tracker = ShareTracker.from_dict(previous)
     tracker.update(reading)
     state["tracker"] = tracker.to_dict()
     state["share"] = tracker.share
-    state["used"] = reading.used
+    state["used"] = reading.percent
     state["resets_at"] = reading.resets_at
+    state["read_at"] = reading.read_at or now
+    state["source"] = reading.source
+    state["max_age"] = reading.max_age
+    state["resolution"] = reading.resolution
+    return bool(tracker.resets_seen > int(previous.get("resets_seen") or 0))
 
 
 # ----------------------------------------------------------------- statusline
@@ -141,18 +186,20 @@ def statusline_main(stdin: TextIO, stdout: TextIO, *, now: float | None = None) 
     line = ""
     try:
         payload = json.loads(raw) if raw.strip() else {}
-        readings = claude_readings(payload)
+        readings = claude_readings(payload, now=now)
         sid = payload.get("session_id") if isinstance(payload, Mapping) else None
         if readings:
             _atomic_write(
                 state_root() / "claude_last.json",
-                {"ts": now, "readings": {w: {"used": r.used, "resets_at": r.resets_at} for w, r in readings.items()}},
+                {"ts": now, "readings": {w: r.to_dict() for w, r in readings.items()}},
             )
         if isinstance(sid, str) and sid:
             state = load(sid)
-            apply_readings(state, readings, now)
+            reset = apply_readings(state, readings, now)
             save(sid, state)
-            line = share_line(state)
+            line = share_line(state, now=now)
+            if reset:
+                line += " — window reset (not counted as usage)"
     except Exception:
         line = "agentcap: quota unavailable"
     prev = (_read_json(cc_dir() / "statusline.json") or {}).get("previous")
@@ -421,15 +468,19 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
         return 0
     share = float(state.get("share") or 0)
     window = WINDOW_NAMES.get(state.get("window", "week"), "weekly")
+    prot = _protection(state, now=now)
     if share >= float(quota):
         if pro:
+            stale_note = (f" The last reading is {prot.age_s or 0:.0f}s old (max {prot.max_age_s or 0:.0f}s), "
+                          f"so {STATE_TEXT[STATE_STALE]}." if prot.state == STATE_STALE else "")
             reason = (
                 f"agentcap: this session used {share:.1f}% of the {window} subscription quota "
-                f"(limit {float(quota):g}%). Stop now: do not call more tools; summarise what is done "
-                "and what is left. The user can raise it with /agentcap:approve (+50%), "
-                "/agentcap:quota or clear it with /agentcap:off."
+                f"{uncertainty_text()} (limit {float(quota):g}%).{stale_note} Stop now: do not call "
+                "more tools; summarise what is done and what is left. The user can raise it with "
+                "/agentcap:approve (+50%), /agentcap:quota or clear it with /agentcap:off."
             )
             state["denies"] = int(state.get("denies", 0)) + 1
+            state["stopped"] = True
             save(sid, state)
             _emit(stdout, {  # deny + end the turn; the session itself stays open
                 "continue": False,
@@ -476,14 +527,18 @@ def hook_stop(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
         return 0
     state["receipt_share"] = share
     save(sid, state)
+    prot = _protection(state, now=now)
     if pro:
         rec = {"ts": now, "session_id": sid, "window": state.get("window"), "quota": state.get("quota"),
                "share": share, "used_now": state.get("used"), "denies": state.get("denies", 0),
                "approvals": state.get("approvals", 0),
+               "state": prot.state, "state_text": prot.text,
+               "read_at": prot.read_at, "reading_age_s": prot.age_s, "max_age_s": prot.max_age_s,
+               "resolution_pct": prot.resolution, "uncertainty_pct": [1.0, 3.0],
                "last_tool": (_read_json(_loop_path(sid)) or {}).get("last_tool")}
         with open(cc_dir() / "receipts.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
-    _emit(stdout, {"systemMessage": share_line(state)})
+    _emit(stdout, {"systemMessage": share_line(state, now=now)})
     return 0
 
 
@@ -499,7 +554,8 @@ def cmd_quota(args: list[str], sid: str | None, *, now: float) -> str:
         return f"agentcap: {exc}".replace("--quota", "quota")
     window = "5h" if any(a.lower() in ("5h", "5-hour", "session") for a in args[1:]) else "week"
     state = load(sid)
-    for k in ("tracker", "share", "used", "resets_at", "warned", "nudged", "denies", "receipt_share"):
+    for k in ("tracker", "share", "used", "resets_at", "warned", "nudged", "denies",
+              "receipt_share", "stopped"):
         state.pop(k, None)
     state.update({"quota": quota, "window": window, "set_at": now})
     tracker = ShareTracker()
@@ -515,6 +571,11 @@ def cmd_quota(args: list[str], sid: str | None, *, now: float) -> str:
     save(sid, state)
     lines = [f"agentcap: this session may use {quota:g}% of the {WINDOW_NAMES[window]} quota."]
     lines.append(f"baseline {seed.used:g}% (exact)" if seed else "baseline: taken at the next statusline refresh")
+    prot = _protection(state, now=now)
+    if prot.state == STATE_PROTECTED and not is_pro():
+        lines.append("agentcap: watch only (Pro stops at the limit)")
+    else:
+        lines.append(f"agentcap: {prot.text}")
     if not is_pro():
         lines.append("Free tier: you get the live meter and a notice at the limit. Enforcement (deny tool calls) is Pro.")
     if not (_read_json(cc_dir() / "statusline.json") or {}).get("installed"):
@@ -548,7 +609,7 @@ def cmd_approve(sid: str | None) -> str:
         return (f"agentcap: already approved twice (limit {float(state['quota']):g}%). "
                 "Use /agentcap:quota to set a new limit on purpose.")
     new = round(float(state["quota"]) * APPROVE_FACTOR, 4)
-    state.update({"quota": new, "approvals": n + 1, "nudged": False})
+    state.update({"quota": new, "approvals": n + 1, "nudged": False, "stopped": False})
     save(sid, state)
     if new >= 100:
         head = (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit is now {new:g}% "
@@ -575,7 +636,8 @@ def cmd_off(sid: str | None) -> str:
     if not sid:
         return "agentcap: no session found."
     state = load(sid)
-    for k in ("quota", "window", "tracker", "share", "used", "resets_at", "warned", "nudged"):
+    for k in ("quota", "window", "tracker", "share", "used", "resets_at", "warned", "nudged",
+              "stopped"):
         state.pop(k, None)
     save(sid, state)
     return "agentcap: quota cleared for this session."

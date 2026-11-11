@@ -56,6 +56,36 @@ EXIT_LOOP_DETECTED = 4
 BASELINE_MAX_AGE_S = 15 * 60
 APPROVE_FACTOR = 1.5
 APPROVE_MAX = 2
+
+# ------------------------------------------------------ measurement contract
+# One reading record is the only quota representation used by the product.
+# Every surface (status line, `agentcap quota`, the hook, the receipt and the
+# Claude Code plugin) renders these fields through the same state function;
+# none of them invents a share, an age or a state of its own.
+READING_MAX_AGE_S = {"claude": 60.0, "codex": 600.0}
+READING_RESOLUTION_PCT = 1.0           # both supported sources report whole percent
+READING_UNCERTAINTY_PCT = (1.0, 3.0)   # one source step + up to one model response
+DEFAULT_MAX_AGE_S = READING_MAX_AGE_S["codex"]
+NO_DATA_WARN_S = 90.0  # startup grace: no reading yet is normal for this long
+
+STATE_STARTING = "starting"
+STATE_PROTECTED = "protected"
+STATE_STALE = "stale"
+STATE_STOPPED = "stopped"
+
+STATE_TEXT = {
+    STATE_STARTING: "waiting for the first reading",
+    STATE_PROTECTED: "protection active",
+    STATE_STALE: "data stale (protection not verified)",
+    STATE_STOPPED: "stopped",
+}
+
+
+def uncertainty_text() -> str:
+    """The honesty marker printed next to every measured percentage."""
+
+    low, high = READING_UNCERTAINTY_PCT
+    return f"±{low:g}-{high:g}%"
 # Codex writes usage only when a model response ends; at high reasoning effort one response
 # ran 6+ minutes with no reading (11 Nov 2026, gpt-6-astra max).  Quota mode cuts a single
 # response after this long (Pro) so the job cannot spend an unseen amount; SIGINT makes Codex
@@ -233,8 +263,150 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 # ------------------------------------------------------------------ readings
 @dataclass(frozen=True)
 class Reading:
-    used: float  # 0-100, account level
-    resets_at: float | None  # unix seconds
+    """One quota observation, from one source, for one window.
+
+    ``read_at`` is the wall-clock time the source produced this reading.  A
+    cached or re-read record keeps its original ``read_at``; only a genuinely
+    new observation moves it forward.  ``resolution`` is the step the source
+    reports in (whole percent today), and ``observed`` is False only for a
+    placeholder that carries no measurement.
+    """
+
+    percent: float  # 0-100, account level
+    resets_at: float | None = None  # unix seconds
+    source: str = "unknown"
+    read_at: float = 0.0
+    max_age: float = DEFAULT_MAX_AGE_S
+    window: str = ""
+    resolution: float = READING_RESOLUTION_PCT
+    observed: bool = True
+
+    @property
+    def used(self) -> float:
+        """Legacy name; the history importer and older sample logs use it."""
+
+        return self.percent
+
+    def age(self, now: float) -> float | None:
+        return None if self.read_at <= 0 else max(0.0, now - self.read_at)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "percent": self.percent,
+            "used": self.percent,  # legacy alias for sample logs written before 0.4
+            "resets_at": self.resets_at,
+            "source": self.source,
+            "read_at": self.read_at,
+            "max_age": self.max_age,
+            "window": self.window,
+            "resolution": self.resolution,
+            "observed": self.observed,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> "Reading | None":
+        if not isinstance(data, Mapping):
+            return None
+        percent = _num(data.get("percent"))
+        if percent is None:
+            percent = _num(data.get("used"))
+        if percent is None:
+            return None
+        return cls(
+            percent=percent,
+            resets_at=_num(data.get("resets_at")),
+            source=str(data.get("source") or "unknown"),
+            read_at=_num(data.get("read_at")) or 0.0,
+            max_age=_num(data.get("max_age")) or DEFAULT_MAX_AGE_S,
+            window=str(data.get("window") or ""),
+            resolution=_num(data.get("resolution")) or READING_RESOLUTION_PCT,
+            observed=bool(data.get("observed", True)),
+        )
+
+
+@dataclass(frozen=True)
+class Protection:
+    """What AgentCap may truthfully say about the guard at one instant."""
+
+    state: str
+    text: str
+    source: str | None = None
+    window: str | None = None
+    percent: float | None = None
+    read_at: float | None = None
+    age_s: float | None = None
+    max_age_s: float | None = None
+    resolution: float | None = None
+    observed: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "state_text": self.text,
+            "source": self.source,
+            "window": self.window,
+            "percent": self.percent,
+            "read_at": self.read_at,
+            "age_s": self.age_s,
+            "max_age_s": self.max_age_s,
+            "resolution_pct": self.resolution,
+            "observed": self.observed,
+        }
+
+
+def state_text(state: str) -> str:
+    return STATE_TEXT.get(state, STATE_TEXT[STATE_STALE])
+
+
+def protection_state(
+    *,
+    started_at: float,
+    now: float,
+    reading: Reading | None = None,
+    source: str | None = None,
+    window: str | None = None,
+    max_age: float | None = None,
+    stopped: bool = False,
+    source_lost: bool = False,
+    startup_grace_s: float = NO_DATA_WARN_S,
+) -> Protection:
+    """The single mapping from evidence to the four user-visible states.
+
+    No reading is not the same as a zero reading.  A reading older than its
+    ``max_age`` is never refreshed here and can never read as protected, and a
+    source that has gone away stays "data stale (protection not verified)"
+    until a genuinely new reading arrives.
+    """
+
+    observed = reading is not None and reading.observed
+    source = source or (reading.source if reading is not None else None)
+    window = window or (reading.window if reading is not None else None)
+    max_age_s = max_age or (reading.max_age if reading is not None else None) or DEFAULT_MAX_AGE_S
+    percent = reading.percent if observed else None
+    read_at = reading.read_at if observed else None
+    age_s = max(0.0, now - read_at) if read_at is not None and read_at > 0 else None
+    if stopped:
+        state = STATE_STOPPED
+    elif source_lost:
+        state = STATE_STALE
+    elif percent is None or age_s is None:
+        state = STATE_STARTING if now - started_at < startup_grace_s else STATE_STALE
+    elif age_s > max_age_s:
+        state = STATE_STALE
+    else:
+        state = STATE_PROTECTED
+    return Protection(
+        state=state,
+        text=STATE_TEXT[state],
+        source=source,
+        window=window,
+        percent=percent,
+        read_at=read_at,
+        age_s=age_s,
+        max_age_s=max_age_s,
+        resolution=reading.resolution if reading is not None else None,
+        observed=observed,
+    )
 
 
 def _num(value: Any) -> float | None:
@@ -250,9 +422,10 @@ def _num(value: Any) -> float | None:
     return None
 
 
-def claude_readings(payload: Mapping[str, Any]) -> dict[str, Reading]:
+def claude_readings(payload: Mapping[str, Any], *, now: float | None = None) -> dict[str, Reading]:
     """Parse Claude Code statusline stdin JSON (``rate_limits`` object)."""
 
+    now = time.time() if now is None else now
     out: dict[str, Reading] = {}
     limits = payload.get("rate_limits") if isinstance(payload, Mapping) else None
     if not isinstance(limits, Mapping):
@@ -264,7 +437,14 @@ def claude_readings(payload: Mapping[str, Any]) -> dict[str, Reading]:
         used = _num(block.get("used_percentage"))
         if used is None:
             continue
-        out[window] = Reading(used, _num(block.get("resets_at")))
+        out[window] = Reading(
+            used,
+            _num(block.get("resets_at")),
+            source="claude",
+            read_at=now,
+            max_age=READING_MAX_AGE_S["claude"],
+            window=window,
+        )
     return out
 
 
@@ -295,7 +475,14 @@ def codex_readings(event: Mapping[str, Any], *, now: float | None = None) -> dic
             resets = now + rel if rel is not None else None
         for window, expected in CODEX_MINUTES.items():
             if abs(minutes - expected) <= expected * 0.05:
-                out[window] = Reading(used, resets)
+                out[window] = Reading(
+                    used,
+                    resets,
+                    source="codex",
+                    read_at=now,
+                    max_age=READING_MAX_AGE_S["codex"],
+                    window=window,
+                )
     return out
 
 
@@ -377,13 +564,20 @@ def baseline_from_last(last: Mapping[str, Any] | None, window: str, *, now: floa
     block = (last.get("readings") or {}).get(window)
     if ts is None or not isinstance(block, Mapping) or now - ts > BASELINE_MAX_AGE_S:
         return None
-    used = _num(block.get("used"))
-    if used is None:
+    reading = Reading.from_dict(block)
+    if reading is None:
         return None
-    resets = _num(block.get("resets_at"))
-    if resets is not None and resets <= now:
+    if reading.resets_at is not None and reading.resets_at <= now:
         return None
-    return Reading(used, resets)
+    return Reading(
+        reading.percent,
+        reading.resets_at,
+        source=reading.source if reading.source != "unknown" else "claude",
+        read_at=ts,
+        max_age=reading.max_age,
+        window=window,
+        resolution=reading.resolution,
+    )
 
 
 def _append_sample(record: Mapping[str, Any]) -> None:
@@ -400,7 +594,20 @@ def _append_sample(record: Mapping[str, Any]) -> None:
 
 
 def _readings_dict(readings: Mapping[str, Reading]) -> dict[str, Any]:
-    return {w: {"used": r.used, "resets_at": r.resets_at} for w, r in readings.items()}
+    return {w: r.to_dict() for w, r in readings.items()}
+
+
+def _reading_signature(readings: Any) -> dict[str, tuple[float | None, float | None]]:
+    """The measured values only: metadata (read_at) changes every render."""
+
+    if not isinstance(readings, Mapping):
+        return {}
+    out: dict[str, tuple[float | None, float | None]] = {}
+    for window, block in readings.items():
+        if not isinstance(block, Mapping):
+            continue
+        out[str(window)] = (_num(block.get("percent", block.get("used"))), _num(block.get("resets_at")))
+    return out
 
 
 # ------------------------------------------------- Claude: statusline + hook
@@ -482,7 +689,7 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
     line = ""
     try:
         payload = json.loads(raw) if raw.strip() else {}
-        readings = claude_readings(payload)
+        readings = claude_readings(payload, now=now)
         status = _read_json(job_dir / "status.json") or {}
         sessions = set(status.get("sessions") or [])
         sid = payload.get("session_id") if isinstance(payload, Mapping) else None
@@ -490,6 +697,8 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
             sessions.add(sid)
         window = job.get("window", "week")
         quota = float(job.get("quota", 100))
+        enforce = bool(job.get("enforce", True))
+        previous_tracker = ShareTracker.from_dict(status.get("tracker"))
         tracker = ShareTracker.from_dict(status.get("tracker"))
         if window in readings:
             reading = readings[window]
@@ -504,31 +713,68 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
             else:
                 tracker.update(reading)
         share = tracker.share
-        enforce = bool(job.get("enforce", True))
+        # A render without readings must not wipe the last observation: keep it
+        # with its original read_at so its age keeps growing and the state can
+        # never pass a stale reading off as fresh.
+        stored = status.get("readings") if isinstance(status.get("readings"), dict) else {}
+        if readings:
+            stored = {**stored, **_readings_dict(readings)}
+            read_at: float | None = now
+            source_lost = False
+        else:
+            read_at = _num(status.get("read_at"))
+            source_lost = bool(status.get("source_lost"))
+            if read_at is None and not stored and _api_calls_seen(payload):
+                source_lost = True  # this login cannot expose subscription quota at all
+        current = readings.get(window)
+        if current is None and isinstance(stored.get(window), Mapping):
+            current = Reading.from_dict(stored[window])
+        used = current.percent if current is not None else None
+        resets_at = current.resets_at if current is not None else None
+        protection = protection_state(
+            started_at=float(job.get("started_at") or now), now=now, reading=current,
+            source="claude", window=window, max_age=READING_MAX_AGE_S["claude"],
+            source_lost=source_lost,
+        )
         status_out = {
             "ts": now,
+            "read_at": read_at,
+            "source": "claude",
+            "max_age": READING_MAX_AGE_S["claude"],
+            "resolution": READING_RESOLUTION_PCT,
+            "readings": stored,
             "agent": "claude",
             "window": window,
             "quota": quota,
             "share": share,
-            "used": readings[window].used if window in readings else None,
-            "resets_at": readings[window].resets_at if window in readings else None,
+            "used": used,
+            "resets_at": resets_at,
             "has_rate_limits": bool(readings),
+            "source_lost": source_lost,
             "api_calls_seen": _api_calls_seen(payload),
             "limit_hit": bool(enforce and window in readings and share >= quota),
             "sessions": sorted(sessions),
             "tracker": tracker.to_dict(),
+            "state": protection.state,
+            "state_text": protection.text,
+            "window_reset": bool(tracker.resets_seen > previous_tracker.resets_seen),
         }
         _atomic_write(job_dir / "status.json", status_out)
         if readings:
-            current = _readings_dict(readings)
+            current_dict = _readings_dict(readings)
             previous = (_read_json(state_root() / "claude_last.json") or {}).get("readings")
-            _atomic_write(state_root() / "claude_last.json", {"ts": now, "readings": current})
-            if previous != current:
-                _append_sample({"ts": now, "readings": current})
-            line = f"agentcap: job {share:.1f}% / {quota:g}% ({window})"
+            _atomic_write(state_root() / "claude_last.json", {"ts": now, "readings": current_dict})
+            if _reading_signature(previous) != _reading_signature(current_dict):
+                _append_sample({"ts": now, "readings": current_dict})
+            meter = f"agentcap: job {share:.1f}% / {quota:g}% ({window}) {uncertainty_text()}"
+            if protection.state != STATE_PROTECTED:
+                line = f"{meter} — {protection.text}"
+            elif enforce:
+                line = f"{meter} — {protection.text}"
+            else:
+                line = f"{meter} — watch only (Pro stops at the limit)"
         else:
-            line = "agentcap: waiting for subscription rate_limits"
+            line = f"agentcap: {protection.text}"
     except Exception:
         line = "agentcap: quota unavailable"
     chain = job.get("chain")
@@ -769,10 +1015,29 @@ def hook_main(job_dir: Path, stdin: TextIO, stdout: TextIO) -> int:
     if not status or not status.get("limit_hit"):
         return 0
     _note_deny(job_dir)
+    reading = None
+    block = (status.get("readings") or {}).get(status.get("window")) \
+        if isinstance(status.get("readings"), Mapping) else None
+    if isinstance(block, Mapping):
+        reading = Reading.from_dict(block)
+    elif status.get("used") is not None:
+        reading = Reading(
+            float(status["used"]), _num(status.get("resets_at")), source="claude",
+            read_at=float(status.get("read_at") or status.get("ts") or 0.0),
+            max_age=READING_MAX_AGE_S["claude"], window=str(status.get("window") or ""),
+        )
+    prot = protection_state(
+        started_at=float(status.get("read_at") or status.get("ts") or time.time()),
+        now=time.time(), reading=reading, source="claude",
+        window=str(status.get("window") or ""), max_age=READING_MAX_AGE_S["claude"],
+    )
+    stale_note = (f" The last reading is {prot.age_s or 0:.0f}s old (max {prot.max_age_s or 0:.0f}s), "
+                  f"so {STATE_TEXT[STATE_STALE]}." if prot.state == STATE_STALE else "")
     reason = (
         f"agentcap quota mode: this job used {float(status.get('share', 0)):.1f}% of the "
         f"{'weekly' if status.get('window') == 'week' else '5-hour'} subscription quota "
-        f"(limit {float(status.get('quota', 0)):g}%) and the limit was hit. "
+        f"{uncertainty_text()} (limit {float(status.get('quota', 0)):g}%) and the limit was hit."
+        f"{stale_note} "
         f"{PAUSE_TEXT}"
     )
     json.dump(
@@ -947,6 +1212,7 @@ class QuotaSummary:
     observed: bool
     final_read: str = "n/a"        # codex: "complete" when the last turn's usage was read
     effort: str | None = None
+    protection: Protection | None = None
 
 
 class _Terminated(Exception):
@@ -972,6 +1238,7 @@ class QuotaRunner:
         no_data_warn_s: float = 90.0,
         response_timeout_s: float | None = RESPONSE_TIMEOUT_S,
         final_read_s: float = FINAL_READ_S,
+        reading_max_age_s: float | None = None,
         quiet: bool = False,
         job_root: Path | None = None,
         sessions_dir: Path | None = None,
@@ -996,6 +1263,7 @@ class QuotaRunner:
         self.no_data_warn_s = no_data_warn_s
         self.response_timeout_s = response_timeout_s or None
         self.final_read_s = final_read_s
+        self.reading_max_age_s = reading_max_age_s or READING_MAX_AGE_S.get(self.agent, DEFAULT_MAX_AGE_S)
         self.quiet = quiet
         self.job_root = job_root or state_root()
         self.sessions_dir = sessions_dir or (codex_home() / "sessions")
@@ -1008,6 +1276,12 @@ class QuotaRunner:
         self._pgid: int | None = None
         self.summary: QuotaSummary | None = None
         self.baseline_age_s: float | None = None  # set when the baseline is an older same-window reading
+        self._started_at = 0.0
+        self._last_reading: Reading | None = None
+        self._source_lost = False
+        self._state: str | None = None
+        self._protection_now: Protection | None = None
+        self._resets_announced = 0
 
     def _say(self, msg: str) -> None:
         if not self.quiet:
@@ -1051,6 +1325,53 @@ class QuotaRunner:
         if self.child is not None:
             stop_tree(self.child, self._pgid, int_timeout=5.0, term_timeout=3.0, kill_timeout=2.0)
 
+    def _protection(self, now: float, *, stopped: bool = False) -> Protection:
+        """The one place a runner decides what it may claim about the guard."""
+
+        return protection_state(
+            started_at=self._started_at or now,
+            now=now,
+            reading=self._last_reading,
+            source=self.agent,
+            window=self.window,
+            max_age=self.reading_max_age_s,
+            stopped=stopped,
+            source_lost=self._source_lost and not stopped,
+            startup_grace_s=self.no_data_warn_s,
+        )
+
+    def _stale_detail(self, prot: Protection, now: float, share: float) -> str:
+        if prot.percent is None and self._source_lost:
+            if self.agent == "claude":
+                return ("the source reports no subscription rate_limits (a Pro/Max login is "
+                        "needed; use --cap for API keys)")
+            return "the source reports no subscription rate_limits (a ChatGPT login is needed)"
+        if prot.percent is None or prot.age_s is None:
+            waited = max(0.0, now - (self._started_at or now))
+            return f"no quota data yet (no reading in {waited:.0f}s, max {prot.max_age_s:.0f}s)"
+        detail = (f"last reading {prot.age_s:.0f}s ago, older than {prot.max_age_s:.0f}s "
+                  f"(last known share {share:.1f}%)")
+        if self.agent == "claude":
+            detail += "; the Claude statusline stopped reporting"
+        elif self._last_reading is not None:
+            detail += "; the Codex rollout stopped reporting"
+        return detail
+
+    def _apply_state(self, prot: Protection, now: float, share: float = 0.0) -> None:
+        """Announce a state change once; never refresh a reading here."""
+
+        self._protection_now = prot
+        if prot.state == self._state:
+            return
+        previous, self._state = self._state, prot.state
+        if prot.state == STATE_PROTECTED:
+            age = f", reading {prot.age_s:.0f}s old" if prot.age_s is not None else ""
+            self._say(f"agentcap: {prot.text} ({self.agent}, {self.window}{age})")
+        elif prot.state == STATE_STALE:
+            self._say(f"agentcap: {prot.text}: {self._stale_detail(prot, now, share)}")
+        elif prot.state == STATE_STOPPED and previous is not None:
+            self._say(f"agentcap: {prot.text} at {share:.1f}% (limit {self.quota:g}%)")
+
     def run(self) -> int:
         lock = JobLock(state_root() / "quota.lock")
         try:
@@ -1064,6 +1385,7 @@ class QuotaRunner:
         old_handlers: dict[int, Any] = {}
         try:
             started = time.time()
+            self._started_at = started
             ensure_private_dir(self.job_dir)
             argv = list(self.argv)
             tailer: CodexTailer | None = None
@@ -1104,8 +1426,8 @@ class QuotaRunner:
             env["AGENTCAP_QUOTA_JOB"] = str(self.job_dir)
             if not (self.agent == "claude" and self.headless):  # headless: see the warning below
                 self._say(
-                    f"agentcap: quota mode ({self.agent}, {self.window}): "
-                    + (f"stopping this job at {self.quota:g}% of the account quota" if self.enforce
+                    f"agentcap: quota mode ({self.agent}, {self.window}): {STATE_TEXT[STATE_STARTING]}; "
+                    + (f"will stop this job at {self.quota:g}% of the account quota" if self.enforce
                        else f"observe only (Free); Pro would stop it at {self.quota:g}%")
                     + ". Read-only; your login and traffic are untouched."
                 )
@@ -1145,7 +1467,7 @@ class QuotaRunner:
             exec_mode = self.agent == "codex" and len(self.argv) > 1 and self.argv[1] in ("exec", "e")
             effort_said = timeout_said = False
             timed_out = False
-            warned = hit = parallel = observed = no_data_warned = False
+            warned = hit = parallel = observed = False
             loop_detail: str | None = None
             loop_at: float | None = None
             hit_at: float | None = None
@@ -1171,25 +1493,39 @@ class QuotaRunner:
                         self._event("quota_approved", share, approvals=approvals)
                     if self.agent == "claude":
                         status = _read_json(self.job_dir / "status.json") or {}
-                        if status.get("has_rate_limits"):
+                        current: Reading | None = None
+                        block = (status.get("readings") or {}).get(self.window) \
+                            if isinstance(status.get("readings"), Mapping) else None
+                        if isinstance(block, Mapping):
+                            current = Reading.from_dict(block)
+                        elif status.get("used") is not None:
+                            current = Reading(
+                                float(status["used"]), _num(status.get("resets_at")),
+                                source="claude",
+                                read_at=float(status.get("read_at") or status.get("ts") or 0.0),
+                                max_age=self.reading_max_age_s, window=self.window,
+                            )
+                        if current is not None:
+                            self._last_reading = current
                             observed = True
                             share = float(status.get("share") or 0.0)
                             tracker = ShareTracker.from_dict(status.get("tracker"))
-                        elif status and not no_data_warned and status.get("api_calls_seen", True):
-                            # the first statusline render precedes any API response,
-                            # so missing rate_limits before a model call is normal
-                            no_data_warned = True
-                            self._say("agentcap: Claude Code reports no subscription rate_limits "
-                                      "(API-key login?). Quota mode needs a Pro/Max login; use --cap for API keys.")
+                        if status:
+                            if status.get("has_rate_limits"):
+                                self._source_lost = False
+                            elif current is None and status.get("api_calls_seen", True):
+                                self._source_lost = True
                         if len(status.get("sessions") or []) > 1 and not parallel:
                             parallel = True
                     else:
                         assert tailer is not None
                         for reading in tailer.poll(self.window):
                             observed = True
+                            self._last_reading = reading
                             tracker.update(reading)
                         share = tracker.share
                         if tailer.read_errors >= 3 and guard_msg is None:
+                            self._source_lost = True
                             guard_msg = ('Codex session log is unreadable; the guard cannot see '
                                          'this run, stopping it (fail-closed).')
                             if self.enforce:
@@ -1204,17 +1540,18 @@ class QuotaRunner:
                             parallel = True
                         strict = None
                         if guard_msg is None and tailer.token_counts >= 2 and tailer.readings_seen == 0:
+                            self._source_lost = True
                             strict = (f"Codex reports no subscription rate_limits for the {self.window} "
                                       "window (API-key login, or a changed log format); the guard cannot "
                                       "see this run, stopping it (fail-closed).")
                         elif (guard_msg is None and exec_mode and tailer.own is None and code is None
                               and now - started > self.no_data_warn_s):
+                            self._source_lost = True
                             strict = (f"no Codex session log appeared in {int(self.no_data_warn_s)}s "
                                       f"(looked in {self.sessions_dir}); the guard cannot see this run, "
                                       "stopping it (fail-closed).")
                         if strict:
                             guard_msg = strict
-                            no_data_warned = True
                             if self.enforce:
                                 self._say("agentcap: " + strict)
                                 self._event("guard_failed", share, detail=strict)
@@ -1252,11 +1589,12 @@ class QuotaRunner:
                         self._say("agentcap: WARNING: another session is using the same account; "
                                   "quota % is account-level, so its usage counts against this job.")
                         self._event("quota_parallel", share)
-                    if (not observed and not no_data_warned and now - started > self.no_data_warn_s
-                            and not (self.agent == "claude" and self.headless)):
-                        no_data_warned = True
-                        self._say("agentcap: no quota data yet; protection not verified "
-                                  "(Claude: interactive mode with statusline; Codex: ChatGPT login).")
+                    if tracker.resets_seen > self._resets_announced:
+                        self._resets_announced = tracker.resets_seen
+                        label = "weekly" if self.window == "week" else "5-hour"
+                        self._say(f"agentcap: the {label} window reset; the job's share restarts in the "
+                                  f"new window (previous {tracker.carried:.1f}% kept, the reset itself "
+                                  "adds no usage).")
                     # Whole-percent sources can jump straight past 80% to the limit; a warning
                     # printed together with the stop tells the user nothing, so skip it then.
                     if observed and not warned and self.quota * WARN_FRACTION <= share < self.quota:
@@ -1303,6 +1641,8 @@ class QuotaRunner:
                                                else self.claude_grace_s * 3):
                             self._stop()
                             stopped = True
+                    state_stopped = bool(self.enforce and (hit or loop_detail or timed_out))
+                    self._apply_state(self._protection(now, stopped=state_stopped), now, share)
                     self._live(share, observed, hit)
                     if code is not None:
                         break
@@ -1335,6 +1675,7 @@ class QuotaRunner:
                 while True:
                     for reading in tailer.poll(self.window):
                         observed = True
+                        self._last_reading = reading
                         tracker.update(reading)
                     if not tailer.response_open or tailer.own is None or time.time() >= deadline:
                         break
@@ -1371,10 +1712,15 @@ class QuotaRunner:
             if loop_detail and not self.enforce:
                 self._say(f"agentcap: Pro's loop breaker would have stopped this job at {LOOP_REPEATS} repeats"
                           f" ({loop_detail}). https://agentcap.launchbench.studio/#pricing")
+            state_stopped = bool(self.enforce and (hit or loop_detail or timed_out))
+            if guard_msg and self.enforce:
+                self._source_lost = True
+            self._protection_now = self._protection(time.time(), stopped=state_stopped)
             self.summary = QuotaSummary(
                 self.agent, self.window, self.quota, share, code, reason,
                 tracker.baseline_exact, tracker.resets_seen, parallel, observed,
                 final_read, tailer.effort if tailer is not None else None,
+                self._protection_now,
             )
             self._receipt(self.summary)
             try:
@@ -1417,19 +1763,32 @@ class QuotaRunner:
         path = os.environ.get("AGENTCAP_QUOTA_LIVE")
         if not path:
             return
+        prot = self._protection_now or self._protection(time.time())
         try:
             _atomic_write(Path(path), {
                 "agent": self.agent, "window": self.window, "quota_pct": self.quota,
                 "share_pct": share, "observed": observed, "limit_hit": hit,
                 "enforce": self.enforce, "ts": time.time(),
+                "state": prot.state, "state_text": prot.text,
+                "read_at": prot.read_at, "age_s": prot.age_s, "max_age_s": prot.max_age_s,
+                "resolution_pct": prot.resolution,
+                "uncertainty_pct": list(READING_UNCERTAINTY_PCT),
             })
         except OSError:
             pass
 
     def _receipt(self, s: QuotaSummary) -> None:
         label = "weekly" if s.window == "week" else "5-hour"
+        prot = s.protection or self._protection(time.time())
+        trust = uncertainty_text()
         if not s.observed:
-            self._say("agentcap: quota receipt: no quota data observed for this job.")
+            if s.reason in ("exited", "interrupted", "terminated"):
+                # Nothing was measured: a receipt here would put a number or a
+                # stop on a job AgentCap never saw.  Say so and write nothing.
+                self._say("agentcap: no quota receipt: no reading was observed for this job, "
+                          "so this run makes no claim about the account.")
+                return
+            self._say(f"agentcap: quota receipt: {prot.text}; no reading was observed for this job.")
         else:
             notes = []
             if not s.baseline_exact:
@@ -1438,16 +1797,21 @@ class QuotaRunner:
                 notes.append(f"baseline is a reading from {self.baseline_age_s / 60:.0f} min before the "
                              "job, so other usage since then is counted too")
             if s.resets_seen:
-                notes.append(f"window reset {s.resets_seen}x during the job")
+                notes.append(f"window reset {s.resets_seen}x during the job (not counted as usage)")
             if s.parallel:
                 notes.append("includes other sessions on the same account")
             if s.final_read == "incomplete":
                 notes.append("the last response's usage was not written yet, may undercount")
+            if prot.state == STATE_STALE:
+                notes.append(
+                    f"the last reading was {prot.age_s or 0:.0f}s old (max {prot.max_age_s or 0:.0f}s), "
+                    "so protection was not verified at the end")
             self._say(
-                f"agentcap: the account's {label} quota rose {s.share:.1f}% while this job ran"
+                f"agentcap: the account's {label} quota rose {s.share:.1f}% {trust} while this job ran"
                 + (f" (limit {s.quota:g}%)" if self.enforce else "")
                 + (f"; {'; '.join(notes)}" if notes else "") + "."
             )
+            self._say(f"agentcap: protection at the end: {prot.text}")
         last = self._last_tool()
         if last:
             self._say(f"agentcap: last tool call: {last}")
@@ -1462,14 +1826,24 @@ class QuotaRunner:
                 try:
                     _atomic_write(self.receipt_dir / f"{self.job_id}.json", {
                         "type": "agentcap_quota_receipt", "agent": s.agent, "window": s.window,
-                        "quota_pct": s.quota, "share_pct": s.share, "exit_code": s.exit_code,
+                        "quota_pct": s.quota,
+                        "share_pct": round(s.share, 3) if s.observed else None,
+                        "exit_code": s.exit_code,
                         "reason": s.reason, "baseline_exact": s.baseline_exact,
                         "parallel_sessions": s.parallel, "window_resets": s.resets_seen,
-                        "last_tool": last, "measure": "account_increase",
+                        "last_tool": last, "measure": "account_increase" if s.observed else "none",
                         "baseline_age_s": (round(self.baseline_age_s) if self.baseline_age_s is not None
                                            else None),
                         "final_read": s.final_read, "effort": s.effort,
                         "response_timeout_s": self.response_timeout_s if s.agent == "codex" else None,
+                        "observed": s.observed,
+                        "state": prot.state, "state_text": prot.text,
+                        "read_at": prot.read_at, "reading_age_s": prot.age_s,
+                        "max_age_s": prot.max_age_s, "source": prot.source,
+                        "resolution_pct": prot.resolution or READING_RESOLUTION_PCT,
+                        "uncertainty_pct": {"low": READING_UNCERTAINTY_PCT[0],
+                                            "high": READING_UNCERTAINTY_PCT[1]},
+                        "protection": prot.to_dict(),
                     })
                 except OSError:
                     pass
@@ -1481,10 +1855,22 @@ def quota_status(*, now: float | None = None, sessions_dir: Path | None = None) 
     lines: list[str] = []
     last = _read_json(state_root() / "claude_last.json")
     if last and isinstance(last.get("readings"), Mapping):
-        age = int(now - float(last.get("ts", now)))
+        ts = _num(last.get("ts")) or now
         for window, block in sorted(last["readings"].items()):
-            lines.append(f"claude {window}: {float(block.get('used', 0)):.1f}% used"
-                         + _reset_text(block.get("resets_at"), now) + f" (seen {age}s ago)")
+            reading = Reading.from_dict(block) if isinstance(block, Mapping) else None
+            if reading is None:
+                continue
+            if reading.read_at <= 0:
+                reading = Reading(
+                    reading.percent, reading.resets_at, source="claude", read_at=ts,
+                    max_age=READING_MAX_AGE_S["claude"], window=window,
+                    resolution=reading.resolution,
+                )
+            prot = protection_state(started_at=ts, now=now, reading=reading,
+                                    source="claude", window=window)
+            lines.append(f"claude {window}: {reading.percent:.1f}% used {uncertainty_text()}"
+                         + _reset_text(reading.resets_at, now)
+                         + f" (seen {int(prot.age_s or 0)}s ago) — {prot.text}")
     else:
         lines.append("claude: no data yet (seen only during `agentcap run --quota ... -- claude`)")
     tail = CodexTailer(sessions_dir or (codex_home() / "sessions"), now)
@@ -1493,9 +1879,12 @@ def quota_status(*, now: float | None = None, sessions_dir: Path | None = None) 
         prior = tail.last_reading_before(window)
         if prior:
             found = True
-            lines.append(f"codex {window}: {prior[1].used:.1f}% used"
-                         + _reset_text(prior[1].resets_at, now)
-                         + f" (seen {int(now - prior[0])}s ago)")
+            reading = prior[1]
+            prot = protection_state(started_at=prior[0], now=now, reading=reading,
+                                    source="codex", window=window)
+            lines.append(f"codex {window}: {reading.percent:.1f}% used {uncertainty_text()}"
+                         + _reset_text(reading.resets_at, now)
+                         + f" (seen {int(prot.age_s or 0)}s ago) — {prot.text}")
     if not found:
         lines.append("codex: no rate_limits found in ~/.codex/sessions")
     return lines
