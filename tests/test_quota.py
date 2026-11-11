@@ -1174,3 +1174,21 @@ def test_two_approvals_in_one_poll_are_both_reported(fakebin, tmp_path, monkeypa
     threading.Thread(target=approve_twice, daemon=True).start()
     r.run()
     assert "approved twice (2/2): limit is now 4.5%" in err.getvalue()
+
+
+def test_quota_status_marks_old_and_reset_readings(tmp_path, monkeypatch):
+    # 11 Nov 2026: a 7 h old Claude reading showed 55% weekly while the account was at 65%
+    monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(tmp_path / "state"))
+    (tmp_path / "state").mkdir()
+    now = time.time()
+    (tmp_path / "state" / "claude_last.json").write_text(json.dumps({"ts": now - 7 * 3600 - 660, "readings": {
+        "week": {"used": 55.0, "resets_at": now + 26 * 3600},
+        "5h": {"used": 19.0, "resets_at": now - 2 * 3600}}}))
+    lines = q.quota_status(now=now, sessions_dir=tmp_path / "none")
+    week = next(l for l in lines if l.startswith("claude week"))
+    five = next(l for l in lines if l.startswith("claude 5h"))
+    assert "55.0% used" in week and "last seen 7h11m ago" in week and "STALE" in week
+    assert "agentcap run --quota -- claude" in week
+    assert five.startswith("claude 5h: unknown now: the window reset 2h00m ago") and "19.0%" in five
+    fresh = q._status_line("codex", "5h", 15.0, now + 3600, 120, now, "x")
+    assert "STALE" not in fresh and "last seen 2m ago" in fresh

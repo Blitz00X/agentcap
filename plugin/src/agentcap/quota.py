@@ -1555,26 +1555,56 @@ class QuotaRunner:
 
 
 # ------------------------------------------------------------ read-only view
+STATUS_STALE_S = 15 * 60
+CLAUDE_STATUS_HINT = ("AgentCap sees Claude usage only while a session runs under "
+                      "`agentcap run --quota -- claude` or with the plugin statusline (/agentcap:setup)")
+CODEX_STATUS_HINT = "Codex updates it whenever one of its sessions finishes a response"
+
+
+def _age_text(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
+def _status_line(agent: str, window: str, used: float, resets_at: Any, age: float, now: float,
+                 hint: str) -> str:
+    """One `agentcap quota` line that never passes an old reading off as the current value
+    (11 Nov 2026: a 7 h old Claude reading showed 55% while the account was at 65%)."""
+
+    resets = _num(resets_at)
+    seen = f"last seen {_age_text(age)} ago"
+    if resets is not None and resets <= now:
+        return (f"{agent} {window}: unknown now: the window reset {_age_text(now - resets)} ago "
+                f"(was {used:.1f}% before the reset, {seen}).")
+    line = f"{agent} {window}: {used:.1f}% used" + _reset_text(resets_at, now) + f" ({seen})"
+    if age > STATUS_STALE_S:
+        line += f"; STALE: the account may be higher now. {hint}."
+    return line
+
+
 def quota_status(*, now: float | None = None, sessions_dir: Path | None = None) -> list[str]:
     now = time.time() if now is None else now
     lines: list[str] = []
     last = _read_json(state_root() / "claude_last.json")
     if last and isinstance(last.get("readings"), Mapping):
-        age = int(now - float(last.get("ts", now)))
+        age = now - float(last.get("ts", now))
         for window, block in sorted(last["readings"].items()):
-            lines.append(f"claude {window}: {float(block.get('used', 0)):.1f}% used"
-                         + _reset_text(block.get("resets_at"), now) + f" (seen {age}s ago)")
+            lines.append(_status_line("claude", window, float(block.get("used", 0)),
+                                      block.get("resets_at"), age, now, CLAUDE_STATUS_HINT))
     else:
-        lines.append("claude: no data yet (seen only during `agentcap run --quota ... -- claude`)")
+        lines.append(f"claude: no data yet. {CLAUDE_STATUS_HINT}.")
     tail = CodexTailer(sessions_dir or (codex_home() / "sessions"), now)
     found = False
     for window in WINDOWS:
         prior = tail.last_reading_before(window)
         if prior:
             found = True
-            lines.append(f"codex {window}: {prior[1].used:.1f}% used"
-                         + _reset_text(prior[1].resets_at, now)
-                         + f" (seen {int(now - prior[0])}s ago)")
+            lines.append(_status_line("codex", window, prior[1].used, prior[1].resets_at,
+                                      now - prior[0], now, CODEX_STATUS_HINT))
     if not found:
         lines.append("codex: no rate_limits found in ~/.codex/sessions")
     return lines
