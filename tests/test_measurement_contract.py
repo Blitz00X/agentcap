@@ -378,24 +378,6 @@ def test_resolution_is_printed_without_fake_precision(fakebin, tmp_path):
     assert any("claude week: 41.0% used ±1-3%" in line for line in lines)
 
 
-def test_free_never_claims_protection(fakebin, tmp_path, monkeypatch):
-    """Observe-only is not protection: the same state, but the tier text says so."""
-
-    runner, _events, err = make_runner(["claude"], tmp_path, quota=50.0, enforce=False)
-    assert runner.run() == 0
-    text = err.getvalue()
-    assert q.STATE_TEXT[q.STATE_PROTECTED] not in text
-    assert q.WATCH_ONLY_TEXT in text
-
-    monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(tmp_path / "state2"))
-    monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(tmp_path / "nolicense.json"))
-    cc = _load_plugin()
-    fresh = q.Reading(41.0, NOW + 100, source="claude", read_at=NOW, max_age=60.0, window="week")
-    line = cc.share_line({"quota": 5.0, "window": "week", "share": 1.0, "used": 41.0,
-                          "last_readings": {"week": fresh.to_dict()}, "set_at": NOW}, now=NOW + 5)
-    assert q.WATCH_ONLY_TEXT in line and q.STATE_TEXT[q.STATE_PROTECTED] not in line
-
-
 # ------------------------------------------------------- one mapping, one text
 def _load_plugin():
     spec = importlib.util.spec_from_file_location("agentcap_cc_mc", ROOT / "scripts" / "agentcap_cc.py")

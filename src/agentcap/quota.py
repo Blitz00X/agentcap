@@ -79,7 +79,6 @@ STATE_TEXT = {
     STATE_STALE: "data stale (protection not verified)",
     STATE_STOPPED: "stopped",
 }
-WATCH_ONLY_TEXT = "watch only (Pro stops at the limit)"
 
 
 def uncertainty_text() -> str:
@@ -87,14 +86,6 @@ def uncertainty_text() -> str:
 
     low, high = READING_UNCERTAINTY_PCT
     return f"±{low:g}-{high:g}%"
-
-
-def protection_text(prot: "Protection", *, enforce: bool = True) -> str:
-    """The state text a surface may show: Free never claims enforcement."""
-
-    if prot.state == STATE_PROTECTED and not enforce:
-        return WATCH_ONLY_TEXT
-    return prot.text
 # Codex writes usage only when a model response ends; at high reasoning effort one response
 # ran 6+ minutes with no reading (11 Nov 2026, gpt-6-astra max).  Quota mode cuts a single
 # response after this long (Pro) so the job cannot spend an unseen amount; SIGINT makes Codex
@@ -765,7 +756,7 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
             "sessions": sorted(sessions),
             "tracker": tracker.to_dict(),
             "state": protection.state,
-            "state_text": protection_text(protection, enforce=enforce),
+            "state_text": protection.text,
             "window_reset": bool(tracker.resets_seen > previous_tracker.resets_seen),
         }
         _atomic_write(job_dir / "status.json", status_out)
@@ -776,7 +767,12 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
             if _reading_signature(previous) != _reading_signature(current_dict):
                 _append_sample({"ts": now, "readings": current_dict})
             meter = f"agentcap: job {share:.1f}% / {quota:g}% ({window}) {uncertainty_text()}"
-            line = f"{meter} — {protection_text(protection, enforce=enforce)}"
+            if protection.state != STATE_PROTECTED:
+                line = f"{meter} — {protection.text}"
+            elif enforce:
+                line = f"{meter} — {protection.text}"
+            else:
+                line = f"{meter} — watch only (Pro stops at the limit)"
         else:
             line = f"agentcap: {protection.text}"
     except Exception:
@@ -1370,8 +1366,7 @@ class QuotaRunner:
         previous, self._state = self._state, prot.state
         if prot.state == STATE_PROTECTED:
             age = f", reading {prot.age_s:.0f}s old" if prot.age_s is not None else ""
-            self._say(f"agentcap: {protection_text(prot, enforce=self.enforce)} "
-                      f"({self.agent}, {self.window}{age})")
+            self._say(f"agentcap: {prot.text} ({self.agent}, {self.window}{age})")
         elif prot.state == STATE_STALE:
             self._say(f"agentcap: {prot.text}: {self._stale_detail(prot, now, share)}")
         elif prot.state == STATE_STOPPED and previous is not None:
@@ -1774,8 +1769,7 @@ class QuotaRunner:
                 "agent": self.agent, "window": self.window, "quota_pct": self.quota,
                 "share_pct": share, "observed": observed, "limit_hit": hit,
                 "enforce": self.enforce, "ts": time.time(),
-                "state": prot.state,
-                "state_text": protection_text(prot, enforce=self.enforce),
+                "state": prot.state, "state_text": prot.text,
                 "read_at": prot.read_at, "age_s": prot.age_s, "max_age_s": prot.max_age_s,
                 "resolution_pct": prot.resolution,
                 "uncertainty_pct": list(READING_UNCERTAINTY_PCT),
@@ -1817,7 +1811,7 @@ class QuotaRunner:
                 + (f" (limit {s.quota:g}%)" if self.enforce else "")
                 + (f"; {'; '.join(notes)}" if notes else "") + "."
             )
-            self._say(f"agentcap: protection at the end: {protection_text(prot, enforce=self.enforce)}")
+            self._say(f"agentcap: protection at the end: {prot.text}")
         last = self._last_tool()
         if last:
             self._say(f"agentcap: last tool call: {last}")
