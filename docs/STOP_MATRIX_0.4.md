@@ -58,6 +58,27 @@ Last full run (11 Nov 2026, after the two commits below): **1040 passed,
   signal by design (`HEADLESS_CLAUDE_QUOTA_WARNING`), so only the loop/error
   breakers apply there.
 
+## Reproduce one path
+
+```bash
+cd /home/kutay/agentcap-04
+pytest tests/test_stop_matrix.py -k "quota_stop" -v            # 1
+pytest tests/test_quota.py -k "claude_denied_at_quota" -v      # 2
+pytest tests/test_stop_matrix.py -k "loop_breaker" -v          # 3
+pytest tests/test_stop_matrix.py -k "error_breaker" -v         # 4
+pytest tests/test_stop_matrix.py -k "escalates" -v             # 5
+pytest tests/test_lifeline.py -k "sigkilled" -v                # 6
+pytest tests/test_stop_matrix.py -k "no_survivor" -v           # 7
+pytest tests/test_quota.py -k "approve" -v                     # 8
+pytest tests/test_cc_plugin.py -v                              # 9
+pytest tests/test_failsafe.py -k "lock" -v                     # 10
+pytest tests/test_stop_matrix.py -k "missing_schema" -v        # 11
+pytest tests/test_quota.py -k "api_key_login or no_session_log" -v  # 12
+pytest tests/test_stop_matrix.py -k "receipt" -v               # 13
+pytest tests/test_quota.py -k "response_timeout" -v            # 14
+pytest tests/test_quota.py -k "sigterm" -v                     # 15
+```
+
 ## Known limits (unchanged by this stage)
 
 - Percent sources are whole integers; a `--quota 3%` stop can land anywhere in
