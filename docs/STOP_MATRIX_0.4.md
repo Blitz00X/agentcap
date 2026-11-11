@@ -41,22 +41,28 @@ Last full run (11 Nov 2026, after the stage-1 commits): **1041 passed,
 
 ## Live status (11 Nov 2026)
 
-- **Codex sandbox is blocked in this shell.** `codex exec -s read-only` runs, but
-  every shell tool call fails with
+Real ChatGPT Plus / Claude Pro accounts, Codex 0.166-0.167.1, Claude Code interactive:
+
+| Run | Result |
+| --- | --- |
+| Codex 5h 1% (`exec`, no tools) | exit 3, no leftover process |
+| Codex weekly 1% (low effort, agentOS MCP tools) | weekly 85 -> 86, exit 3, exact baseline |
+| Codex parallel session | warning printed |
+| B1: Codex 5h 2% (low effort, MCP tools), commit 01c7937 | exit 3 in 22 s, receipt `final_read=complete`; found the stale-baseline undercount fixed in 01c7937 |
+| B2: Codex max effort, `--response-timeout 2m` | cut after 2 min, exit 4 `response_timeout`, no leftover; the interrupted response's usage did not show (5h stayed 3%) |
+| Claude interactive 5h 2% | 17 -> 19, tool call denied, session stayed open, exit 3 |
+
+Still open (each needs Kutay's approval first): Codex `approve` mid-run, multi-turn with shell
+tools + process-tree cleanup, interactive Codex TUI, Free observe-only; Claude approve flow,
+weekly window, headless warning, own statusline chain, plugin self-guard, plugin `/agentcap:quota`.
+
+- **Codex sandbox in an agent shell:** shell tool calls fail with
   `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`
-  because `kernel.apparmor_restrict_unprivileged_userns=1`. The Codex CLI itself
-  exits 0 in this case, so a live run must inspect the tool output, not only the
-  exit code.
-- **`-s danger-full-access` works** (verified with `echo SANDBOX_OK`): it runs the
-  model's commands with no sandbox. That is the fallback for the live script, and
-  it removes Codex's own protection — only AgentCap's cap remains.
-- **No live Codex quota run was made today**: the account showed
-  `codex week 86.0% used, resets in 40h16m; codex 5h 1.0%` at 19:02. A live run
-  now risks exhausting the weekly window for 40 hours. Run the script when the
-  weekly window has headroom (≤ 70%) or accept ~2–4 points per run.
-- **Claude interactive Max test is Kutay's**; `claude -p` (headless) has no quota
-  signal by design (`HEADLESS_CLAUDE_QUOTA_WARNING`), so only the loop/error
-  breakers apply there.
+  (`kernel.apparmor_restrict_unprivileged_userns=1`) and the Codex CLI still exits 0, so a live
+  run must inspect the tool output. Tool-using live tests run in Kutay's own terminal; MCP tools
+  work without the sandbox. Do not use `-s danger-full-access` for these tests.
+- **Claude headless** (`claude -p`) has no quota signal by design (`HEADLESS_CLAUDE_QUOTA_WARNING`);
+  only the loop/error breakers apply there.
 
 ## Reproduce one path
 
