@@ -330,25 +330,6 @@ Claude Code only reports `rate_limits` for Pro/Max logins and only in interactiv
 Claude Code reports whole percents too: a cap under 1% trips at the next 1% step (AgentCap warns).
 Verified on real accounts: see the harness support matrix under "Supported & tested".
 
-### The measurement contract (0.4)
-
-Every quota surface says the same four things, from one reading record and one mapping
-(`docs/MEASUREMENT_CONTRACT_0.4.md`):
-
-| State | What it means | What you see |
-|---|---|---|
-| `starting` | no reading yet (first 90 s) | `waiting for the first reading` |
-| `protected` | a reading newer than its `max_age` (Claude 60 s, Codex 600 s) | `protection active` |
-| `stale` | the reading is older, or the source went away | `data stale (protection not verified)` |
-| `stopped` | a quota, loop or timeout stop happened | `stopped` |
-
-A stale reading is never refreshed by reading it again: only a new statusline render or a
-new rollout line moves `read_at`. Before the first reading AgentCap does not claim protection
-and does not write a receipt; a run that measured nothing leaves no measurement behind.
-A window reset clears the baseline, carries the closed window once and is never counted as
-usage. Percent is whole-percent, so every number carries `±1-3%` (one source step plus up to
-one unwritten response) instead of a fake decimal.
-
 ## opencode and agy (Antigravity CLI)
 
 Headless runs only. AgentCap reads each agent's own event stream; nothing is proxied in these modes.
