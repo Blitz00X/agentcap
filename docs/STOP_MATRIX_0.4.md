@@ -16,7 +16,7 @@ cd /home/kutay/agentcap-04
 /home/kutay/agentcap-ha-venv/bin/python -m pytest tests/test_stop_matrix.py -v
 ```
 
-Last full run (11 Nov 2026, after the two commits below): **1041 passed,
+Last full run (11 Nov 2026, after the stage-1 commits): **1041 passed,
 2 skipped, exit 0, 172 s**.
 
 ## Matrix
