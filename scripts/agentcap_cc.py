@@ -33,7 +33,6 @@ sys.path.insert(0, str(ROOT / "src"))
 from agentcap.quota import (  # noqa: E402
     READING_MAX_AGE_S,
     STATE_ENV,
-    STATE_PROTECTED,
     STATE_STALE,
     STATE_TEXT,
     Protection,
@@ -46,6 +45,7 @@ from agentcap.quota import (  # noqa: E402
     claude_readings,
     parse_quota,
     protection_state,
+    protection_text,
     state_root,
     uncertainty_text,
 )
@@ -148,11 +148,7 @@ def share_line(state: Mapping[str, Any], *, now: float | None = None) -> str:
     prot = _protection(state, now=now)
     meter = (f"agentcap: session {float(state.get('share', 0)):.1f}% / {quota:g}% "
              f"({WINDOW_NAMES.get(window, window)}) {uncertainty_text()}")
-    if prot.state != STATE_PROTECTED:
-        return f"{meter} — {prot.text}"
-    if not is_pro():
-        return f"{meter} — watch only (Pro stops at the limit)"
-    return f"{meter} — {prot.text}"
+    return f"{meter} — {protection_text(prot, enforce=is_pro())}"
 
 
 def apply_readings(state: dict[str, Any], readings: Mapping[str, Any], now: float) -> bool:
@@ -572,10 +568,7 @@ def cmd_quota(args: list[str], sid: str | None, *, now: float) -> str:
     lines = [f"agentcap: this session may use {quota:g}% of the {WINDOW_NAMES[window]} quota."]
     lines.append(f"baseline {seed.used:g}% (exact)" if seed else "baseline: taken at the next statusline refresh")
     prot = _protection(state, now=now)
-    if prot.state == STATE_PROTECTED and not is_pro():
-        lines.append("agentcap: watch only (Pro stops at the limit)")
-    else:
-        lines.append(f"agentcap: {prot.text}")
+    lines.append(f"agentcap: {protection_text(prot, enforce=is_pro())}")
     if not is_pro():
         lines.append("Free tier: you get the live meter and a notice at the limit. Enforcement (deny tool calls) is Pro.")
     if not (_read_json(cc_dir() / "statusline.json") or {}).get("installed"):
