@@ -328,6 +328,43 @@ def codex_readings(event: Mapping[str, Any], *, now: float | None = None) -> dic
     return out
 
 
+# ---------------------------------------------------------------- terminal
+# Escape sequences a full-screen agent may leave on when it is killed: show the cursor,
+# bracketed paste off, mouse reporting off.
+_TTY_RESET = b"\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
+
+
+def save_tty(fd: int = 0) -> Any:
+    """Terminal settings before an interactive agent starts (None when not a tty)."""
+
+    try:
+        import termios
+
+        return termios.tcgetattr(fd) if os.isatty(fd) else None
+    except Exception:
+        return None
+
+
+def restore_tty(saved: Any, fd: int = 0, *, sequences: bool = True) -> None:
+    """Put the terminal back after the agent stopped.  Live B6 (11 Nov 2026): the Codex TUI
+    was stopped mid-turn, never restored the tty, and the shell printed in raw mode."""
+
+    if saved is None:
+        return
+    try:
+        import termios
+
+        termios.tcsetattr(fd, termios.TCSANOW, saved)
+    except Exception:
+        pass
+    if sequences:
+        try:
+            if os.isatty(2):
+                os.write(2, _TTY_RESET + b"\r\n")
+        except OSError:
+            pass
+
+
 # ------------------------------------------------------------------- tracker
 @dataclass
 class ShareTracker:
@@ -1154,6 +1191,7 @@ class QuotaRunner:
             watchdog.start()  # before the tree guard, so its baseline excludes it
             tree_guard.start()
             try:
+                self._tty = save_tty()
                 self.child = lifeline_spawn(argv, env=env, start_new_session=True, cwd=self.cwd)
             except OSError as exc:
                 raise mark_child_start_failure(exc)
@@ -1190,12 +1228,15 @@ class QuotaRunner:
                     now = time.time()
                     jobnow = _read_json(self.job_dir / "job.json") or {}
                     if int(jobnow.get("approvals") or 0) > approvals and code is None:
+                        seen_before = approvals
                         approvals = int(jobnow["approvals"])
                         self.quota = float(jobnow.get("quota", self.quota))
                         hit = warned = stopped = open_said = False
                         hit_at = loop_at = None
                         loop_detail = None
-                        self._say(f"agentcap: approved ({approvals}/{APPROVE_MAX}): limit is now "
+                        # two approvals inside one poll (live B3, 11 Nov 2026) are both reported
+                        steps = "twice " if approvals - seen_before > 1 else ""
+                        self._say(f"agentcap: approved {steps}({approvals}/{APPROVE_MAX}): limit is now "
                                   f"{self.quota:g}%; continuing.")
                         self._event("quota_approved", share, approvals=approvals)
                     if self.agent == "claude":
@@ -1357,6 +1398,9 @@ class QuotaRunner:
                 else:
                     self._say(f'agentcap: {guard_msg}; observe-only run continues without AgentCap.')
             code = self.child.wait()
+            # A full-screen agent we stopped cannot restore the terminal itself.
+            restore_tty(getattr(self, "_tty", None), sequences=stopped or reason != "exited" or code != 0)
+            self._tty = None
             for sig in old_handlers:  # the stop is done; a second TERM must not cut the receipt
                 try:
                     signal.signal(sig, signal.SIG_IGN)
@@ -1424,6 +1468,7 @@ class QuotaRunner:
             tree_guard.close()
             watchdog.disarm()
             lock.release()
+            restore_tty(getattr(self, "_tty", None))
             for sig, handler in old_handlers.items():
                 try:
                     signal.signal(sig, handler)

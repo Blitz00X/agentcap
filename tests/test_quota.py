@@ -256,6 +256,9 @@ FAKE_CODEX = textwrap.dedent('''\
         return {{"timestamp": "t", "type": "event_msg", "payload": payload}}
     if os.environ.get("FAKE_NO_LOG"):
         time.sleep(float(os.environ.get("FAKE_HANG", "0"))); sys.exit(0)
+    if os.environ.get("FAKE_RAW") and os.isatty(0):
+        import tty
+        tty.setraw(0)  # like a full-screen TUI; never restored when it is killed
     fh = open(path, "a")
     def on_int(sig, frame):
         # real Codex writes the interrupted response's usage, then turn_aborted
@@ -1120,3 +1123,54 @@ def test_codex_long_first_response_is_not_reported_as_missing_data(fakebin, tmp_
     assert r.run() == 0
     assert "no quota data yet" not in err.getvalue()
     assert "guard cannot see" not in err.getvalue()
+
+
+
+TTY_DRIVER = textwrap.dedent("""\
+    import sys, termios
+    from pathlib import Path
+    from agentcap import quota as q
+    tmp = Path(sys.argv[1])
+    before = termios.tcgetattr(0)
+    r = q.QuotaRunner(["codex"], quota=2.0, poll_s=0.05, cwd=tmp, home=tmp / "home")
+    code = r.run()
+    after = termios.tcgetattr(0)
+    print("CODE", code, "SAME" if after == before else "CHANGED", file=sys.stderr, flush=True)
+""")
+
+
+def test_interactive_agent_stopped_mid_turn_leaves_the_terminal_usable(fakebin, tmp_path, monkeypatch):
+    # live B6 (11 Nov 2026): the Codex TUI was stopped, the shell came back in raw mode
+    import pty
+    import subprocess
+    monkeypatch.setenv("FAKE_RAW", "1")
+    monkeypatch.setenv("FAKE_N", "10")
+    driver = tmp_path / "tty_driver.py"
+    driver.write_text(TTY_DRIVER)
+    master, slave = pty.openpty()
+    try:
+        proc = subprocess.Popen([sys.executable, str(driver), str(tmp_path)], stdin=slave,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out, err = proc.communicate(timeout=30)
+    finally:
+        os.close(slave)
+        os.close(master)
+    assert "CODE 3 SAME" in err, err
+
+
+def test_two_approvals_in_one_poll_are_both_reported(fakebin, tmp_path, monkeypatch):
+    import threading
+    monkeypatch.setenv("FAKE_N", "40")
+    monkeypatch.setenv("FAKE_STEP", "0.2")
+    r, events, err = make_runner(["codex", "exec", "x"], tmp_path, quota=2.0)
+
+    def approve_twice():
+        deadline = time.time() + 10
+        while time.time() < deadline and not (r.job_dir / "job.json").exists():
+            time.sleep(0.02)
+        job = json.loads((r.job_dir / "job.json").read_text())
+        job.update({"quota": 4.5, "approvals": 2})
+        (r.job_dir / "job.json").write_text(json.dumps(job))
+    threading.Thread(target=approve_twice, daemon=True).start()
+    r.run()
+    assert "approved twice (2/2): limit is now 4.5%" in err.getvalue()
