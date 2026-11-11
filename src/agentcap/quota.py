@@ -56,6 +56,35 @@ EXIT_LOOP_DETECTED = 4
 BASELINE_MAX_AGE_S = 15 * 60
 APPROVE_FACTOR = 1.5
 APPROVE_MAX = 2
+
+# ------------------------------------------------------ measurement contract
+# One reading record is the only quota representation used by the product.
+# Every surface (status line, `agentcap quota`, the hook, the receipt and the
+# Claude Code plugin) renders these fields through the same state function;
+# none of them invents a share, an age or a state of its own.
+READING_MAX_AGE_S = {"claude": 60.0, "codex": 600.0}
+READING_RESOLUTION_PCT = 1.0           # both supported sources report whole percent
+READING_UNCERTAINTY_PCT = (1.0, 3.0)   # one source step + up to one model response
+DEFAULT_MAX_AGE_S = READING_MAX_AGE_S["codex"]
+
+STATE_STARTING = "starting"
+STATE_PROTECTED = "protected"
+STATE_STALE = "stale"
+STATE_STOPPED = "stopped"
+
+STATE_TEXT = {
+    STATE_STARTING: "waiting for the first reading",
+    STATE_PROTECTED: "protection active",
+    STATE_STALE: "data stale (protection not verified)",
+    STATE_STOPPED: "stopped",
+}
+
+
+def uncertainty_text() -> str:
+    """The honesty marker printed next to every measured percentage."""
+
+    low, high = READING_UNCERTAINTY_PCT
+    return f"±{low:g}-{high:g}%"
 # Codex writes usage only when a model response ends; at high reasoning effort one response
 # ran 6+ minutes with no reading (11 Nov 2026, gpt-6-astra max).  Quota mode cuts a single
 # response after this long (Pro) so the job cannot spend an unseen amount; SIGINT makes Codex
@@ -1007,6 +1036,7 @@ class QuotaRunner:
         self.child: subprocess.Popen | None = None
         self._pgid: int | None = None
         self.summary: QuotaSummary | None = None
+        self.baseline_age_s: float | None = None  # set when the baseline is an older same-window reading
 
     def _say(self, msg: str) -> None:
         if not self.quiet:
@@ -1091,6 +1121,13 @@ class QuotaRunner:
                     prior[1].resets_at is None or prior[1].resets_at > started
                 ):
                     tracker.seed(prior[1])
+                elif prior and prior[1].resets_at is not None and prior[1].resets_at > started:
+                    # An older reading from the *same* window (live 11 Nov 2026: a reading
+                    # 20 min old was ignored, the first response's 1% went uncounted and a
+                    # 2% cap let the account rise 3%).  Using it can only over-count: other
+                    # usage since then is charged to this job, so it stops early, never late.
+                    tracker.seed(prior[1])
+                    self.baseline_age_s = started - prior[0]
 
             env = dict(os.environ)
             env["AGENTCAP_QUOTA_JOB"] = str(self.job_dir)
@@ -1426,6 +1463,9 @@ class QuotaRunner:
             notes = []
             if not s.baseline_exact:
                 notes.append("baseline taken after the first response, may undercount it")
+            elif self.baseline_age_s is not None:
+                notes.append(f"baseline is a reading from {self.baseline_age_s / 60:.0f} min before the "
+                             "job, so other usage since then is counted too")
             if s.resets_seen:
                 notes.append(f"window reset {s.resets_seen}x during the job")
             if s.parallel:
@@ -1455,6 +1495,8 @@ class QuotaRunner:
                         "reason": s.reason, "baseline_exact": s.baseline_exact,
                         "parallel_sessions": s.parallel, "window_resets": s.resets_seen,
                         "last_tool": last, "measure": "account_increase",
+                        "baseline_age_s": (round(self.baseline_age_s) if self.baseline_age_s is not None
+                                           else None),
                         "final_read": s.final_read, "effort": s.effort,
                         "response_timeout_s": self.response_timeout_s if s.agent == "codex" else None,
                     })

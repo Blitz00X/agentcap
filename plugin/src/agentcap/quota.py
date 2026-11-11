@@ -1007,6 +1007,7 @@ class QuotaRunner:
         self.child: subprocess.Popen | None = None
         self._pgid: int | None = None
         self.summary: QuotaSummary | None = None
+        self.baseline_age_s: float | None = None  # set when the baseline is an older same-window reading
 
     def _say(self, msg: str) -> None:
         if not self.quiet:
@@ -1091,6 +1092,13 @@ class QuotaRunner:
                     prior[1].resets_at is None or prior[1].resets_at > started
                 ):
                     tracker.seed(prior[1])
+                elif prior and prior[1].resets_at is not None and prior[1].resets_at > started:
+                    # An older reading from the *same* window (live 11 Nov 2026: a reading
+                    # 20 min old was ignored, the first response's 1% went uncounted and a
+                    # 2% cap let the account rise 3%).  Using it can only over-count: other
+                    # usage since then is charged to this job, so it stops early, never late.
+                    tracker.seed(prior[1])
+                    self.baseline_age_s = started - prior[0]
 
             env = dict(os.environ)
             env["AGENTCAP_QUOTA_JOB"] = str(self.job_dir)
@@ -1426,6 +1434,9 @@ class QuotaRunner:
             notes = []
             if not s.baseline_exact:
                 notes.append("baseline taken after the first response, may undercount it")
+            elif self.baseline_age_s is not None:
+                notes.append(f"baseline is a reading from {self.baseline_age_s / 60:.0f} min before the "
+                             "job, so other usage since then is counted too")
             if s.resets_seen:
                 notes.append(f"window reset {s.resets_seen}x during the job")
             if s.parallel:
@@ -1455,6 +1466,8 @@ class QuotaRunner:
                         "reason": s.reason, "baseline_exact": s.baseline_exact,
                         "parallel_sessions": s.parallel, "window_resets": s.resets_seen,
                         "last_tool": last, "measure": "account_increase",
+                        "baseline_age_s": (round(self.baseline_age_s) if self.baseline_age_s is not None
+                                           else None),
                         "final_read": s.final_read, "effort": s.effort,
                         "response_timeout_s": self.response_timeout_s if s.agent == "codex" else None,
                     })

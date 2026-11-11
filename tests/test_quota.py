@@ -1079,3 +1079,34 @@ def test_parse_duration():
 def test_cli_response_timeout_flag(fakebin, tmp_path, monkeypatch, capsys):
     assert cli.main(["run", "--quota", "5%", "--response-timeout", "soon", "--", "codex", "exec", "x"]) == 2
     assert "--response-timeout" in capsys.readouterr().err
+
+
+def test_codex_older_same_window_reading_is_the_baseline(fakebin, tmp_path, monkeypatch):
+    # live 11 Nov 2026: the last reading was 20 min old, the job's first 1% went uncounted
+    d = tmp_path / "codex" / "sessions" / "2026" / "10" / "29"
+    d.mkdir(parents=True)
+    old = d / "rollout-old.jsonl"
+    old.write_text(json.dumps(codex_line(secondary=38.0, resets_s=time.time() + 86400)) + "\n")
+    stale = time.time() - 40 * 60
+    os.utime(old, (stale, stale))
+    monkeypatch.setenv("FAKE_START", "39")   # first own reading 40
+    monkeypatch.setenv("FAKE_N", "1")
+    r, events, err = make_runner(["codex"], tmp_path, quota=50.0)
+    assert r.run() == 0
+    assert r.summary.baseline_exact and r.summary.share == 2.0
+    assert "reading from 40 min before the job" in err.getvalue()
+    receipt = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
+    assert 39 * 60 < receipt["baseline_age_s"] < 42 * 60
+
+
+def test_codex_reading_from_an_ended_window_is_not_the_baseline(fakebin, tmp_path, monkeypatch):
+    d = tmp_path / "codex" / "sessions" / "2026" / "10" / "29"
+    d.mkdir(parents=True)
+    old = d / "rollout-old.jsonl"
+    old.write_text(json.dumps(codex_line(secondary=38.0, resets_s=time.time() - 60)) + "\n")
+    stale = time.time() - 40 * 60
+    os.utime(old, (stale, stale))
+    monkeypatch.setenv("FAKE_N", "1")
+    r, events, err = make_runner(["codex"], tmp_path, quota=50.0)
+    assert r.run() == 0
+    assert not r.summary.baseline_exact and r.summary.share == 0.0
