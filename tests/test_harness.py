@@ -225,9 +225,45 @@ def test_e2e_free_observes_only(fakebin, tmp_path, monkeypatch):
     assert not (tmp_path / "receipts").exists()
 
 
-def test_e2e_opencode_quota_refused_honestly(fakebin, tmp_path):
-    with pytest.raises(ValueError, match="does not expose"):
+def test_e2e_opencode_quota_needs_a_go_model(fakebin, tmp_path):
+    with pytest.raises(ValueError, match="opencode Go models only"):
         h.HarnessRunner(["opencode", "run", "hi"], quota=5.0)
+    with pytest.raises(ValueError, match="opencode Go models only"):
+        h.HarnessRunner(["opencode", "run", "-m", "openrouter/x", "hi"], quota=5.0)
+
+
+def test_e2e_opencode_go_quota_estimated_from_cost(fakebin, tmp_path, monkeypatch):
+    # $0.01 per step; 5h limit $12 -> 0.25% = $0.03 -> stops on the 3rd step
+    monkeypatch.setenv("FAKE_N", "30")
+    r, code, err, _, events = run(["opencode", "run", "-m", "opencode-go/kimi-k3.1-pro", "hi"], tmp_path,
+                                  quota=0.25, window="5h")
+    assert code == h.EXIT_CAP_EXCEEDED
+    assert "estimated" in err and "$12" in err and "$0.03" in err
+    assert 0.25 <= r.summary.share < 0.35 and r.summary.cost < 0.05
+    rec = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
+    assert rec["reason"] == "quota_exceeded" and rec["quota_estimated"] is True
+    assert rec["quota_limit_usd"] == 12.0 and rec["window"] == "5h"
+
+
+def test_e2e_opencode_go_month_window_and_plan_override(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "30")
+    monkeypatch.setenv("AGENTCAP_OPENCODE_GO_LIMITS", "month=2")
+    r, code, err, *_ = run(["opencode", "run", "--model=opencode-go/glm-5", "hi"], tmp_path,
+                           quota=1.0, window="month")
+    assert code == h.EXIT_CAP_EXCEEDED and "monthly" in err and "$0.02" in err
+
+
+def test_opencode_go_limits_env_is_validated():
+    assert h.opencode_go_limits({}) == {"5h": 12.0, "week": 30.0, "month": 60.0}
+    assert h.opencode_go_limits({"AGENTCAP_OPENCODE_GO_LIMITS": "5h=24, week=60"})["5h"] == 24.0
+    for bad in ("day=1", "5h=x", "week=0", "5h"):
+        with pytest.raises(ValueError):
+            h.opencode_go_limits({"AGENTCAP_OPENCODE_GO_LIMITS": bad})
+
+
+def test_month_window_is_opencode_only(fakebin, tmp_path):
+    with pytest.raises(ValueError, match="only for opencode Go"):
+        h.HarnessRunner(["agy", "-p", "hi"], quota=1.0, window="month")
 
 
 def test_e2e_agy_quota_stops(fakebin, tmp_path, monkeypatch):
@@ -269,9 +305,24 @@ def test_cli_tokens_cap_opencode_pro(fakebin, tmp_path, monkeypatch, capsys):
     assert list((tmp_path / "rc").glob("h*.json"))
 
 
-def test_cli_quota_opencode_refused(fakebin, capsys):
+def test_cli_quota_opencode_needs_go_model(fakebin, capsys):
     assert cli.main(["run", "--quota", "5%", "--", "opencode", "run", "hi"]) == 2
-    assert "does not expose" in capsys.readouterr().err
+    assert "opencode Go models only" in capsys.readouterr().err
+
+
+def test_cli_quota_opencode_go_pro(fakebin, tmp_path, monkeypatch, capsys):
+    _pro(monkeypatch)
+    monkeypatch.setenv("FAKE_N", "30")
+    monkeypatch.setenv("AGENTCAP_RECEIPT_DIR", str(tmp_path / "rc"))
+    assert cli.main(["run", "--quota", "0.25%", "--window", "5h", "--",
+                     "opencode", "run", "-m", "opencode-go/kimi-k3.1-pro", "hi"]) == 3
+    rec = json.loads(next((tmp_path / "rc").glob("h*.json")).read_text())
+    assert rec["quota_estimated"] is True and rec["reason"] == "quota_exceeded"
+
+
+def test_cli_month_window_refused_for_codex(capsys):
+    assert cli.main(["run", "--quota", "2%", "--window", "month", "--", "codex", "exec", "hi"]) == 2
+    assert "only for opencode Go" in capsys.readouterr().err
 
 
 def test_cli_quota_agy_pro(fakebin, tmp_path, monkeypatch, capsys):

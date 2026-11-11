@@ -190,11 +190,11 @@ def _build_parser() -> argparse.ArgumentParser:
         const="budget",
         help="subscription quota mode (Pro): stop this job after it used this "
         "share of your Claude Pro/Max, ChatGPT or Antigravity (agy) quota, e.g. 5%% "
-        "(claude/codex/agy; opencode exposes no quota; "
+        "(claude/codex/agy; opencode Go: estimated from its cost field and Go's $ limits; "
         "bare --quota uses `agentcap budget`)",
     )
     run.add_argument(
-        "--window", default=None, choices=("week", "5h"),
+        "--window", default=None, choices=("week", "5h", "month"),
         help="quota window for --quota (default: budget window or week)",
     )
     run.add_argument(
@@ -632,6 +632,10 @@ def _run_quota(args: argparse.Namespace, argv: list[str]) -> int:
             return 2
         raw_quota = f"{plan.task_quota:g}%"
     window = args.window or plan.window or "week"
+    if window == "month":
+        print("agentcap: --window month is only for opencode Go; Claude and Codex use 5h or week",
+              file=sys.stderr)
+        return 2
     try:
         quota = parse_quota(raw_quota)
     except ValueError as exc:

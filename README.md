@@ -397,7 +397,7 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 | Claude Code, Pro/Max sub, interactive | ✅ (deny keeps the session; resumes after approve) | ✅ | ✅ whole-% steps (deny keeps the session); `agentcap approve` ✅ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
 | Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ❌ interactive only (warns at start) | ❌ by design (refused) |
 | Codex, ChatGPT sub | ✅ | ✅ | ✅ (whole %; warns under 1%) | ❌ by design (no proxy on a subscription) |
-| opencode Go | ✅ | ✅ | ❌ opencode exposes no quota % | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
+| opencode Go | ✅ | ✅ | ⚠️ estimated: `--quota N% --window 5h\|week\|month -- opencode run -m opencode-go/<model>`; share = opencode's own cost field / Go's published $ limit ($12 / $30 / $60; Go Plus via `AGENTCAP_OPENCODE_GO_LIMITS`); other sessions on the account are not counted | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
 | agy, Google sub (plain `agentcap run -- agy` needs no key: breakers only) | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
 | opencode + OpenRouter (free model) | ✅ | ✅ | n/a | ✅ $ cap |
 | opencode + Ollama Cloud | ✅ | ✅ | n/a | ⚠️ needs a user price (`AGENTCAP_PRICING_FILE`): Ollama publishes none |

@@ -83,6 +83,43 @@ def _num(v: Any) -> int:
         return 0
 
 
+# opencode Go publishes its limits in dollars of usage, not as a readable %
+# (https://opencode.ai/docs/go/): $12 per rolling 5 hours, $30 per week, $60 per month.
+# A job's share of a window is therefore estimated as opencode's own cost field / that limit.
+# Go Plus and future plans: AGENTCAP_OPENCODE_GO_LIMITS="5h=..,week=..,month=..".
+OPENCODE_GO_LIMITS_USD = {"5h": 12.0, "week": 30.0, "month": 60.0}
+OPENCODE_GO_PROVIDER = "opencode-go"
+
+
+def opencode_go_limits(env: Mapping[str, str] | None = None) -> dict[str, float]:
+    limits = dict(OPENCODE_GO_LIMITS_USD)
+    raw = (env if env is not None else os.environ).get("AGENTCAP_OPENCODE_GO_LIMITS", "").strip()
+    if not raw:
+        return limits
+    for item in raw.split(","):
+        key, sep, val = item.partition("=")
+        key = key.strip()
+        if not sep or key not in limits:
+            raise ValueError(f"AGENTCAP_OPENCODE_GO_LIMITS: expected 5h=USD,week=USD,month=USD, got {item!r}")
+        try:
+            usd = float(val)
+        except ValueError:
+            raise ValueError(f"AGENTCAP_OPENCODE_GO_LIMITS: {key} is not a number: {val!r}") from None
+        if usd <= 0:
+            raise ValueError(f"AGENTCAP_OPENCODE_GO_LIMITS: {key} must be positive")
+        limits[key] = usd
+    return limits
+
+
+def opencode_model(argv: Sequence[str]) -> str | None:
+    for i, a in enumerate(argv):
+        if a in ("-m", "--model") and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--model="):
+            return a.split("=", 1)[1]
+    return None
+
+
 class OpenCodeAdapter:
     name = "opencode"
     exposes_quota = False
@@ -266,7 +303,20 @@ class HarnessRunner:
             raise ValueError("harness mode supports `opencode` and `agy`")
         self.kind = kind
         self.adapter = ADAPTERS[kind]()
-        if quota is not None and not self.adapter.exposes_quota:
+        self.estimated_limit_usd: float | None = None
+        if quota is not None and kind == "opencode":
+            model = opencode_model(argv)
+            if not model or not model.startswith(OPENCODE_GO_PROVIDER + "/"):
+                raise ValueError(
+                    "opencode --quota works with opencode Go models only: pass -m opencode-go/<model>. "
+                    "For other providers use --tokens N or --log-cap USD")
+            limits = opencode_go_limits()
+            if window not in limits:
+                raise ValueError(f"opencode Go windows are 5h, week and month, not {window!r}")
+            self.estimated_limit_usd = limits[window]
+        elif quota is not None and window == "month":
+            raise ValueError("--window month is only for opencode Go; Claude, Codex and agy use 5h or week")
+        if quota is not None and not self.adapter.exposes_quota and self.estimated_limit_usd is None:
             raise ValueError(
                 f"{kind} does not expose subscription quota %; use --tokens N (token cap from its "
                 "own logs) or --log-cap USD (its own cost field) instead"
@@ -363,7 +413,13 @@ class HarnessRunner:
             watchdog.start()  # before the tree guard, so its baseline excludes it
             tree_guard.start()
             baseline = None
-            if self.quota is not None:
+            if self.estimated_limit_usd is not None:
+                self._say(
+                    f"agentcap: opencode Go quota is estimated: Go exposes no usage %, so this job's share "
+                    f"is opencode's own cost estimate / ${self.estimated_limit_usd:g} (the Go {self._label()} "
+                    f"limit). Stopping at {self.quota:g}% = ${self.estimated_limit_usd * self.quota / 100:.2f}. "
+                    "Usage from other sessions on the same Go account is not counted.")
+            elif self.quota is not None:
                 payload = self.quota_fetch()
                 baseline = agy_used_pct(payload, self.model, self.window) if payload else None
                 if baseline is None:
@@ -428,6 +484,8 @@ class HarnessRunner:
                                 if hit is not None or loop.tripped:
                                     continue  # the agent reporting our own SIGINT
                                 self._say(f"agentcap: {self.kind} reported an API error ({ev.kind}).")
+                    if self.estimated_limit_usd is not None and cost is not None:
+                        share = cost / self.estimated_limit_usd * 100.0
                     if self.quota is not None and baseline is not None and (
                             time.time() >= next_quota or code is not None):
                         s = self._share(baseline)
@@ -525,7 +583,7 @@ class HarnessRunner:
         return f"quota limit ({self.quota:g}% of the {self._label()} quota)"
 
     def _label(self) -> str:
-        return "weekly" if self.window == "week" else "5-hour"
+        return {"week": "weekly", "month": "monthly"}.get(self.window, "5-hour")
 
     def _report(self, loop_detail: str | None) -> None:
         s = self.summary
@@ -556,6 +614,8 @@ class HarnessRunner:
                     "share_pct": s.share, "window": self.window if self.quota else None,
                     "tool_calls": s.tool_calls, "tool_errors": s.tool_errors, "last_tool": s.last_tool,
                     "caps": {"tokens": self.tokens_cap, "usd": self.usd_cap, "quota_pct": self.quota},
+                    "quota_estimated": self.estimated_limit_usd is not None,
+                    "quota_limit_usd": self.estimated_limit_usd,
                 })
             except OSError:
                 pass
