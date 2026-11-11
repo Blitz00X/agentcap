@@ -61,11 +61,8 @@ def test_parse_quota():
 
 
 def test_claude_readings_schema():
-    r = q.claude_readings(statusline_payload(), now=NOW)
-    assert r["5h"].percent == 23.5 and r["5h"].resets_at == NOW + 3600
-    assert r["5h"].source == "claude" and r["5h"].window == "5h"
-    assert r["5h"].read_at == NOW and r["5h"].max_age == q.READING_MAX_AGE_S["claude"]
-    assert r["5h"].resolution == 1.0 and r["5h"].observed is True
+    r = q.claude_readings(statusline_payload())
+    assert r["5h"] == q.Reading(23.5, NOW + 3600)
     assert r["week"].used == 41.2
     assert q.claude_readings({"session_id": "x"}) == {}  # API-key login: no rate_limits
     partial = statusline_payload()
@@ -100,9 +97,7 @@ def test_tracker_share_and_reset():
 
 def test_baseline_from_last_rules():
     last = {"ts": NOW - 60, "readings": {"week": {"used": 40.0, "resets_at": NOW + 999}}}
-    seed = q.baseline_from_last(last, "week", now=NOW)
-    assert seed is not None and seed.used == 40.0 and seed.resets_at == NOW + 999
-    assert seed.read_at == NOW - 60 and seed.source == "claude"
+    assert q.baseline_from_last(last, "week", now=NOW) == q.Reading(40.0, NOW + 999)
     assert q.baseline_from_last({**last, "ts": NOW - 3600}, "week", now=NOW) is None
     assert q.baseline_from_last(last, "5h", now=NOW) is None
 
