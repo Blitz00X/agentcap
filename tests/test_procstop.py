@@ -324,6 +324,46 @@ def test_setsid_grandchild_is_swept_while_leader_is_alive():
 
 
 @pytest.mark.skipif(not subreaper_supported(), reason="Linux subreaper is required")
+def test_double_forked_daemon_is_swept():
+    """The classic daemonize (fork, setsid, fork, exit) is still AgentCap's child."""
+
+    code = """
+import os, sys
+if os.fork() == 0:
+    os.setsid()
+    if os.fork() == 0:
+        print(os.getpid(), flush=True)
+        import time; time.sleep(60)
+    os._exit(0)
+os.wait()
+"""
+    guard = ProcessTreeGuard()
+    assert guard.start() is True
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    daemon = None
+    try:
+        daemon = _read_pid(proc)
+        proc.wait(timeout=SPAWN_TIMEOUT)
+        assert pid_alive(daemon), "the double-forked daemon should have survived its parent"
+        assert guard.sweep(term_timeout=0.5, kill_timeout=0.5) >= 1
+        assert _wait_pid_dead(daemon), "double-forked daemon survived the sweep"
+    finally:
+        if proc.poll() is None:
+            _kill_group(proc, proc.pid)
+        if daemon is not None:
+            try:
+                os.kill(daemon, signal.SIGKILL)
+            except OSError:
+                pass
+        guard.close()
+
+
+@pytest.mark.skipif(not subreaper_supported(), reason="Linux subreaper is required")
 def test_sweep_does_not_kill_a_baseline_child():
     unrelated = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],

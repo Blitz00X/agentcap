@@ -16,7 +16,7 @@ cd /home/kutay/agentcap-04
 /home/kutay/agentcap-ha-venv/bin/python -m pytest tests/test_stop_matrix.py -v
 ```
 
-Last full run (11 Nov 2026, after the two commits below): **1040 passed,
+Last full run (11 Nov 2026, after the two commits below): **1041 passed,
 2 skipped, exit 0, 172 s**.
 
 ## Matrix
@@ -29,7 +29,7 @@ Last full run (11 Nov 2026, after the two commits below): **1040 passed,
 | 4 | Error breaker (8 failing calls) | `post_main`, `_error_hook` | `test_stop_matrix.py::test_claude_error_breaker_stops_after_eight_failures` (interactive + headless) | 4 | `denies.log`, receipt `reason=loop_detected`, `loop.json.kind=errors` |
 | 5 | Process-tree stop ladder | `procstop.stop_tree` | `test_stop_matrix.py::test_codex_stop_escalates_past_ignored_sigint_and_sigterm`; `test_procstop.py::test_stop_tree_escalates_to_sigkill`, `::test_stop_tree_sigint_kills_grandchild`, `::test_stop_tree_kills_orphans_after_leader_exits`, `::test_never_signals_own_group` | 3 | elapsed ≥ 5 s proves the 5 s SIGINT wait + 3 s SIGTERM wait ran before SIGKILL; all PIDs gone |
 | 6 | Lifeline / PDEATHSIG | `lifeline._lifeline_exec`, `GroupWatchdog` | `test_lifeline.py::test_child_dies_when_its_parent_is_sigkilled`, `::test_agent_group_dies_with_a_sigkilled_agentcap_in_quota_mode` | child exit | SIGKILL of AgentCap leaves no agent tool process |
-| 7 | Escaped child sweep (setsid) | `ProcessTreeGuard.sweep` | `test_stop_matrix.py::test_codex_quota_stop_exits_3_with_receipt_and_leaves_no_survivor`; `test_quota.py::test_quota_runner_sweeps_a_setsid_descendant`; `test_procstop.py::test_setsid_grandchild_is_swept_after_leader_exit`, `::test_sweep_never_sigkills_a_reused_pid` | 3 / 0 | "left the agent's process group" note; setsid PID gone; reused PIDs never signalled |
+| 7 | Escaped child sweep (setsid/double-fork) | `ProcessTreeGuard.sweep` | `test_stop_matrix.py::test_codex_quota_stop_exits_3_with_receipt_and_leaves_no_survivor`; `test_quota.py::test_quota_runner_sweeps_a_setsid_descendant`; `test_procstop.py::test_setsid_grandchild_is_swept_after_leader_exit`, `::test_double_forked_daemon_is_swept`, `::test_sweep_never_sigkills_a_reused_pid` | 3 / 0 | "left the agent's process group" note; setsid/double-fork PID gone; reused PIDs never signalled |
 | 8 | Approve (continue, +50%, max 2) | `approve_job`, runner poll | `test_quota.py::test_approve_raises_quota_50pct_at_most_twice`, `::test_runner_picks_up_approval`, `::test_approve_refuses_a_job_already_stopped_by_sigint`, `::test_approve_at_full_quota_says_quota_no_longer_stops` | continues / 0 | message "limit raised to X%"; third approve refused; a signalled job is not resumable |
 | 9 | Plugin PreToolUse deny/continue + headless | `plugin/`, `hook_main` | `test_cc_plugin.py::test_quota_deny_ends_the_turn`, `::test_loop_pro_denies_fourth_identical_call`, `::test_hook_garbage_fails_open`; `test_quota.py::test_e2e_headless_claude_still_sigint`, `::test_headless_claude_quota_warns_interactive_only` | 4 / 0 | deny JSON has `continue:false`; headless quota % is declared unsupported (no statusline) |
 | 10 | Parallel quota job refused | `failsafe.JobLock` | `test_exit_codes.py::test_regression_another_quota_job_holding_the_lock_is_still_2`; `test_failsafe.py::test_joblock_refuses_second_holder`; account-level: `test_quota.py::test_e2e_codex_parallel_session_warns` | 2 | "another AgentCap quota job is already running (pid N)" |
