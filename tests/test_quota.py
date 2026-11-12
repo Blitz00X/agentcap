@@ -675,6 +675,24 @@ def test_approve_free_job_and_no_job(tmp_path):
     assert "Pro" in q.approve_job(root)
 
 
+def test_approve_skips_a_job_whose_process_died(tmp_path):
+    # live 12 Nov 2026: approve hit a Codex job that had died the day before
+    root, dead = _job(tmp_path, pid=2**22 + 12345)
+    assert "no running" in q.approve_job(root)
+    alive = root / "jobs" / "q2"
+    alive.mkdir()
+    (alive / "job.json").write_text(json.dumps({"enforce": True, "quota": 2.0, "window": "5h", "pid": os.getpid()}))
+    assert "3%" in q.approve_job(root)
+    assert "approvals" not in json.loads((dead / "job.json").read_text())
+
+
+def test_approve_skips_an_old_job_without_a_pid(tmp_path):
+    root, d = _job(tmp_path)
+    old = time.time() - 7 * 3600
+    os.utime(d / "job.json", (old, old))
+    assert "no running" in q.approve_job(root)
+
+
 def test_approve_skips_finished_jobs(tmp_path):
     root, d = _job(tmp_path)
     (d / "done.json").write_text("{}")

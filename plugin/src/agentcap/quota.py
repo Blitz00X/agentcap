@@ -118,12 +118,44 @@ def is_headless_claude(argv: Sequence[str]) -> bool:
     return any(a in ("-p", "--print") or a.startswith("--print=") for a in argv[1:])
 
 
+LEGACY_JOB_MAX_AGE_S = 6 * 3600
+
+
+def _pid_alive(pid: Any) -> bool:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _job_alive(d: Path, now: float) -> bool:
+    """A job dir without done.json is running only while its agentcap process lives
+    (live 12 Nov 2026: `agentcap approve` picked a Codex job that had died the day
+    before).  Dirs from before the pid was recorded count only while recent."""
+
+    job = _read_json(d / "job.json") or {}
+    if "pid" in job:
+        return _pid_alive(job.get("pid"))
+    try:
+        return now - (d / "job.json").stat().st_mtime <= LEGACY_JOB_MAX_AGE_S
+    except OSError:
+        return False
+
+
 def _running_jobs(root: Path) -> list[Path]:
     jobs = root / "jobs"
     if not jobs.is_dir():
         return []
+    now = time.time()
     out = [d for d in jobs.iterdir()
-           if (d / "job.json").exists() and not (d / "done.json").exists()]
+           if (d / "job.json").exists() and not (d / "done.json").exists() and _job_alive(d, now)]
     return sorted(out, key=lambda d: (d / "job.json").stat().st_mtime, reverse=True)
 
 
@@ -1217,6 +1249,7 @@ class QuotaRunner:
                     "window": self.window,
                     "started_at": started,
                     "enforce": self.enforce,
+                    "pid": os.getpid(),
                     "chain": user_statusline_command(self.cwd, self.home),
                 }
                 _atomic_write(self.job_dir / "job.json", job)
@@ -1227,7 +1260,7 @@ class QuotaRunner:
             else:
                 _atomic_write(self.job_dir / "job.json", {
                     "quota": self.quota, "window": self.window, "started_at": started,
-                    "enforce": self.enforce, "agent": "codex",
+                    "enforce": self.enforce, "agent": "codex", "pid": os.getpid(),
                 })
                 tailer = CodexTailer(self.sessions_dir, started)
                 self._tailer = tailer
