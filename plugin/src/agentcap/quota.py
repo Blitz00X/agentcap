@@ -187,7 +187,7 @@ def approve_job(root: Path | None = None) -> str:
         status["limit_hit"] = False
         status["quota"] = new
         _atomic_write(d / "status.json", status)
-    for name in ("loop.json", "errors.json", "denies.log"):
+    for name in ("loop.json", "errors.json", "post_errors.json", "denies.log"):
         try:
             (d / name).unlink()
         except OSError:
@@ -656,7 +656,13 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
             _atomic_write(state_root() / "claude_last.json", {"ts": now, "readings": current})
             if previous != current:
                 _append_sample({"ts": now, "readings": current})
-            line = f"agentcap: job {share:.1f}% / {quota:g}% ({window})"
+            live = _read_json(job_dir / "live.json") or {}
+            shown = max(share, float(live.get("share") or 0)) if live.get("quota") == quota else share
+            line = f"agentcap: job {shown:.1f}% / {quota:g}% ({window})"
+            if status_out["limit_hit"] or (live.get("limit_hit") and live.get("quota") == quota):
+                line += " LIMIT HIT: `agentcap approve` in another terminal raises it 50%, or /exit"
+            elif (job_dir / "loop.json").exists():
+                line += " PAUSED by the loop/error breaker: `agentcap approve` clears it, or /exit"
         else:
             line = "agentcap: waiting for subscription rate_limits"
     except Exception:
@@ -751,7 +757,33 @@ def _loop_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
 TRANSCRIPT_TAIL_BYTES = 1 << 20
 
 
-def transcript_error_streak(path: Any) -> int:
+# Tool results that are AgentCap's own PreToolUse denials.  Claude records them as
+# errors; counting them tripped the error breaker right after a quota pause (live
+# C3, 12 Nov 2026: 4 + 4 denied Reads = "8 failing tool calls", then 16).
+OWN_DENIALS = ("agentcap quota mode:", "agentcap loop breaker:", "agentcap error breaker:",
+               "agentcap: an agent may not approve")
+
+
+def _result_text(block: Mapping[str, Any]) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(str(c.get("text", "")) for c in content if isinstance(c, Mapping))
+    return ""
+
+
+def _iso_ts(value: Any) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        import datetime as _dt
+        return _dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def transcript_error_streak(path: Any, since: float | None = None) -> int:
     """Failing tool results in a row at the end of a Claude Code transcript.
 
     Claude Code's own session log (``transcript_path`` in every hook payload)
@@ -775,12 +807,18 @@ def transcript_error_streak(path: Any) -> int:
             obj = json.loads(line)
         except ValueError:
             continue
+        if since is not None and isinstance(obj, dict):
+            ts = _iso_ts(obj.get("timestamp"))
+            if ts is not None and ts < since:
+                continue  # before the last `agentcap approve`
         msg = obj.get("message") if isinstance(obj, dict) else None
         content = msg.get("content") if isinstance(msg, dict) else None
         if not isinstance(content, list):
             continue
         for block in content:
             if isinstance(block, dict) and block.get("type") == "tool_result":
+                if block.get("is_error") is True and any(m in _result_text(block) for m in OWN_DENIALS):
+                    continue  # a pause by AgentCap itself, not a failing call
                 streak = streak + 1 if block.get("is_error") is True else 0
     return streak
 
@@ -788,7 +826,8 @@ def transcript_error_streak(path: Any) -> int:
 def _error_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
     """Error breaker: 8 failing tool calls in a row, read from the transcript."""
 
-    errors = max(transcript_error_streak(payload.get("transcript_path")),
+    since = _num((_read_json(job_dir / "job.json") or {}).get("approved_at"))
+    errors = max(transcript_error_streak(payload.get("transcript_path"), since),
                  int((_read_json(job_dir / "post_errors.json") or {}).get("errors") or 0))
     name = str(payload.get("tool_name") or "")[:40]
     _atomic_write(job_dir / "errors.json", {"errors": errors, "tool": name})
@@ -1109,6 +1148,10 @@ class _LivePoller(threading.Thread):
         self._halt.set()
 
 
+def exec_mode_argv(argv: Sequence[str]) -> bool:
+    return len(argv) > 1 and argv[1] in ("exec", "e")
+
+
 class _Terminated(Exception):
     """SIGTERM / SIGHUP reached AgentCap (e.g. `timeout`, a closed terminal)."""
 
@@ -1185,8 +1228,27 @@ class QuotaRunner:
         self._poller: _LivePoller | None = None
 
     def _say(self, msg: str) -> None:
-        if not self.quiet:
+        if self.quiet:
+            return
+        if getattr(self, "_hold", None) is not None:
+            # an interactive agent owns the screen; writing into it overlaps its input
+            # box and is erased on redraw (live 11/12 Nov 2026).  Shown after it exits.
+            self._hold.append(msg)
+            return
+        self._print(msg)
+
+    def _print(self, msg: str) -> None:
+        # The terminal may be gone (window closed: SIGHUP, then EIO on every write).
+        # A failed message must never cost the receipt or done.json (live C3, 12 Nov 2026).
+        try:
             print(msg, file=self.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
+
+    def _release(self) -> None:
+        held, self._hold = getattr(self, "_hold", None), None
+        for msg in held or []:
+            self._print(msg)
 
     def _event(self, kind: str, share: float, **extra: Any) -> None:
         if not self.enforce:
@@ -1318,6 +1380,10 @@ class QuotaRunner:
             try:
                 self._tty = save_tty()
                 self.child = lifeline_spawn(argv, env=env, start_new_session=True, cwd=self.cwd)
+                if self._tty is not None and not self.headless or (
+                    self.agent == "codex" and self._tty is not None and not exec_mode_argv(self.argv)
+                ):
+                    self._hold = []
             except OSError as exc:
                 raise mark_child_start_failure(exc)
             try:
@@ -1540,6 +1606,7 @@ class QuotaRunner:
             code = self.child.wait()
             # A full-screen agent we stopped cannot restore the terminal itself.
             restore_tty(getattr(self, "_tty", None), sequences=stopped or reason != "exited" or code != 0)
+            self._release()
             self._tty = None
             for sig in old_handlers:  # the stop is done; a second TERM must not cut the receipt
                 try:
@@ -1626,6 +1693,7 @@ class QuotaRunner:
             if getattr(self, "_poller", None) is not None:
                 self._poller.stop()
             restore_tty(getattr(self, "_tty", None))
+            self._release()
             for sig, handler in old_handlers.items():
                 try:
                     signal.signal(sig, handler)

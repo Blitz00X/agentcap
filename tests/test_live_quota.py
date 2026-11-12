@@ -345,3 +345,91 @@ def test_claude_without_usage_keeps_the_statusline_share(fakebin, tmp_path, monk
     assert asked == ["claude"] and r._poller is None and r.summary.share == 1.0
     receipt = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
     assert receipt["measured_by"] == "statusline"
+
+
+# ------------------------------------------------------------ live C3 fixes
+def _transcript(tmp_path, results):
+    path = tmp_path / "t.jsonl"
+    with open(path, "w") as fh:
+        for ts, is_error, text in results:
+            fh.write(json.dumps({"timestamp": ts, "message": {"content": [
+                {"type": "tool_result", "is_error": is_error, "content": [{"type": "text", "text": text}]}]}}) + "\n")
+    return str(path)
+
+
+def test_own_denials_do_not_feed_the_error_breaker(tmp_path):
+    deny = "PreToolUse:Read hook stopped continuation: agentcap quota mode: this job used 2.0%"
+    breaker = "agentcap error breaker: 8 failing tool calls in a row (Read)."
+    path = _transcript(tmp_path, [("2026-11-12T17:00:00Z", True, "boom")] * 2
+                       + [("2026-11-12T17:00:01Z", True, deny)] * 4
+                       + [("2026-11-12T17:00:02Z", True, breaker)] * 4)
+    assert q.transcript_error_streak(path) == 2
+
+
+def test_error_streak_restarts_after_approve(tmp_path):
+    path = _transcript(tmp_path, [("2026-11-12T17:00:00Z", True, "boom")] * 8
+                       + [("2026-11-12T17:05:00Z", True, "boom")])
+    approved = dt.datetime(2026, 11, 12, 17, 1, tzinfo=dt.timezone.utc).timestamp()
+    assert q.transcript_error_streak(path) == 9
+    assert q.transcript_error_streak(path, approved) == 1
+
+
+def test_approve_clears_the_post_hook_error_count(tmp_path):
+    d = tmp_path / "jobs" / "q1"
+    q._atomic_write(d / "job.json", {"enforce": True, "quota": 2, "window": "5h", "pid": os.getpid()})
+    q._atomic_write(d / "post_errors.json", {"errors": 8})
+    assert "approved" in q.approve_job(tmp_path)
+    assert not (d / "post_errors.json").exists()
+
+
+def test_statusline_shows_the_pause(tmp_path, monkeypatch):
+    import io
+    monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(tmp_path / "state"))
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "job.json").write_text(json.dumps({"quota": 2, "window": "5h", "started_at": NOW, "enforce": True}))
+
+    def line(used):
+        out = io.StringIO()
+        payload = {"session_id": "s", "rate_limits": {"five_hour": {"used_percentage": used, "resets_at": NOW + 3600}}}
+        q.statusline_main(job, io.StringIO(json.dumps(payload)), out, now=NOW)
+        return out.getvalue().strip()
+
+    assert line(30.0) == "agentcap: job 0.0% / 2% (5h)"
+    (job / "live.json").write_text(json.dumps({"share": 3.0, "quota": 2, "limit_hit": True}))
+    assert line(30.0).startswith("agentcap: job 3.0% / 2% (5h) LIMIT HIT: `agentcap approve`")
+    (job / "live.json").unlink()
+    (job / "loop.json").write_text("{}")
+    assert "PAUSED by the loop/error breaker" in line(30.0)
+
+
+def test_messages_are_held_while_an_interactive_agent_owns_the_screen(tmp_path):
+    import io
+    err = io.StringIO()
+    r = q.QuotaRunner(["claude"], quota=5.0, stderr=err, live_reader=lambda a: None)
+    r._hold = []
+    r._say("agentcap: approved (1/2)")
+    assert err.getvalue() == ""
+    r._release()
+    assert err.getvalue() == "agentcap: approved (1/2)\n"
+    r._say("after")
+    assert err.getvalue().endswith("after\n")
+
+
+class _DeadTerminal:
+    def write(self, _s):
+        raise OSError(5, "Input/output error")
+
+    def flush(self):
+        raise OSError(5, "Input/output error")
+
+
+def test_a_closed_terminal_does_not_cost_the_receipt(fakebin, tmp_path, monkeypatch):
+    # live C3: the window was closed, every write failed with EIO, no receipt, no done.json
+    monkeypatch.setenv("AGENTCAP_LIVE_QUOTA", "0")
+    monkeypatch.setenv("FAKE_N", "1")
+    r = q.QuotaRunner(["codex"], quota=50.0, stderr=_DeadTerminal(), poll_s=0.05,
+                      receipt_dir=tmp_path / "receipts", cwd=tmp_path, home=tmp_path / "home")
+    assert r.run() == 0
+    assert list((tmp_path / "receipts").glob("*.json"))
+    assert (r.job_dir / "done.json").exists()
