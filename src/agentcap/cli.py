@@ -241,8 +241,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--db", action="store_true", help="read the local ledger file instead of a proxy"
     )
 
-    subparsers.add_parser(
-        "quota", help="show subscription quota usage seen locally (read-only)"
+    quota_p = subparsers.add_parser(
+        "quota", help="show the subscription quota (asks claude/codex; read-only, spends no quota)"
+    )
+    quota_p.add_argument(
+        "--local", action="store_true",
+        help="only show readings already saved locally; do not start claude/codex",
     )
     subparsers.add_parser(
         "approve", help="raise the running quota job's limit by 50%% (Pro, at most twice)"
@@ -759,9 +763,10 @@ def _run_harness(args: argparse.Namespace, argv: list[str], *, breakers_only: bo
 
 
 def _quota(_args: argparse.Namespace) -> int:
+    from .live_quota import live_readings
     from .quota import quota_status
 
-    for line in quota_status():
+    for line in quota_status(live=None if getattr(_args, "local", False) else live_readings):
         print(line)
     return 0
 

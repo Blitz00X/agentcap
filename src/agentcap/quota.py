@@ -90,6 +90,11 @@ def uncertainty_text() -> str:
 # response after this long (Pro) so the job cannot spend an unseen amount; SIGINT makes Codex
 # write the response's usage, which the final read then picks up.
 RESPONSE_TIMEOUT_S = 300.0
+# Codex writes the account % it got *with* a response, i.e. before that response
+# was charged (live 12 Nov 2026: the rollout said 3% after the job, `codex
+# app-server` said 4% seconds later).  So a Codex job also asks the server.
+LIVE_POLL_S = 30.0
+LIVE_SETTLE_S = 3.0
 FINAL_READ_S = 10.0
 LONG_EFFORTS = ("xhigh", "max")
 
@@ -452,6 +457,27 @@ def baseline_from_last(last: Mapping[str, Any] | None, window: str, *, now: floa
     return Reading(used, resets)
 
 
+RESET_MATCH_S = 120.0  # /usage prints resets to the minute
+
+
+def _same_reset(a: float | None, b: float | None) -> bool:
+    return a is None or b is None or abs(a - b) <= RESET_MATCH_S
+
+
+def record_claude_live(readings: Mapping[str, Reading], now: float) -> None:
+    """Store a `claude -p /usage` answer where the statusline stores its readings."""
+
+    current = _readings_dict(readings)
+    previous = (_read_json(state_root() / "claude_last.json") or {}).get("readings")
+    try:
+        ensure_private_dir(state_root())
+        _atomic_write(state_root() / "claude_last.json", {"ts": now, "readings": current, "source": "usage"})
+    except OSError:
+        return
+    if previous != current:
+        _append_sample({"ts": now, "readings": current, "source": "usage"})
+
+
 def _append_sample(record: Mapping[str, Any]) -> None:
     """Keep a small local history of quota % changes for `agentcap report`."""
 
@@ -561,7 +587,7 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
             reading = readings[window]
             if tracker.baseline is None:
                 seed = baseline_from_last(_read_json(state_root() / "claude_last.json"), window, now=now)
-                if seed is not None and seed.used <= reading.used and (seed.resets_at == reading.resets_at or seed.resets_at is None):
+                if seed is not None and seed.used <= reading.used and _same_reset(seed.resets_at, reading.resets_at):
                     tracker.seed(seed)
                     tracker.update(reading)
                 else:
@@ -1015,6 +1041,31 @@ class QuotaSummary:
     effort: str | None = None
 
 
+class _LivePoller(threading.Thread):
+    """Ask the agent's own client for the account % every *interval* seconds."""
+
+    def __init__(self, reader: Callable[[str], Mapping[str, Reading] | None], agent: str,
+                 interval: float) -> None:
+        super().__init__(name="agentcap-live-quota", daemon=True)
+        self.reader, self.agent, self.interval = reader, agent, interval
+        self.latest: Mapping[str, Reading] | None = None
+        self.count = 0
+        self._halt = threading.Event()
+
+    def run(self) -> None:
+        while not self._halt.wait(self.interval):
+            try:
+                got = self.reader(self.agent)
+            except Exception:
+                got = None
+            if got:
+                self.latest = got
+                self.count += 1
+
+    def stop(self) -> None:
+        self._halt.set()
+
+
 class _Terminated(Exception):
     """SIGTERM / SIGHUP reached AgentCap (e.g. `timeout`, a closed terminal)."""
 
@@ -1044,6 +1095,9 @@ class QuotaRunner:
         receipt_dir: Path | None = None,
         cwd: Path | None = None,
         home: Path | None = None,
+        live_reader: Callable[[str], Mapping[str, Reading] | None] | None = None,
+        live_poll_s: float | None = LIVE_POLL_S,
+        live_settle_s: float = LIVE_SETTLE_S,
     ) -> None:
         if window not in WINDOWS:
             raise ValueError("--window must be 'week' or '5h'")
@@ -1074,6 +1128,14 @@ class QuotaRunner:
         self._pgid: int | None = None
         self.summary: QuotaSummary | None = None
         self.baseline_age_s: float | None = None  # set when the baseline is an older same-window reading
+        self.baseline_live = False  # baseline read from the agent's own client at job start
+        if live_reader is None:
+            from .live_quota import live_readings as live_reader
+        self.live_reader = live_reader
+        self.live_poll_s = live_poll_s
+        self.live_settle_s = live_settle_s
+        self.final_live = False  # the receipt includes a live read taken after the agent exited
+        self._poller: _LivePoller | None = None
 
     def _say(self, msg: str) -> None:
         if not self.quiet:
@@ -1143,6 +1205,7 @@ class QuotaRunner:
                     "chain": user_statusline_command(self.cwd, self.home),
                 }
                 _atomic_write(self.job_dir / "job.json", job)
+                self._claude_live_baseline(started)
                 settings = self.job_dir / "settings.json"
                 _atomic_write(settings, claude_settings(self.job_dir))
                 argv = inject_claude_settings(argv, settings)
@@ -1154,7 +1217,11 @@ class QuotaRunner:
                 tailer = CodexTailer(self.sessions_dir, started)
                 self._tailer = tailer
                 prior = tailer.last_reading_before(self.window)
-                if prior and started - prior[0] <= BASELINE_MAX_AGE_S and (
+                if self._codex_live_baseline(tracker):
+                    # Even a fresh rollout reading lags one response (live 12 Nov 2026:
+                    # the last job's rollout said 3%, the server 4%), so ask first.
+                    pass
+                elif prior and started - prior[0] <= BASELINE_MAX_AGE_S and (
                     prior[1].resets_at is None or prior[1].resets_at > started
                 ):
                     tracker.seed(prior[1])
@@ -1188,6 +1255,13 @@ class QuotaRunner:
                 self._say(f"agentcap: WARNING: Claude Code reports quota in whole percent, so a {self.quota:g}% "
                           "cap trips at the next 1% step of the account (it may stop at once or overshoot). "
                           "Use --quota 1% or more for Claude Code.")
+            from .live_quota import live_enabled
+            poller: _LivePoller | None = None
+            live_seen = 0
+            if self.agent == "codex" and self.live_poll_s and live_enabled():
+                poller = _LivePoller(self.live_reader, "codex", self.live_poll_s)
+                self._poller = poller
+                poller.start()
             watchdog.start()  # before the tree guard, so its baseline excludes it
             tree_guard.start()
             try:
@@ -1258,6 +1332,12 @@ class QuotaRunner:
                         for reading in tailer.poll(self.window):
                             observed = True
                             tracker.update(reading)
+                        if poller is not None and poller.count > live_seen:
+                            live_seen = poller.count
+                            got = (poller.latest or {}).get(self.window)
+                            if got is not None and tracker.baseline is not None:
+                                observed = True
+                                tracker.update(got)
                         share = tracker.share
                         if tailer.read_errors >= 3 and guard_msg is None:
                             guard_msg = ('Codex session log is unreadable; the guard cannot see '
@@ -1417,6 +1497,10 @@ class QuotaRunner:
                     if not tailer.response_open or tailer.own is None or time.time() >= deadline:
                         break
                     time.sleep(min(0.25, self.poll_s * 5))
+                if poller is not None:
+                    poller.stop()
+                    self._final_live(tracker)
+                    observed = observed or self.final_live
                 share = tracker.share
                 final_read = ("complete" if tailer.own is not None and not tailer.response_open
                               else "none" if tailer.own is None else "incomplete")
@@ -1468,6 +1552,8 @@ class QuotaRunner:
             tree_guard.close()
             watchdog.disarm()
             lock.release()
+            if getattr(self, "_poller", None) is not None:
+                self._poller.stop()
             restore_tty(getattr(self, "_tty", None))
             for sig, handler in old_handlers.items():
                 try:
@@ -1504,6 +1590,66 @@ class QuotaRunner:
             })
         except OSError:
             pass
+
+    def _ask_live(self, agent: str) -> Mapping[str, Reading] | None:
+        from .live_quota import live_enabled
+        if not live_enabled():
+            return None
+        self._say(f"agentcap: asking {agent} for the account's current quota...")
+        try:
+            live = self.live_reader(agent)
+        except Exception:
+            live = None
+        if not live:
+            self._say(f"agentcap: {agent} did not answer; using the local readings.")
+        return live
+
+    def _final_live(self, tracker: ShareTracker) -> None:
+        """One more server read after the agent exited, so the last response counts.
+        If it shows nothing new yet, wait a moment and ask once more."""
+
+        if tracker.baseline is None:
+            return
+        for attempt in range(2):
+            if attempt:
+                time.sleep(self.live_settle_s)
+            try:
+                got = (self.live_reader("codex") or {}).get(self.window)
+            except Exception:
+                got = None
+            if got is None:
+                continue
+            before = tracker.last_used
+            tracker.update(got)
+            self.final_live = True
+            if before is None or got.used > before:
+                return
+
+    def _codex_live_baseline(self, tracker: ShareTracker) -> bool:
+        """Baseline from `codex app-server`: rollout readings are taken before the
+        response they come with is charged, so they lag (12 Nov 2026)."""
+
+        live = self._ask_live("codex")
+        reading = live.get(self.window) if live else None
+        if reading is None:
+            return False
+        tracker.seed(reading)
+        self.baseline_live = True
+        return True
+
+    def _claude_live_baseline(self, now: float) -> None:
+        """The statusline seeds the job from claude_last.json; refresh it from
+        `claude -p /usage` when it is older than the baseline limit."""
+
+        last = _read_json(state_root() / "claude_last.json") or {}
+        ts = _num(last.get("ts"))
+        block = (last.get("readings") or {}).get(self.window) if isinstance(last.get("readings"), Mapping) else None
+        if ts is not None and now - ts <= BASELINE_MAX_AGE_S and block:
+            return
+        live = self._ask_live("claude")
+        if live and self.window in live:
+            record_claude_live(live, now)
+            self.baseline_live = True
 
     def _receipt(self, s: QuotaSummary) -> None:
         label = "weekly" if s.window == "week" else "5-hour"
@@ -1547,6 +1693,7 @@ class QuotaRunner:
                         "last_tool": last, "measure": "account_increase",
                         "baseline_age_s": (round(self.baseline_age_s) if self.baseline_age_s is not None
                                            else None),
+                        "baseline_live": self.baseline_live, "final_live": self.final_live,
                         "final_read": s.final_read, "effort": s.effort,
                         "response_timeout_s": self.response_timeout_s if s.agent == "codex" else None,
                     })
@@ -1586,17 +1733,39 @@ def _status_line(agent: str, window: str, used: float, resets_at: Any, age: floa
     return line
 
 
-def quota_status(*, now: float | None = None, sessions_dir: Path | None = None) -> list[str]:
+def _live_lines(agent: str, live: Mapping[str, Reading], now: float) -> list[str]:
+    return [f"{agent} {w}: {live[w].used:.1f}% used" + _reset_text(live[w].resets_at, now)
+            + f" (live from {agent})" for w in sorted(live)]
+
+
+def quota_status(*, now: float | None = None, sessions_dir: Path | None = None,
+                 live: Callable[[str], Mapping[str, Reading] | None] | None = None) -> list[str]:
+    """`agentcap quota`.  With *live*, each agent's own client is asked first;
+    the local readings are the fallback."""
+
     now = time.time() if now is None else now
     lines: list[str] = []
-    last = _read_json(state_root() / "claude_last.json")
-    if last and isinstance(last.get("readings"), Mapping):
+    answers: dict[str, Mapping[str, Reading]] = {}
+    for agent in ("claude", "codex"):
+        try:
+            got = live(agent) if live else None
+        except Exception:
+            got = None
+        if got:
+            answers[agent] = got
+    last = None if "claude" in answers else _read_json(state_root() / "claude_last.json")
+    if "claude" in answers:
+        record_claude_live(answers["claude"], now)
+        lines += _live_lines("claude", answers["claude"], now)
+    elif last and isinstance(last.get("readings"), Mapping):
         age = now - float(last.get("ts", now))
         for window, block in sorted(last["readings"].items()):
             lines.append(_status_line("claude", window, float(block.get("used", 0)),
                                       block.get("resets_at"), age, now, CLAUDE_STATUS_HINT))
     else:
         lines.append(f"claude: no data yet. {CLAUDE_STATUS_HINT}.")
+    if "codex" in answers:
+        return lines + _live_lines("codex", answers["codex"], now)
     tail = CodexTailer(sessions_dir or (codex_home() / "sessions"), now)
     found = False
     for window in WINDOWS:

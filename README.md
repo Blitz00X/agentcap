@@ -289,7 +289,7 @@ Quota mode caps **one job's share** of it:
 ```bash
 agentcap run --quota 5% -- claude              # stop this job after 5% of the weekly quota
 agentcap run --quota 10% --window 5h -- codex  # or 10% of the 5-hour window
-agentcap quota                                 # read-only: last seen usage (Free)
+agentcap quota                                 # read-only: current usage, asked from claude/codex (Free)
 ```
 
 - **Read-only, ToS-safe.** AgentCap never proxies, reads or reuses your subscription login
@@ -307,6 +307,13 @@ agentcap quota                                 # read-only: last seen usage (Fre
 - **Codex CLI:** AgentCap tails the `token_count` events Codex writes to
   `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits.primary/secondary.used_percent`,
   `window_minutes`, `resets_at`) and sends SIGINT at the limit. Exit code 3.
+  The % in a rollout is the value Codex got *with* a response, before that response was
+  charged, so it lags one response (live: the rollout said 3% after a job, the server 4%).
+  AgentCap therefore also asks Codex's own `codex app-server` (`account/rateLimits/read`, the
+  protocol the IDE extension uses; no model call, no quota spent, Codex handles its own login):
+  for the baseline at start, every 30 s during the job, and once after the agent exits, so the
+  last response is in the receipt (`baseline_live`, `final_live`). If the server does not answer,
+  the rollout readings are used as before.
   Codex writes usage only when a model response ends, so one long response (xhigh/max effort
   ran 6+ minutes in our tests) is invisible until it finishes. In quota mode AgentCap therefore
   stops the job when a single response runs longer than `--response-timeout` (default `5m`,
@@ -322,6 +329,11 @@ agentcap quota                                 # read-only: last seen usage (Fre
   (Telegram/webhook) and receipt files work the same as for dollar caps. `agentcap` stopped by
   Ctrl+C, SIGTERM (`timeout`) or SIGHUP (closed terminal) stops the agent and still writes the
   receipt (reason `interrupted` / `terminated`).
+- **`agentcap quota`** asks each agent's own client for the current values: `codex app-server`
+  for Codex and `claude -p /usage` for Claude Code (both read-only, no model call). Lines from a
+  live answer end in `(live from codex)` / `(live from claude)`; otherwise the last local
+  reading is shown with its age. `agentcap quota --local` never starts claude/codex.
+  `AGENTCAP_LIVE_QUOTA=0` turns live reads off everywhere.
 - **Free:** `agentcap quota` and observe-only runs that print the job's share and
   `Pro's quota mode would have stopped this job at 5%`. **Pro:** stopping at the limit.
 

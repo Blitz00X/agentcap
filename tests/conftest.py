@@ -71,3 +71,9 @@ def _isolated_budget_config(tmp_path, monkeypatch):
     """Never let a developer's real budget.json leak into the suite."""
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+
+@pytest.fixture(autouse=True)
+def _no_live_quota(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never start the real claude/codex to read the live quota from a test."""
+    monkeypatch.setenv("AGENTCAP_LIVE_QUOTA", "0")
