@@ -301,6 +301,22 @@ class AlertDispatcher:
         self._threads: list[threading.Thread] = []
         self._lock = threading.Lock()
         self._seen_once: set[tuple[str, object]] = set()
+        self._held: list[str] | None = None
+
+    # ------------------------------------------------------ terminal hold
+    def hold_terminal(self) -> None:
+        """Keep terminal lines while an interactive agent owns the screen: written
+        into it they overlap its input box and are erased on redraw (live C3,
+        12 Nov 2026).  Webhook/Telegram delivery is not held."""
+        with self._lock:
+            if self._held is None:
+                self._held = []
+
+    def release_terminal(self) -> None:
+        with self._lock:
+            held, self._held = self._held, None
+        for line in held or []:
+            self._write(line)
 
     # --------------------------------------------------------------- sending
     def __call__(self, event: Mapping[str, Any]) -> None:
@@ -348,8 +364,16 @@ class AlertDispatcher:
             self._deliver(self._post_telegram, payload)
 
     def _terminal(self, message: str, *, color: str = RED) -> None:
+        line = f"{color}{redact(message)}{RESET}"
+        with self._lock:
+            if self._held is not None:
+                self._held.append(line)
+                return
+        self._write(line)
+
+    def _write(self, line: str) -> None:
         try:
-            print(f"{color}{redact(message)}{RESET}", file=self.stderr, flush=True)
+            print(line, file=self.stderr, flush=True)
         except Exception:
             pass
 

@@ -178,8 +178,9 @@ def approve_job(root: Path | None = None) -> str:
         return (f"agentcap: already approved twice (limit {float(job.get('quota', 0)):g}%); "
                 "start a new job if you really need more.")
     new = round(float(job.get("quota", 0)) * APPROVE_FACTOR, 4)
-    loop_cleared = (d / "loop.json").exists()
-    error_cleared = (d / "errors.json").exists()
+    loop = _read_json(d / "loop.json")
+    loop_cleared = loop is not None and loop.get("kind") != "errors"
+    error_cleared = loop is not None and loop.get("kind") == "errors"
     job.update({"quota": new, "approvals": n + 1, "approved_at": time.time()})
     _atomic_write(d / "job.json", job)
     status = _read_json(d / "status.json")
@@ -1245,10 +1246,21 @@ class QuotaRunner:
         except (OSError, ValueError):
             pass
 
+    def _alerts_owner(self, method: str) -> None:
+        owner = getattr(self.alerts, "__self__", None)  # alerts is usually AlertDispatcher.emit
+        fn = getattr(owner, method, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
+
     def _release(self) -> None:
         held, self._hold = getattr(self, "_hold", None), None
         for msg in held or []:
             self._print(msg)
+        if held is not None:
+            self._alerts_owner("release_terminal")
 
     def _event(self, kind: str, share: float, **extra: Any) -> None:
         if not self.enforce:
@@ -1384,6 +1396,7 @@ class QuotaRunner:
                     self.agent == "codex" and self._tty is not None and not exec_mode_argv(self.argv)
                 ):
                     self._hold = []
+                    self._alerts_owner("hold_terminal")
             except OSError as exc:
                 raise mark_child_start_failure(exc)
             try:

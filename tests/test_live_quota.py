@@ -433,3 +433,17 @@ def test_a_closed_terminal_does_not_cost_the_receipt(fakebin, tmp_path, monkeypa
     assert r.run() == 0
     assert list((tmp_path / "receipts").glob("*.json"))
     assert (r.job_dir / "done.json").exists()
+
+
+def test_alerts_are_held_while_an_interactive_agent_owns_the_screen():
+    import io
+    from agentcap.alerts import AlertDispatcher
+    err = io.StringIO()
+    disp = AlertDispatcher(stderr=err, background=False)
+    r = q.QuotaRunner(["claude"], quota=5.0, alerts=disp.emit, stderr=io.StringIO(), live_reader=lambda a: None)
+    r._hold = []
+    r._alerts_owner("hold_terminal")
+    disp.emit({"type": "quota_exceeded", "run_id": "x", "window": "5h", "quota_pct": 2, "share_pct": 2.0})
+    assert err.getvalue() == ""
+    r._release()
+    assert "QUOTA LIMIT HIT" in err.getvalue()

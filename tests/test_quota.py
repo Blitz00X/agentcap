@@ -658,8 +658,17 @@ def test_approve_reports_cleared_loop_breaker(tmp_path):
 def test_approve_reports_cleared_error_breaker(tmp_path):
     root, d = _job(tmp_path)
     (d / "errors.json").write_text(json.dumps({"errors": 8, "tool": "Bash"}))
+    (d / "loop.json").write_text(json.dumps({"count": 8, "tool": "Bash", "kind": "errors"}))
     msg = q.approve_job(root)
-    assert "error breaker cleared" in msg
+    assert "error breaker cleared" in msg and "loop breaker" not in msg
+
+
+def test_approve_does_not_claim_a_breaker_that_never_tripped(tmp_path):
+    # live C3: every approve said "error breaker cleared" (errors.json is written on every call)
+    root, d = _job(tmp_path)
+    (d / "errors.json").write_text(json.dumps({"errors": 0, "tool": "Read"}))
+    msg = q.approve_job(root)
+    assert "cleared" not in msg and "run continues" in msg
 
 
 def test_approve_at_full_quota_says_quota_no_longer_stops(tmp_path):
