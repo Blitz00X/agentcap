@@ -1639,13 +1639,10 @@ class QuotaRunner:
 
     def _claude_live_baseline(self, now: float) -> None:
         """The statusline seeds the job from claude_last.json; refresh it from
-        `claude -p /usage` when it is older than the baseline limit."""
+        `claude -p /usage` first.  Even a minute-old reading can be wrong: other
+        sessions on the account keep spending (live 12 Nov 2026: 4% -> 7% in 80 s,
+        so a 0% job was charged 3% and stopped at once)."""
 
-        last = _read_json(state_root() / "claude_last.json") or {}
-        ts = _num(last.get("ts"))
-        block = (last.get("readings") or {}).get(self.window) if isinstance(last.get("readings"), Mapping) else None
-        if ts is not None and now - ts <= BASELINE_MAX_AGE_S and block:
-            return
         live = self._ask_live("claude")
         if live and self.window in live:
             record_claude_live(live, now)

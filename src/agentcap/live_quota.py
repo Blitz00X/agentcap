@@ -219,7 +219,7 @@ def claude_live(*, binary: str | None = None, timeout: float = CLAUDE_TIMEOUT_S,
         return None
     try:
         result = subprocess.run(
-            [exe, "-p", "/usage"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            [exe, "-p", "--no-session-persistence", "/usage"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
             timeout=timeout, env=_probe_env(), cwd=str(cwd) if cwd else None,
         )
     except (OSError, subprocess.TimeoutExpired):

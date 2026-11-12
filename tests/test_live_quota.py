@@ -138,7 +138,7 @@ def test_claude_live_with_fake_cli(tmp_path, monkeypatch):
     got = lq.claude_live(binary=exe, cwd=probe, now=NOW)
     assert got and got["week"].used == 70.0 and got["5h"].used == 10.0
     seen = json.loads(out.read_text())
-    assert seen["argv"] == ["-p", "/usage"] and seen["markers"] == [] and seen["cwd"] == str(probe)
+    assert seen["argv"] == ["-p", "--no-session-persistence", "/usage"] and seen["markers"] == [] and seen["cwd"] == str(probe)
 
 
 def test_claude_live_failures_return_none(tmp_path):
@@ -294,16 +294,29 @@ def test_claude_job_refreshes_stale_baseline_from_usage(fakebin, tmp_path, monke
     assert r.summary.baseline_exact and r.summary.share == 2.0
 
 
-def test_claude_job_with_fresh_reading_does_not_ask(fakebin, tmp_path, monkeypatch):
+def test_claude_job_asks_even_with_a_fresh_reading(fakebin, tmp_path, monkeypatch):
+    # live 12 Nov 2026: a reading 80 s old said 4%, the account was at 7% (another session)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "claude_last.json").write_text(json.dumps(
+        {"ts": time.time() - 80, "readings": {"week": {"used": 36.0, "resets_at": time.time() + 86400}}}))
+    monkeypatch.setenv("FAKE_START", "39")   # first statusline reading 40
+    monkeypatch.setenv("FAKE_N", "1")
+    r, err, asked = _runner(["claude"], tmp_path, {"claude": {"week": q.Reading(39.0, time.time() + 86400)}})
+    assert r.run() == 0
+    assert asked == ["claude"] and r.summary.share == 1.0
+
+
+def test_claude_job_uses_a_fresh_reading_when_usage_fails(fakebin, tmp_path, monkeypatch):
     state = tmp_path / "state"
     state.mkdir()
     (state / "claude_last.json").write_text(json.dumps(
         {"ts": time.time() - 60, "readings": {"week": {"used": 38.0, "resets_at": time.time() + 86400}}}))
     monkeypatch.setenv("FAKE_START", "39")
     monkeypatch.setenv("FAKE_N", "1")
-    r, err, asked = _runner(["claude"], tmp_path, {"claude": {"week": q.Reading(1.0, None)}})
+    r, err, asked = _runner(["claude"], tmp_path, {})
     assert r.run() == 0
-    assert asked == [] and r.summary.share == 2.0
+    assert asked == ["claude"] and r.summary.share == 2.0
 
 
 def test_codex_final_live_read_counts_the_last_response(fakebin, tmp_path, monkeypatch):
