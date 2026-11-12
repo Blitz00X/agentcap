@@ -94,6 +94,11 @@ RESPONSE_TIMEOUT_S = 300.0
 # was charged (live 12 Nov 2026: the rollout said 3% after the job, `codex
 # app-server` said 4% seconds later).  So a Codex job also asks the server.
 LIVE_POLL_S = 30.0
+# Claude: the statusline % and /usage differ by 1 point at both ends of a job
+# (live 12 Nov 2026: 26/27 at start, 31/32 at the end) - a rounding offset or a
+# one-response lag.  The statusline is compared only with itself; /usage, asked
+# at start, every minute and after exit, gives the receipt and catches a lag.
+CLAUDE_LIVE_POLL_S = 60.0
 LIVE_SETTLE_S = 3.0
 FINAL_READ_S = 10.0
 LONG_EFFORTS = ("xhigh", "max")
@@ -586,7 +591,8 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
         if window in readings:
             reading = readings[window]
             if tracker.baseline is None:
-                seed = baseline_from_last(_read_json(state_root() / "claude_last.json"), window, now=now)
+                last = _read_json(state_root() / "claude_last.json")
+                seed = None if (last or {}).get("source") == "usage" else baseline_from_last(last, window, now=now)
                 if seed is not None and seed.used <= reading.used and _same_reset(seed.resets_at, reading.resets_at):
                     tracker.seed(seed)
                     tracker.update(reading)
@@ -858,6 +864,11 @@ def hook_main(job_dir: Path, stdin: TextIO, stdout: TextIO) -> int:
     if error_reason:
         return _deny(stdout, error_reason)
     status = _read_json(job_dir / "status.json")
+    live = _read_json(job_dir / "live.json")
+    if live and live.get("limit_hit") and (
+        not status or not status.get("limit_hit") or float(live.get("share", 0)) > float(status.get("share", 0))
+    ):
+        status = live  # /usage saw the limit first (the statusline can lag)
     if not status or not status.get("limit_hit"):
         return 0
     _note_deny(job_dir)
@@ -1097,6 +1108,7 @@ class QuotaRunner:
         home: Path | None = None,
         live_reader: Callable[[str], Mapping[str, Reading] | None] | None = None,
         live_poll_s: float | None = LIVE_POLL_S,
+        claude_live_poll_s: float = CLAUDE_LIVE_POLL_S,
         live_settle_s: float = LIVE_SETTLE_S,
     ) -> None:
         if window not in WINDOWS:
@@ -1133,6 +1145,9 @@ class QuotaRunner:
             from .live_quota import live_readings as live_reader
         self.live_reader = live_reader
         self.live_poll_s = live_poll_s
+        self.claude_live_poll_s = claude_live_poll_s
+        self._live_tracker: ShareTracker | None = None  # claude: /usage at start vs now
+        self._live_written: tuple[float, float] | None = None
         self.live_settle_s = live_settle_s
         self.final_live = False  # the receipt includes a live read taken after the agent exited
         self._poller: _LivePoller | None = None
@@ -1258,8 +1273,11 @@ class QuotaRunner:
             from .live_quota import live_enabled
             poller: _LivePoller | None = None
             live_seen = 0
-            if self.agent == "codex" and self.live_poll_s and live_enabled():
-                poller = _LivePoller(self.live_reader, "codex", self.live_poll_s)
+            if self.live_poll_s and live_enabled() and (
+                self.agent == "codex" or self._live_tracker is not None
+            ):
+                interval = self.live_poll_s if self.agent == "codex" else self.claude_live_poll_s
+                poller = _LivePoller(self.live_reader, self.agent, interval)
                 self._poller = poller
                 poller.start()
             watchdog.start()  # before the tree guard, so its baseline excludes it
@@ -1327,6 +1345,15 @@ class QuotaRunner:
                                       "(API-key login?). Quota mode needs a Pro/Max login; use --cap for API keys.")
                         if len(status.get("sessions") or []) > 1 and not parallel:
                             parallel = True
+                        if poller is not None and poller.count > live_seen and self._live_tracker is not None:
+                            live_seen = poller.count
+                            got = (poller.latest or {}).get(self.window)
+                            if got is not None:
+                                self._live_tracker.update(got)
+                        if self._live_tracker is not None and self._live_tracker.share > 0:
+                            observed = True
+                            share = max(share, self._live_tracker.share)
+                            self._write_live(self._live_tracker.share)
                     else:
                         assert tailer is not None
                         for reading in tailer.poll(self.window):
@@ -1488,6 +1515,17 @@ class QuotaRunner:
                     pass
             reap_group(self._pgid)
             final_read = "n/a"
+            if self.agent == "claude" and self._live_tracker is not None:
+                if poller is not None:
+                    poller.stop()
+                self._final_live(self._live_tracker, "claude")
+                if self.final_live:
+                    # same source at both ends: right whether the statusline lags or rounds
+                    observed = True
+                    tracker.baseline_exact = True
+                    share = self._live_tracker.share
+                    if self.enforce and not hit and share >= self.quota:
+                        hit = True
             if tailer is not None:
                 deadline = time.time() + self.final_read_s
                 while True:
@@ -1499,7 +1537,7 @@ class QuotaRunner:
                     time.sleep(min(0.25, self.poll_s * 5))
                 if poller is not None:
                     poller.stop()
-                    self._final_live(tracker)
+                    self._final_live(tracker, "codex")
                     observed = observed or self.final_live
                 share = tracker.share
                 final_read = ("complete" if tailer.own is not None and not tailer.response_open
@@ -1604,7 +1642,22 @@ class QuotaRunner:
             self._say(f"agentcap: {agent} did not answer; using the local readings.")
         return live
 
-    def _final_live(self, tracker: ShareTracker) -> None:
+    def _write_live(self, share: float) -> None:
+        """Hand the /usage share to the PreToolUse hook (job/live.json)."""
+
+        key = (share, self.quota)
+        if key == self._live_written:
+            return
+        self._live_written = key
+        try:
+            _atomic_write(self.job_dir / "live.json", {
+                "ts": time.time(), "source": "usage", "share": share, "quota": self.quota,
+                "window": self.window, "limit_hit": bool(self.enforce and share >= self.quota),
+            })
+        except OSError:
+            pass
+
+    def _final_live(self, tracker: ShareTracker, agent: str) -> None:
         """One more server read after the agent exited, so the last response counts.
         If it shows nothing new yet, wait a moment and ask once more."""
 
@@ -1614,7 +1667,7 @@ class QuotaRunner:
             if attempt:
                 time.sleep(self.live_settle_s)
             try:
-                got = (self.live_reader("codex") or {}).get(self.window)
+                got = (self.live_reader(agent) or {}).get(self.window)
             except Exception:
                 got = None
             if got is None:
@@ -1647,6 +1700,8 @@ class QuotaRunner:
         if live and self.window in live:
             record_claude_live(live, now)
             self.baseline_live = True
+            self._live_tracker = ShareTracker()
+            self._live_tracker.seed(live[self.window])
 
     def _receipt(self, s: QuotaSummary) -> None:
         label = "weekly" if s.window == "week" else "5-hour"
@@ -1691,6 +1746,9 @@ class QuotaRunner:
                         "baseline_age_s": (round(self.baseline_age_s) if self.baseline_age_s is not None
                                            else None),
                         "baseline_live": self.baseline_live, "final_live": self.final_live,
+                        "measured_by": ("usage" if s.agent == "claude" and self.final_live else
+                                        "app-server" if self.final_live else
+                                        "statusline" if s.agent == "claude" else "rollout"),
                         "final_read": s.final_read, "effort": s.effort,
                         "response_timeout_s": self.response_timeout_s if s.agent == "codex" else None,
                     })

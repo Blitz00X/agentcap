@@ -197,20 +197,37 @@ def test_cli_quota_local_flag_skips_live(monkeypatch, tmp_path, capsys):
 
 
 # ------------------------------------------------------------ job baselines
-def test_statusline_seed_accepts_minute_rounded_reset(tmp_path, monkeypatch):
+def test_statusline_never_seeds_from_a_usage_reading(tmp_path, monkeypatch):
+    # /usage and the statusline differ by 1 point (live 12 Nov 2026), so the
+    # statusline share is only ever statusline vs statusline
+    import io
     monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(tmp_path / "state"))
     (tmp_path / "state").mkdir()
     job = tmp_path / "job"
     job.mkdir()
     (job / "job.json").write_text(json.dumps({"quota": 5, "window": "week", "started_at": NOW, "enforce": True}))
-    exact = NOW + 86400 + 37   # statusline: to the second; /usage: to the minute
     (tmp_path / "state" / "claude_last.json").write_text(json.dumps(
-        {"ts": NOW - 30, "readings": {"week": {"used": 70.0, "resets_at": NOW + 86400}}, "source": "usage"}))
-    payload = {"session_id": "s", "rate_limits": {"seven_day": {"used_percentage": 71.0, "resets_at": exact}}}
-    import io
+        {"ts": NOW - 30, "readings": {"week": {"used": 27.0, "resets_at": NOW + 86400}}, "source": "usage"}))
+    payload = {"session_id": "s", "rate_limits": {"seven_day": {"used_percentage": 26.0, "resets_at": NOW + 86400}}}
     q.statusline_main(job, io.StringIO(json.dumps(payload)), io.StringIO(), now=NOW)
     status = json.loads((job / "status.json").read_text())
-    assert status["share"] == 1.0 and status["tracker"]["baseline_exact"] is True
+    assert status["share"] == 0.0 and status["tracker"]["baseline"] == 26.0
+
+
+def test_hook_denies_on_the_usage_share(tmp_path, monkeypatch):
+    import io
+    monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(tmp_path / "state"))
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "status.json").write_text(json.dumps({"share": 1.0, "quota": 3, "window": "5h", "limit_hit": False}))
+    out = io.StringIO()
+    q.hook_main(job, io.StringIO(json.dumps({"tool_name": "Read", "tool_input": {}})), out)
+    assert out.getvalue() == ""
+    (job / "live.json").write_text(json.dumps({"share": 3.0, "quota": 3, "window": "5h", "limit_hit": True}))
+    out = io.StringIO()
+    q.hook_main(job, io.StringIO(json.dumps({"tool_name": "Read", "tool_input": {}})), out)
+    d = json.loads(out.getvalue())
+    assert d["hookSpecificOutput"]["permissionDecision"] == "deny" and "used 3.0% of the 5-hour" in d["stopReason"]
 
 
 @pytest.fixture
@@ -281,79 +298,50 @@ def test_codex_job_live_failure_falls_back(fakebin, tmp_path, monkeypatch):
     assert not r.summary.baseline_exact
 
 
-def test_claude_job_refreshes_stale_baseline_from_usage(fakebin, tmp_path, monkeypatch):
-    state = tmp_path / "state"
-    state.mkdir()
-    (state / "claude_last.json").write_text(json.dumps(
-        {"ts": time.time() - 7 * 3600, "readings": {"week": {"used": 30.0, "resets_at": time.time() + 86400}}}))
-    monkeypatch.setenv("FAKE_START", "39")   # first statusline reading 40
-    monkeypatch.setenv("FAKE_N", "1")
-    r, err, asked = _runner(["claude"], tmp_path, {"claude": {"week": q.Reading(38.0, time.time() + 86400)}})
-    assert r.run() == 0
-    assert asked == ["claude"]
-    assert r.summary.baseline_exact and r.summary.share == 2.0
-
-
-def test_claude_job_asks_even_with_a_fresh_reading(fakebin, tmp_path, monkeypatch):
-    # live 12 Nov 2026: a reading 80 s old said 4%, the account was at 7% (another session)
-    state = tmp_path / "state"
-    state.mkdir()
-    (state / "claude_last.json").write_text(json.dumps(
-        {"ts": time.time() - 80, "readings": {"week": {"used": 36.0, "resets_at": time.time() + 86400}}}))
-    monkeypatch.setenv("FAKE_START", "39")   # first statusline reading 40
-    monkeypatch.setenv("FAKE_N", "1")
-    r, err, asked = _runner(["claude"], tmp_path, {"claude": {"week": q.Reading(39.0, time.time() + 86400)}})
-    assert r.run() == 0
-    assert asked == ["claude"] and r.summary.share == 1.0
-
-
-def test_claude_job_uses_a_fresh_reading_when_usage_fails(fakebin, tmp_path, monkeypatch):
-    state = tmp_path / "state"
-    state.mkdir()
-    (state / "claude_last.json").write_text(json.dumps(
-        {"ts": time.time() - 60, "readings": {"week": {"used": 38.0, "resets_at": time.time() + 86400}}}))
-    monkeypatch.setenv("FAKE_START", "39")
-    monkeypatch.setenv("FAKE_N", "1")
-    r, err, asked = _runner(["claude"], tmp_path, {})
-    assert r.run() == 0
-    assert asked == ["claude"] and r.summary.share == 2.0
-
-
-def test_codex_final_live_read_counts_the_last_response(fakebin, tmp_path, monkeypatch):
-    # live 12 Nov 2026: the rollout said 3% after the job, the server said 4%
-    monkeypatch.setenv("FAKE_START", "39")   # the job's only rollout reading: 40
-    monkeypatch.setenv("FAKE_N", "1")
-    resets = time.time() + 86400
-    answers = iter([q.Reading(38.0, resets), q.Reading(40.0, resets), q.Reading(41.0, resets)])
-    r, err, asked = _runner(["codex"], tmp_path, {}, quota=3.0, live_poll_s=60)
-    r.live_reader = lambda agent: {"week": next(answers)}
-    assert r.run() == 3                       # 41 - 38 = 3% >= 3% limit
-    assert r.summary.share == 3.0
-    receipt = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
-    assert receipt["final_live"] is True and receipt["reason"] == "quota_exceeded"
-
-
-def test_codex_live_poll_stops_a_long_response(fakebin, tmp_path, monkeypatch):
-    monkeypatch.setenv("FAKE_N", "0")        # one long response, no rollout reading at all
-    monkeypatch.setenv("FAKE_HANG", "20")
-    resets = time.time() + 86400
-    calls = []
+def _seq(*values, resets=None):
+    resets = resets or time.time() + 86400
+    it = iter(values)
+    last = [values[-1]]
 
     def reader(agent):
-        calls.append(time.time())
-        return {"week": q.Reading(38.0 if len(calls) == 1 else 45.0, resets)}
+        try:
+            last[0] = next(it)
+        except StopIteration:
+            pass
+        return {"week": q.Reading(last[0], resets)}
+    return reader
 
-    r, err, asked = _runner(["codex", "exec", "x"], tmp_path, {}, quota=5.0, live_poll_s=0.3)
-    r.live_reader = reader
+
+def test_claude_receipt_is_usage_at_start_vs_usage_after_exit(fakebin, tmp_path, monkeypatch):
+    # live C1: /usage 27 -> 32, statusline 26 -> 31; the receipt is the /usage difference
+    monkeypatch.setenv("FAKE_START", "25")   # statusline 26
+    monkeypatch.setenv("FAKE_N", "1")
+    r, err, asked = _runner(["claude"], tmp_path, {}, quota=50.0)
+    r.live_reader = _seq(27.0, 29.0)
+    assert r.run() == 0
+    assert r.summary.share == 2.0 and r.summary.baseline_exact
+    receipt = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
+    assert receipt["measured_by"] == "usage" and receipt["final_live"] is True
+
+
+def test_claude_usage_poll_stops_when_the_statusline_lags(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_START", "40")
+    monkeypatch.setenv("FAKE_STEP", "0")     # the statusline never moves
+    monkeypatch.setenv("FAKE_N", "200")      # 200 tool calls, 0.15 s apart
+    r, err, asked = _runner(["claude", "-p", "x"], tmp_path, {}, quota=3.0, claude_live_poll_s=0.3)
+    r.live_reader = _seq(40.0, 40.0, 44.0)
     t0 = time.time()
     assert r.run() == 3
-    assert time.time() - t0 < 15
-    assert r.summary.share == 7.0 and r.summary.reason == "quota_exceeded"
+    assert time.time() - t0 < 25
+    assert r.summary.reason == "quota_exceeded" and r.summary.share >= 3.0
+    assert (r.job_dir / "denies.log").exists()
 
 
-def test_codex_without_live_keeps_the_old_path(fakebin, tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENTCAP_LIVE_QUOTA", "0")
-    monkeypatch.setenv("FAKE_N", "1")
-    r, err, asked = _runner(["codex"], tmp_path, {"codex": {"week": q.Reading(1.0, None)}})
+def test_claude_without_usage_keeps_the_statusline_share(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_START", "39")
+    monkeypatch.setenv("FAKE_N", "2")
+    r, err, asked = _runner(["claude"], tmp_path, {})
     assert r.run() == 0
-    assert asked == [] and r._poller is None
+    assert asked == ["claude"] and r._poller is None and r.summary.share == 1.0
+    receipt = json.loads(next((tmp_path / "receipts").glob("*.json")).read_text())
+    assert receipt["measured_by"] == "statusline"

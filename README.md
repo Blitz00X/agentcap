@@ -302,7 +302,16 @@ agentcap quota                                 # read-only: current usage, asked
   plus a `PreToolUse` hook that denies further tool calls with a clear reason once the job's
   share reaches the limit and ends the turn (`continue: false`). An interactive session stays open
   (run `agentcap approve` to continue, or quit); a session where the hook never fired gets
-  SIGINT. Exit code 3. **Quota % is interactive-only:** headless `claude -p` exposes no usage %
+  SIGINT. Exit code 3.
+  AgentCap also asks `claude -p /usage` (a local command: no model call, no quota) at start,
+  every minute and once after exit. The statusline % and `/usage` differ by one point at both
+  ends of a job (live: 26/27 at start, 31/32 at the end), so the statusline is only compared
+  with itself, the hook also denies when `/usage` shows the limit first, and the receipt is the
+  `/usage` difference (`measured_by: usage`).
+  The hook can stop Claude only before a tool call, so one large response overshoots: live, a
+  3% limit ended at 5% after one response with 7 parallel file reads used 3%. Usage on the same
+  account from anywhere else (claude.ai, the desktop or phone app, another terminal) counts
+  toward the job too. **Quota % is interactive-only:** headless `claude -p` exposes no usage %
   to AgentCap, so `--quota` warns and only the loop/error breakers are active there.
 - **Codex CLI:** AgentCap tails the `token_count` events Codex writes to
   `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits.primary/secondary.used_percent`,
