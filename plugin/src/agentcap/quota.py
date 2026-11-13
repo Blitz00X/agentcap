@@ -99,6 +99,12 @@ LIVE_POLL_S = 30.0
 # one-response lag.  The statusline is compared only with itself; /usage, asked
 # at start, every minute and after exit, gives the receipt and catches a lag.
 CLAUDE_LIVE_POLL_S = 60.0
+# Claude's /usage shows a job's usage only 30-90 s after its requests (live gate test,
+# 13 Nov 2026: eight short jobs all read 0.0% while the account rose 21% -> 28%; each
+# job's share appeared at the next job's start).  After a Claude job exits, a detached
+# process keeps reading /usage for a while and rewrites the receipt with the settled share.
+CLAUDE_SETTLE_S = 150.0
+SETTLE_STEP_S = 20.0
 # Headless `claude -p` has no statusline at all, so /usage is the only source there.
 HEADLESS_LIVE_POLL_S = 30.0
 HEADLESS_CLAUDE_LIVE_NOTE = (
@@ -735,11 +741,13 @@ class LoopWatch:
         self.count = 0
         self.errors = 0
         self.tripped: str | None = None
+        self.waiting = False  # the last call was a wait (sleep ...): its result is neutral
 
     def call(self, name: str, payload: Any) -> None:
-        from .waste import POLL_TOOLS, _digest
+        from .waste import _digest, is_wait_call
 
-        if name in POLL_TOOLS:
+        self.waiting = is_wait_call(name, payload)
+        if self.waiting:
             return
         d = _digest(name, payload)
         self.count = self.count + 1 if d == self.digest else 1
@@ -748,6 +756,8 @@ class LoopWatch:
             self.tripped = f"same tool call {self.count} times in a row ({name[:40]})"
 
     def result(self, error: bool) -> None:
+        if self.waiting:
+            return
         self.errors = self.errors + 1 if error else 0
         if self.errors >= LOOP_ERRORS and not self.tripped:
             self.tripped = f"{self.errors} failing tool calls in a row ({self.tool[:40]})"
@@ -770,10 +780,10 @@ class LoopWatch:
 def _loop_hook(job_dir: Path, payload: Mapping[str, Any]) -> str | None:
     """Track identical PreToolUse calls; return a deny reason when Pro should stop."""
 
-    from .waste import POLL_TOOLS, _digest
+    from .waste import _digest, is_wait_call
 
     name = payload.get("tool_name")
-    if not isinstance(name, str) or name in POLL_TOOLS:
+    if not isinstance(name, str) or is_wait_call(name, payload.get("tool_input")):
         return None
 
     d = _digest(name, payload.get("tool_input"))
@@ -840,7 +850,10 @@ def transcript_error_streak(path: Any, since: float | None = None) -> int:
             data = fh.read().decode("utf-8", "replace")
     except OSError:
         return 0
+    from .waste import is_wait_call
+
     streak = 0
+    waits: set[str] = set()
     for line in data.splitlines():
         try:
             obj = json.loads(line)
@@ -855,7 +868,12 @@ def transcript_error_streak(path: Any, since: float | None = None) -> int:
         if not isinstance(content, list):
             continue
         for block in content:
+            if (isinstance(block, dict) and block.get("type") == "tool_use"
+                    and is_wait_call(str(block.get("name") or ""), block.get("input"))):
+                waits.add(str(block.get("id")))
             if isinstance(block, dict) and block.get("type") == "tool_result":
+                if str(block.get("tool_use_id")) in waits:
+                    continue  # a wait (sleep ...) that has not seen its file yet
                 if block.get("is_error") is True and any(m in _result_text(block) for m in OWN_DENIALS):
                     continue  # a pause by AgentCap itself, not a failing call
                 streak = streak + 1 if block.get("is_error") is True else 0
@@ -895,6 +913,9 @@ def post_main(job_dir: Path, stdin: TextIO) -> int:
         return 0
     event = payload.get("hook_event_name")
     path = job_dir / "post_errors.json"
+    from .waste import is_wait_call
+    if is_wait_call(str(payload.get("tool_name") or ""), payload.get("tool_input")):
+        return 0
     if event == "PostToolUseFailure":
         errors = int((_read_json(path) or {}).get("errors") or 0) + 1
     elif event == "PostToolUse":
@@ -1223,6 +1244,7 @@ class QuotaRunner:
         live_reader: Callable[[str], Mapping[str, Reading] | None] | None = None,
         live_poll_s: float | None = LIVE_POLL_S,
         claude_live_poll_s: float = CLAUDE_LIVE_POLL_S,
+        settle_s: float = CLAUDE_SETTLE_S,
         headless_live_poll_s: float = HEADLESS_LIVE_POLL_S,
         live_settle_s: float = LIVE_SETTLE_S,
     ) -> None:
@@ -1261,6 +1283,8 @@ class QuotaRunner:
         self.live_reader = live_reader
         self.live_poll_s = live_poll_s
         self.claude_live_poll_s = claude_live_poll_s
+        self.settle_s = settle_s
+        self._receipt_path: Path | None = None
         self.headless_live_poll_s = headless_live_poll_s
         self._live_tracker: ShareTracker | None = None  # claude: /usage at start vs now
         self._live_written: tuple[float, float] | None = None
@@ -1341,6 +1365,38 @@ class QuotaRunner:
             stop_tree(self.child, self._pgid, int_timeout=5.0, term_timeout=3.0, kill_timeout=2.0)
 
     def run(self) -> int:
+        code = self._run()
+        try:
+            self._start_settle()
+        except Exception:
+            pass
+        return code
+
+    @staticmethod
+    def _spawn_detached(argv: list[str], **kw: Any) -> Any:
+        return subprocess.Popen(argv, **kw)
+
+    def _start_settle(self) -> None:
+        """Claude: hand the receipt to a detached /usage settle process (see CLAUDE_SETTLE_S)."""
+
+        from .live_quota import _probe_env, live_enabled
+
+        if not (self.agent == "claude" and self._live_tracker is not None and self.final_live
+                and self._receipt_path is not None and self.settle_s > 0 and live_enabled()):
+            return
+        _atomic_write(self.job_dir / "settle.json", {
+            "receipt": str(self._receipt_path), "window": self.window,
+            "tracker": self._live_tracker.to_dict(), "until": time.time() + self.settle_s,
+        })
+        self._spawn_detached(
+            [sys.executable, "-P", "-m", "agentcap.quota", "settle", "--job", str(self.job_dir)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True, env=_probe_env(),
+        )
+        self._print(f"agentcap: Claude's /usage shows usage up to ~2 min late; the receipt is re-checked "
+                    f"in the background and updated with the settled share ({self._receipt_path}).")
+
+    def _run(self) -> int:
         lock = JobLock(state_root() / "quota.lock")
         try:
             lock.acquire()
@@ -1902,7 +1958,8 @@ class QuotaRunner:
             self._event("quota_receipt", s.share, reason=s.reason, exit_code=s.exit_code)
             if self.receipt_dir is not None:
                 try:
-                    _atomic_write(self.receipt_dir / f"{self.job_id}.json", {
+                    self._receipt_path = self.receipt_dir / f"{self.job_id}.json"
+                    _atomic_write(self._receipt_path, {
                         "type": "agentcap_quota_receipt", "agent": s.agent, "window": s.window,
                         "quota_pct": s.quota, "share_pct": s.share, "exit_code": s.exit_code,
                         "reason": s.reason, "baseline_exact": s.baseline_exact,
@@ -2007,6 +2064,43 @@ def _reset_text(resets_at: Any, now: float) -> str:
     return f", resets in {left // 3600}h{(left % 3600) // 60:02d}m"
 
 
+def settle_main(job_dir: Path, *, reader: Callable[[str], Mapping[str, Reading] | None] | None = None,
+                sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.time,
+                step_s: float = SETTLE_STEP_S) -> int:
+    """Keep reading /usage after a Claude job and rewrite its receipt with the settled share."""
+
+    if reader is None:
+        from .live_quota import live_readings as reader
+    cfg = _read_json(job_dir / "settle.json") or {}
+    receipt_path = Path(str(cfg.get("receipt") or ""))
+    receipt = _read_json(receipt_path)
+    if not receipt or not cfg.get("window"):
+        return 0
+    tracker = ShareTracker.from_dict(cfg.get("tracker"))
+    at_exit = float(receipt.get("share_pct") or 0.0)
+    start, until = clock(), float(cfg.get("until") or 0.0)
+    unchanged = 0
+    while clock() < until:
+        sleep(max(0.0, min(step_s, until - clock())))
+        try:
+            got = (reader("claude") or {}).get(cfg["window"])
+        except Exception:
+            got = None
+        if got is None:
+            continue
+        before = tracker.share
+        tracker.update(got)
+        unchanged = unchanged + 1 if tracker.share <= before else 0
+        if clock() - start >= 60 and unchanged >= 2:
+            break
+    settled = max(at_exit, tracker.share)
+    receipt.update({"share_pct": settled, "share_pct_at_exit": at_exit, "settled": True,
+                    "settled_at": clock()})
+    _atomic_write(receipt_path, receipt)
+    _atomic_write(job_dir / "settled.json", {"ts": clock(), "share_pct": settled, "at_exit": at_exit})
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) >= 3 and args[1] == "--job":
@@ -2024,6 +2118,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args[0] == "post":
             try:
                 return post_main(job, sys.stdin)
+            except Exception:
+                return 0
+        if args[0] == "settle":
+            try:
+                return settle_main(job)
             except Exception:
                 return 0
     print("usage: python -m agentcap.quota statusline|hook --job DIR", file=sys.stderr)

@@ -275,7 +275,7 @@ def _runner(argv, tmp_path, live, **kw):  # noqa: D401
 
     r = q.QuotaRunner(argv, quota=kw.pop("quota", 50.0), stderr=err, poll_s=0.05, claude_grace_s=1.0,
                       receipt_dir=tmp_path / "receipts", cwd=tmp_path, home=tmp_path / "home",
-                      live_reader=reader, live_settle_s=0.05, **kw)
+                      live_reader=reader, live_settle_s=0.05, **{"settle_s": 0, **kw})
     return r, err, asked
 
 
@@ -529,3 +529,135 @@ def test_a_background_agentcap_does_not_freeze_on_the_terminal(tmp_path):
     script.write_text(BACKGROUND_TTY)
     r = subprocess.run([sys.executable, str(script), src], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, (r.returncode, r.stderr)
+
+
+
+# ------------------------------------------------- gate test 13 Nov: waits and settle
+from agentcap.waste import command_text, is_wait_call  # noqa: E402
+
+CODEX_EXEC_WAIT = 'text(await tools.exec_command({cmd:"sleep 4; ls done.flag",max_output_tokens:100}));\n'
+
+
+def test_wait_calls_are_recognised():
+    assert is_wait_call("Bash", {"command": "sleep 4; ls done.flag"})
+    assert is_wait_call("Bash", {"command": "sleep 30 && curl -s localhost:8080/health"})
+    assert is_wait_call("exec", CODEX_EXEC_WAIT)
+    assert is_wait_call("shell", {"command": ["bash", "-lc", "sleep 2.5\nls"]})
+    assert is_wait_call("TaskOutput", {})
+    for cmd in ("pwd", "sleepy 3", "echo hi; sleep 3", "npm test"):
+        assert not is_wait_call("Bash", {"command": cmd}), cmd
+    assert command_text(CODEX_EXEC_WAIT) == "sleep 4; ls done.flag"
+
+
+def test_codex_waits_trip_neither_breaker():
+    w = q.LoopWatch()
+    for _ in range(10):  # the live polling job: same call, failing `ls`, until the file appears
+        w.feed_codex({"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                                                           "input": CODEX_EXEC_WAIT}})
+        w.feed_codex({"type": "response_item", "payload": {"type": "custom_tool_call_output",
+                                                           "output": "Exit code: 2\nls: cannot access"}})
+    assert w.tripped is None
+    for _ in range(4):
+        w.call("exec", 'text(await tools.exec_command({cmd:"pwd"}));')
+    assert w.tripped and "same tool call 4 times" in w.tripped
+
+
+def test_claude_hook_does_not_count_waits(tmp_path):
+    (tmp_path / "job.json").write_text(json.dumps({"enforce": True, "quota": 5, "window": "5h"}))
+    wait = {"tool_name": "Bash", "tool_input": {"command": "sleep 4; ls done.flag"}}
+    for _ in range(8):
+        assert q._loop_hook(tmp_path, wait) is None
+    pwd = {"tool_name": "Bash", "tool_input": {"command": "pwd"}}
+    assert [q._loop_hook(tmp_path, pwd) for _ in range(4)][-1] is not None
+
+
+def test_transcript_error_streak_skips_wait_results(tmp_path):
+    path = tmp_path / "t.jsonl"
+    with open(path, "w") as fh:
+        for i in range(10):
+            fh.write(json.dumps({"message": {"content": [{"type": "tool_use", "id": f"w{i}", "name": "Bash",
+                                                           "input": {"command": "sleep 4; ls done.flag"}}]}}) + "\n")
+            fh.write(json.dumps({"message": {"content": [{"type": "tool_result", "tool_use_id": f"w{i}",
+                                                           "is_error": True, "content": "ls: cannot access"}]}}) + "\n")
+    assert q.transcript_error_streak(str(path)) == 0
+
+
+def test_post_hook_ignores_a_failing_wait(tmp_path):
+    import io
+    payload = {"hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+               "tool_input": {"command": "sleep 4; ls done.flag"}}
+    for _ in range(9):
+        q.post_main(tmp_path, io.StringIO(json.dumps(payload)))
+    assert not (tmp_path / "post_errors.json").exists()
+
+
+def _settle_setup(tmp_path, at_exit=0.0):
+    receipt = tmp_path / "r.json"
+    receipt.write_text(json.dumps({"type": "agentcap_quota_receipt", "share_pct": at_exit, "reason": "exited"}))
+    job = tmp_path / "job"
+    job.mkdir()
+    t = q.ShareTracker()
+    t.seed(q.Reading(40.0, 5000.0))
+    (job / "settle.json").write_text(json.dumps({"receipt": str(receipt), "window": "5h",
+                                                 "tracker": t.to_dict(), "until": 1000.0 + 150}))
+    return receipt, job
+
+
+def test_settle_rewrites_the_receipt_with_the_late_usage(tmp_path):
+    # live gate test: short Claude jobs read 0.0% at exit; /usage caught up 30-90 s later
+    receipt, job = _settle_setup(tmp_path)
+    values = iter([40.0, 41.0, 42.0, 42.0, 42.0, 42.0, 42.0, 42.0])
+    clock = [1000.0]
+
+    def sleep(s):
+        clock[0] += s
+
+    q.settle_main(job, reader=lambda a: {"5h": q.Reading(next(values), 5000.0)}, sleep=sleep,
+                  clock=lambda: clock[0], step_s=20)
+    r = json.loads(receipt.read_text())
+    assert r["share_pct"] == 2.0 and r["share_pct_at_exit"] == 0.0 and r["settled"] is True
+    assert clock[0] - 1000.0 <= 150
+
+
+def test_settle_never_lowers_the_receipt(tmp_path):
+    receipt, job = _settle_setup(tmp_path, at_exit=3.0)
+    clock = [1000.0]
+    q.settle_main(job, reader=lambda a: {"5h": q.Reading(41.0, 5000.0)},
+                  sleep=lambda s: clock.__setitem__(0, clock[0] + s), clock=lambda: clock[0], step_s=20)
+    assert json.loads(receipt.read_text())["share_pct"] == 3.0
+
+
+def test_claude_job_starts_the_settle_process(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_START", "39")
+    monkeypatch.setenv("FAKE_N", "1")
+    started = []
+    r, err, asked = _runner(["claude"], tmp_path, {}, settle_s=150)
+    r._spawn_detached = lambda argv, **kw: started.append(argv)
+    r.live_reader = _seq(38.0, 40.0)
+    assert r.run() == 0
+    assert started and started[0][-3:] == ["settle", "--job", str(r.job_dir)] and "-P" in started[0]
+    cfg = json.loads((r.job_dir / "settle.json").read_text())
+    assert cfg["window"] == "week" and Path(cfg["receipt"]).exists()
+    assert "updated with the settled share" in err.getvalue()
+
+
+def test_codex_job_has_no_settle_process(fakebin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_N", "1")
+    started = []
+    r, err, asked = _runner(["codex"], tmp_path, {"codex": {"week": q.Reading(39.0, time.time() + 86400)}}, settle_s=150)
+    r._spawn_detached = lambda argv, **kw: started.append(argv)
+    r.run()
+    assert started == [] and not (r.job_dir / "settle.json").exists()
+
+
+def test_settle_entry_point_runs_as_a_detached_process(tmp_path):
+    import subprocess
+    receipt, job = _settle_setup(tmp_path)
+    cfg = json.loads((job / "settle.json").read_text())
+    cfg["until"] = time.time() + 0.5
+    (job / "settle.json").write_text(json.dumps(cfg))
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env = {**os.environ, "PYTHONPATH": src, "AGENTCAP_LIVE_QUOTA": "0"}
+    code = subprocess.run([sys.executable, "-P", "-m", "agentcap.quota", "settle", "--job", str(job)],
+                          env=env, timeout=60).returncode
+    assert code == 0 and json.loads(receipt.read_text())["settled"] is True

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+From the technical gate tests on real ChatGPT Plus and Claude Pro accounts (13 Nov 2026): the loop breaker stopped 4 of 4 repeat runs at the 4th identical call and the error breaker 2 of 2 failing runs (exit 4, Codex and Claude); 6 normal coding jobs (fix a test, add a feature, explain and fix) were not stopped.
+- **Waiting is not looping.** A shell call that starts with `sleep N` (`sleep 4; ls done.flag`, `sleep 30 && curl ...`) no longer counts toward the loop breaker or the error streak, in the CLI (Claude hooks, Claude transcript, Codex rollout including its code-mode `exec`) and the plugin. Live, a job waiting for a file was stopped as a loop at its 4th check.
+- **Claude receipts settle.** `/usage` shows a job's usage 30-90 s after its requests, so short Claude jobs read 0.0% at exit (eight gate jobs did while the account rose 7%). After a Claude job a detached `python -P -m agentcap.quota settle` keeps reading `/usage` for up to 2.5 minutes and rewrites the receipt with the settled share (`settled`, `share_pct_at_exit`). README notes that a Claude quota stop can come that much later.
+- Test fixture: the fake GitHub token in the key-redaction test is built at runtime (gitleaks flagged the 0.4.0 sdist; it was never a real token).
+- README and landing: macOS is marked as not yet tested on a real Mac.
+
 ## 0.4.0
 Tested live on a real ChatGPT Plus account (Codex 0.166/0.167) and a real Claude Pro account (Claude Code 2.1.322/2.1.323), 11-13 Nov 2026; every defect those runs found is fixed below and covered by a test.
 - **Live account quota from the agents' own clients.** `agentcap quota` asks `codex app-server` (`account/rateLimits/read`) and `claude -p /usage` for the current 5-hour and weekly %, falling back to the local readings with their age (`--local` skips the live read; `AGENTCAP_LIVE_QUOTA=0` turns it off everywhere). Neither runs a model or spends quota; AgentCap never touches a login token. A stale reading is no longer shown as the current value; an ended window says "unknown now".

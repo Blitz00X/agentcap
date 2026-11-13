@@ -562,3 +562,17 @@ def test_self_guard_denies_the_cli_approve(env):
         out = hook("pre", dict(PRE, tool_input={"command": command}))
         assert out and out["hookSpecificOutput"]["permissionDecision"] == "deny", command
     assert hook("pre", dict(PRE, tool_input={"command": "agentcap quota"})) is None
+
+
+def test_plugin_waits_trip_neither_breaker(env):
+    # live gate test 13 Nov: `sleep 4; ls done.flag` until a file appears is waiting, not a loop
+    pro(env)
+    wait = dict(PRE, tool_input={"command": "sleep 4; ls done.flag"})
+    fail = {"session_id": SID, "hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+            "tool_input": {"command": "sleep 4; ls done.flag"}, "error": "ls: cannot access 'done.flag'"}
+    for _ in range(10):
+        assert hook("pre", wait) is None
+        assert hook("postfail", fail) is None
+    for _ in range(3):
+        assert hook("pre", dict(PRE, tool_input={"command": "pwd"})) is None
+    assert hook("pre", dict(PRE, tool_input={"command": "pwd"}))["hookSpecificOutput"]["permissionDecision"] == "deny"

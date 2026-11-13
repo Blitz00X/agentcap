@@ -266,6 +266,10 @@ How it works:
   `Stop` prints a receipt (`session 4.2% / 5% (weekly)`). **Free:** live meter + one notice
   at the limit (`Pro would stop the agent here`). Pro is read from the licence the `agentcap`
   CLI stores after `agentcap license activate` (paste the key at the hidden prompt).
+- Waiting is not looping: a shell call that starts with `sleep N` (`sleep 4; ls done.flag`,
+  `sleep 30 && curl .../health`) counts toward neither the repeat streak nor the error streak,
+  in the CLI (Claude and Codex) and the plugin (live gate test: a 4th wait-for-a-file check was
+  stopped as a loop). An endless `sleep 1; retry` loop is then only stopped by the quota.
 - Loop breaker (works with or without `/agentcap:quota`): `PreToolUse` hashes each tool call
   (name + input, per session and per subagent; polling tools like `TaskOutput`/`BashOutput`
   are ignored). The 4th identical call in a row is denied with `continue: false` on **Pro**;
@@ -314,7 +318,11 @@ agentcap quota                                 # read-only: current usage, asked
   every minute and once after exit. The statusline % and `/usage` differ by one point at both
   ends of a job (live: 26/27 at start, 31/32 at the end), so the statusline is only compared
   with itself, the hook also denies when `/usage` shows the limit first, and the receipt is the
-  `/usage` difference (`measured_by: usage`).
+  `/usage` difference (`measured_by: usage`). `/usage` itself shows a job's usage 30-90 s after
+  its requests (live gate test: short jobs read 0.0% at exit and the % appeared a minute later),
+  so a quota stop can come that much later, and after a Claude job a detached process keeps
+  reading `/usage` for up to 2.5 minutes and rewrites the receipt with the settled share
+  (`settled: true`, `share_pct_at_exit` keeps the first value).
   The hook can stop Claude only before a tool call, so one large response overshoots: live, a
   3% limit ended at 5% after one response with 7 parallel file reads used 3%. Usage on the same
   account from anywhere else (claude.ai, the desktop or phone app, another terminal) counts

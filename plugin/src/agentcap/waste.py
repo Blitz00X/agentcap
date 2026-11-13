@@ -35,6 +35,42 @@ PRO_ERROR_STOP = 8      # Pro loop breaker: 8 tool errors in a row
 TTL_5M, TTL_1H = 300, 3600
 # polling / waiting tools repeat by design; never call them a loop
 POLL_TOOLS = frozenset({"wait", "sleep", "write_stdin", "list_agents", "TaskOutput", "BashOutput"})
+
+# A shell call that starts by sleeping is waiting for something (CI, a deploy, a file),
+# not a loop: live gate test 13 Nov 2026, `sleep 4; ls done.flag` until the file appeared
+# was stopped by the loop breaker at the 4th check.  Such calls count toward neither the
+# repeat streak nor the error streak (the `ls` fails until the file is there).
+_WAIT_RE = re.compile(r"^\s*sleep\s+\d+(?:\.\d+)?[smh]?\s*(?:;|&&|\n|$)")
+_CMD_IN_TEXT = re.compile(r"""\bcmd\s*:\s*(["'])(.*?)(?<!\\)\1""", re.S)
+
+
+def command_text(payload: Any) -> str | None:
+    """The shell command of a tool call: Claude Bash ``{"command": ...}``, Codex
+    ``{"cmd": ...}`` / ``["bash", "-lc", ...]`` or Codex's code-mode ``exec`` text."""
+
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            m = _CMD_IN_TEXT.search(payload)
+            return m.group(2) if m else None
+    if isinstance(payload, dict):
+        for key in ("command", "cmd"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                return value
+            if isinstance(value, list) and value and all(isinstance(x, str) for x in value):
+                if len(value) >= 3 and value[1] in ("-lc", "-c"):
+                    return value[2]
+                return " ".join(value)
+    return None
+
+
+def is_wait_call(name: str, payload: Any) -> bool:
+    if name in POLL_TOOLS:
+        return True
+    cmd = command_text(payload)
+    return bool(cmd and _WAIT_RE.match(cmd))
 CODEX_MISS_MIN_TOKENS = 4096  # Codex has no cache writes; only flag big uncached prompts
 
 

@@ -45,6 +45,7 @@ from agentcap.quota import (  # noqa: E402
     state_root,
 )
 from agentcap.live_quota import live_enabled, live_readings  # noqa: E402
+from agentcap.waste import is_wait_call  # noqa: E402
 
 WARN_FRACTION = 0.8
 MARK = "agentcap-cc"  # tag inside our statusLine command (setup/unsetup detection)
@@ -323,7 +324,7 @@ def loop_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
 
     name = payload.get("tool_name")
     got = _loop_state(payload)
-    if not isinstance(name, str) or got is None or name in POLL_TOOLS:
+    if not isinstance(name, str) or got is None or is_wait_call(name, payload.get("tool_input")):
         return False
     sid, allst, st = got
     d = _digest(name, payload.get("tool_input"))
@@ -355,6 +356,8 @@ def hook_post(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
     if got is None:
         return 0
     sid, allst, st = got
+    if is_wait_call(str(payload.get("tool_name") or ""), payload.get("tool_input")):
+        return 0  # a wait (sleep ...) that has not seen its file yet
     if failed and "agentcap" in json.dumps(payload.get("error") or payload.get("tool_response") or "").lower():
         return 0  # a pause by AgentCap itself, not a failing call (live C3, 12 Nov 2026)
     st["errors"] = int(st.get("errors", 0)) + 1 if failed else 0
