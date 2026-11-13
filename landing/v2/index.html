@@ -193,6 +193,7 @@
           </ol>
 
           <p class="note"><strong>Honest limit:</strong> this is a local spend cap, not a mathematical guarantee. Worst-case cost is reserved before each request, so overshoot is rare but possible when a provider counts more tokens than estimated, for example in server-side system prompts, tool schemas or images.</p>
+          <p class="note"><strong>Quota mode:</strong> the quota % comes from the agent itself and arrives once per model response, so one large response can take a job past its limit by a few points. Usage on the same account from anywhere else (claude.ai, the desktop or phone app, another terminal) counts toward the job too.</p>
         </div>
       </div>
     </section>
@@ -519,7 +520,7 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
     <div class="wrap footer-bottom">
       <span>© 2026 Launchbench</span>
       <span>Set in Instrument Serif and IBM Plex.</span>
-      <span>Checked against 0.3 · 6 Nov 2026.</span>
+      <span>Checked against 0.3.1 · 13 Nov 2026.</span>
     </div>
   </footer>
 
