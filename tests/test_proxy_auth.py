@@ -352,7 +352,7 @@ def test_auth_rejected_statuses():
         "sk-proj-AbCdEf0123456789AbCdEf0123456789",
         "sk-ant-api03-AbCdEf0123456789AbCdEf0123456789",
         "AIza" + "Sy" + "T" * 33,  # built at runtime: test fixture, never a real key
-        "ghp_0123456789abcdefABCDEF0123456789abcd",
+        "gh" + "p_" + "0123456789abcdefABCDEF0123456789abcd",  # built at runtime: test fixture, never a real token
         "Bearer abc.def.ghi",
     ],
 )

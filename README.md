@@ -465,7 +465,7 @@ period AgentCap sends SIGINT and the session ends; Codex's sandbox can't run com
 `kernel.apparmor_restrict_unprivileged_userns=1` blocks bubblewrap's user namespace
 (host setting, not AgentCap; Codex falls back or needs an AppArmor profile for bwrap).
 
-**Platforms:** Linux and macOS. Windows: not yet (use WSL2).
+**Platforms:** Linux (tested live). macOS: the code path exists but has not been tested on a real Mac yet; the Linux-only parts (parent-death signal, subreaper) do not apply there. Windows: not yet (use WSL2).
 
 ## How it works
 
