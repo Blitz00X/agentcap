@@ -37,6 +37,7 @@ from agentcap.quota import (  # noqa: E402
     ShareTracker,
     _atomic_write,
     _normalized_shell_text,
+    is_self_approve_command,
     _read_json,
     baseline_from_last,
     claude_readings,
@@ -479,6 +480,10 @@ def self_guard(payload: Mapping[str, Any]) -> bool:
     cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
     command = tool_input.get("command")
     if isinstance(command, str) and command_touches_plugin(command, cwd):
+        return True
+    # `agentcap approve` from the model (live C6, 13 Nov 2026: only the CLI's env-marker
+    # check stopped it, and `env -u CLAUDECODE agentcap approve` would pass that)
+    if isinstance(command, str) and is_self_approve_command(command):
         return True
     if tool in READ_TOOLS:
         return False

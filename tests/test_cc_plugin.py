@@ -553,3 +553,12 @@ def test_own_denials_do_not_feed_the_plugin_error_breaker(env):
             "error": "PreToolUse:Read hook error: agentcap: this session used 2.0% of the weekly quota"}
     for _ in range(10):
         assert hook("postfail", fail) is None
+
+
+def test_self_guard_denies_the_cli_approve(env):
+    # live C6: `agentcap approve` from the model ran; only the CLI's env check refused it
+    for command in ("agentcap approve", "env -u CLAUDECODE agentcap approve",
+                    "AGENTCAP_GUARDED= agentcap  approve", "python3 -m agentcap.cli approve"):
+        out = hook("pre", dict(PRE, tool_input={"command": command}))
+        assert out and out["hookSpecificOutput"]["permissionDecision"] == "deny", command
+    assert hook("pre", dict(PRE, tool_input={"command": "agentcap quota"})) is None
