@@ -79,6 +79,43 @@ STATE_TEXT = {
     STATE_STOPPED: "stopped",
 }
 
+# Free runs observe the same readings but must never claim a protection they
+# cannot enforce.  This is the one text the statusline, the plugin status and
+# the user-flow contract use for that state.
+STATE_FREE_TEXT = "watch only (Pro stops at the limit)"
+STARTING_GRACE_S = 90.0
+
+
+def protection_state(
+    *,
+    has_reading: bool,
+    reading_age_s: float | None = None,
+    max_age_s: float = 60.0,
+    started_age_s: float | None = None,
+    stopped: bool = False,
+    enforce: bool = True,
+) -> tuple[str, str]:
+    """Map the current reading to one of the four user-visible states.
+
+    ``starting`` is only the first 90 seconds before any reading.  A missing
+    reading after that, or a reading older than ``max_age_s``, is ``stale``;
+    neither is ever shown as protected.  Free observe-only runs are protected
+    in the sense that a reading exists, but the text says they cannot stop.
+    """
+
+    if stopped:
+        return STATE_STOPPED, STATE_TEXT[STATE_STOPPED]
+    if not has_reading:
+        if started_age_s is not None and started_age_s <= STARTING_GRACE_S:
+            return STATE_STARTING, STATE_TEXT[STATE_STARTING]
+        return STATE_STALE, STATE_TEXT[STATE_STALE]
+    age = reading_age_s if reading_age_s is not None else 0.0
+    if age > max_age_s:
+        return STATE_STALE, STATE_TEXT[STATE_STALE]
+    if not enforce:
+        return STATE_PROTECTED, STATE_FREE_TEXT
+    return STATE_PROTECTED, STATE_TEXT[STATE_PROTECTED]
+
 
 def uncertainty_text() -> str:
     """The honesty marker printed next to every measured percentage."""
