@@ -624,9 +624,23 @@ def statusline_main(job_dir: Path, stdin: TextIO, stdout: TextIO, *, now: float 
         if window in readings:
             reading = readings[window]
             if tracker.baseline is None:
-                last = _read_json(state_root() / "claude_last.json")
-                seed = None if (last or {}).get("source") == "usage" else baseline_from_last(last, window, now=now)
-                if seed is not None and seed.used <= reading.used and _same_reset(seed.resets_at, reading.resets_at):
+                last = _read_json(state_root() / "claude_last.json") or {}
+                if last.get("source") == "usage":
+                    # Only this job's own start-up /usage read counts.  The statusline's
+                    # first value can be stale and lower (live C2, 13 Nov 2026: /usage 3%,
+                    # first statusline 2%, then 3% -> a false "1% used" stop), so the
+                    # /usage value is the floor: lower statusline values are ignored and
+                    # the statusline can never count more than was really used.
+                    started = _num(job.get("started_at")) or 0.0
+                    fresh = (_num(last.get("ts")) or 0.0) >= started - 120
+                    seed = baseline_from_last(last, window, now=now) if fresh else None
+                    if seed is not None and _same_reset(seed.resets_at, reading.resets_at):
+                        seed = Reading(seed.used, reading.resets_at)
+                else:
+                    seed = baseline_from_last(last, window, now=now)
+                if seed is not None and _same_reset(seed.resets_at, reading.resets_at) and (
+                    seed.used <= reading.used or last.get("source") == "usage"
+                ):
                     tracker.seed(seed)
                     tracker.update(reading)
                 else:

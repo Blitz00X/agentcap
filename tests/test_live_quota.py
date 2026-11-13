@@ -197,21 +197,37 @@ def test_cli_quota_local_flag_skips_live(monkeypatch, tmp_path, capsys):
 
 
 # ------------------------------------------------------------ job baselines
-def test_statusline_never_seeds_from_a_usage_reading(tmp_path, monkeypatch):
-    # /usage and the statusline differ by 1 point (live 12 Nov 2026), so the
-    # statusline share is only ever statusline vs statusline
-    import io
+def _sl_job(tmp_path, monkeypatch, usage_ts, used=3.0):
     monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(tmp_path / "state"))
     (tmp_path / "state").mkdir()
     job = tmp_path / "job"
     job.mkdir()
-    (job / "job.json").write_text(json.dumps({"quota": 5, "window": "week", "started_at": NOW, "enforce": True}))
+    (job / "job.json").write_text(json.dumps({"quota": 1, "window": "week", "started_at": NOW, "enforce": True}))
     (tmp_path / "state" / "claude_last.json").write_text(json.dumps(
-        {"ts": NOW - 30, "readings": {"week": {"used": 27.0, "resets_at": NOW + 86400}}, "source": "usage"}))
-    payload = {"session_id": "s", "rate_limits": {"seven_day": {"used_percentage": 26.0, "resets_at": NOW + 86400}}}
-    q.statusline_main(job, io.StringIO(json.dumps(payload)), io.StringIO(), now=NOW)
-    status = json.loads((job / "status.json").read_text())
-    assert status["share"] == 0.0 and status["tracker"]["baseline"] == 26.0
+        {"ts": usage_ts, "readings": {"week": {"used": used, "resets_at": NOW + 86400 - 60}}, "source": "usage"}))
+    return job
+
+
+def _sl(job, used):
+    import io
+    payload = {"session_id": "s", "rate_limits": {"seven_day": {"used_percentage": used, "resets_at": NOW + 86400}}}
+    q.statusline_main(job, io.StringIO(json.dumps(payload)), io.StringIO(), now=NOW + 5)
+    return json.loads((job / "status.json").read_text())
+
+
+def test_statusline_uses_the_jobs_usage_read_as_its_floor(tmp_path, monkeypatch):
+    # live C2: /usage 3%, first statusline 2%, then 3% -> "1% used" and a false stop
+    job = _sl_job(tmp_path, monkeypatch, usage_ts=NOW + 1)
+    assert _sl(job, 2.0)["share"] == 0.0
+    st = _sl(job, 3.0)
+    assert st["share"] == 0.0 and st["limit_hit"] is False and st["tracker"]["baseline_exact"] is True
+    assert _sl(job, 4.0)["limit_hit"] is True
+
+
+def test_statusline_ignores_a_usage_read_from_before_the_job(tmp_path, monkeypatch):
+    job = _sl_job(tmp_path, monkeypatch, usage_ts=NOW - 600, used=1.0)
+    st = _sl(job, 2.0)
+    assert st["tracker"]["baseline"] == 2.0 and st["tracker"]["baseline_exact"] is False
 
 
 def test_hook_denies_on_the_usage_share(tmp_path, monkeypatch):
