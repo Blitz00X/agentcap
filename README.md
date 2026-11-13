@@ -283,10 +283,10 @@ How it works:
 
 Honest limits: the % is account-level (parallel sessions and other devices count), the stop can
 be one request late (a `/usage` check runs at most once a minute), and the share updates when the
-statusLine refreshes. Verified with real Claude Code
-2.1.197 (plugin install from the marketplace, hooks loaded, `/agentcap:quota` executed,
-PreToolUse deny blocked the tool) against a local fake API and synthetic `rate_limits`;
-**not yet checked against a real Max account.**
+statusLine refreshes. Verified live on a real Claude Pro account with Claude Code 2.1.323
+(13 Nov 2026): `/agentcap:setup`, `/agentcap:quota 2% 5h` with its baseline from `/usage`,
+the stop at the limit, `/agentcap:approve`, `/agentcap:unsetup`, and the self-guard denying
+`env -u CLAUDECODE agentcap approve` from the model.
 
 ## Works with Claude Max / ChatGPT subscriptions (quota mode)
 
@@ -444,9 +444,9 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 
 | Harness + auth | Loop breaker (4x same call, exit 4) | Error breaker (8 failures, exit 4) | Quota % stop (exit 3) | $ / token cap |
 | --- | --- | --- | --- | --- |
-| Claude Code, Pro/Max sub, interactive | ✅ (deny keeps the session; resumes after approve) | ✅ | ✅ whole-% steps (deny keeps the session); `agentcap approve` ✅ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
-| Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ✅ via `/usage` every 30 s (coarser) | ❌ by design (refused) |
-| Codex, ChatGPT sub | ✅ | ✅ | ✅ `exec` and interactive TUI (whole %; warns under 1%; one-response timeout, default 5m; terminal restored after a TUI stop; approve mid-run). Live, Codex 0.167.1, 11 Nov 2026 | ❌ by design (no proxy on a subscription) |
+| Claude Code, Pro/Max sub, interactive | ✅ (deny keeps the session; resumes after approve) | ✅ | ✅ statusline + `/usage` every minute (deny keeps the session); `agentcap approve` ✅. Live, Claude Code 2.1.322/323, Pro, 12-13 Nov 2026 | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
+| Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ✅ via `/usage` every 30 s (coarser; live: a 2% cap ended at 4%) | ❌ by design (refused) |
+| Codex, ChatGPT sub | ✅ | ✅ | ✅ `exec` and interactive TUI (whole %; warns under 1%; one-response timeout, default 5m; terminal restored after a TUI stop; approve mid-run; live % from `codex app-server` at start, every 30 s and after exit). Live, Codex 0.167.1, Plus, 11-12 Nov 2026 | ❌ by design (no proxy on a subscription) |
 | opencode Go | ✅ | ✅ | ❌ not yet: opencode 1.x's session log reports Go cost as 0 and leaves out subagents (live test, 11 Nov 2026), so a Go % cap cannot be measured; do not rely on `--quota` with opencode | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
 | agy, Google sub (plain `agentcap run -- agy` needs no key: breakers only) | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
 | opencode + OpenRouter (free model) | ✅ | ✅ | n/a | ✅ $ cap |
@@ -569,7 +569,7 @@ Request bodies are billed at price-book rates; embeddings are input-only.
 - The ledger lives at `~/.local/state/agentcap/ledger.sqlite3`
   (override with `$AGENTCAP_DB`).
 
-### Stopping, fail-closed and self-approval (0.3, Linux-verified)
+### Stopping, fail-closed and self-approval (0.3+, Linux-verified)
 
 - **Whole process tree.** A quota/harness stop (`--quota`, `--tokens`, `--log-cap`) sends SIGINT
   to the agent's process group, then SIGTERM, then SIGKILL (5 s / 3 s / 2 s); a proxy (`--cap`)
