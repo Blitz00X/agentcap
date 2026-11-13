@@ -469,3 +469,87 @@ def test_ordinary_file_edits_pass_and_plugin_dev_checkout_is_editable(env):
     assert hook("pre", dict(PRE, tool_name="Read", tool_input={"file_path": str(cc.session_path(SID))})) is None
     dev = dict(PRE, cwd=str(ROOT), tool_name="Edit", tool_input={"file_path": str(ROOT / "scripts" / "agentcap_cc.py")})
     assert hook("pre", dev) is None  # working on the plugin itself, from its checkout
+
+
+# ------------------------------------------------- /usage (live CLI tests C1-C3)
+from agentcap.quota import Reading  # noqa: E402
+
+RESETS = 2_000_000_000
+
+
+def _live(monkeypatch, value, calls=None):
+    monkeypatch.setattr(cc, "live_enabled", lambda: True)
+
+    def reader(agent):
+        if calls is not None:
+            calls.append(agent)
+        return {"week": Reading(value, RESETS - 30), "5h": Reading(10.0, RESETS - 3600)}
+    monkeypatch.setattr(cc, "live_readings", reader)
+
+
+def test_quota_baseline_comes_from_usage(env, monkeypatch):
+    pro(env)
+    _live(monkeypatch, 40.0)
+    out = cmd("quota", "2%")
+    assert "baseline 40% (exact, from /usage)" in out
+    statusline(sl_payload(39.0))          # stale, lower statusline value: ignored
+    assert json.loads(cc.session_path(SID).read_text())["share"] == 0.0
+    assert hook("pre", dict(PRE, tool_input={"command": "a"})) is None
+
+
+def test_usage_share_denies_when_the_statusline_lags(env, monkeypatch):
+    pro(env)
+    _live(monkeypatch, 40.0)
+    cmd("quota", "2%")
+    statusline(sl_payload(40.0))
+    # the background probe saw 42%, the statusline still says 40%
+    cc._atomic_write(cc.usage_path(SID), {"ts": 0, "readings": {"week": {"used": 42.0, "resets_at": RESETS}}})
+    monkeypatch.setattr(cc, "maybe_probe_usage", lambda *a, **k: False)
+    deny = hook("pre", dict(PRE, tool_input={"command": "b"}))
+    assert deny["hookSpecificOutput"]["permissionDecision"] == "deny" and "2.0%" in deny["stopReason"]
+    assert "session 2.0% / 2%" in statusline(sl_payload(40.0))
+    stop = {"session_id": SID, "hook_event_name": "Stop", "stop_hook_active": False, "cwd": "/w"}
+    hook("stop", stop)
+    rec = json.loads((cc.cc_dir() / "receipts.jsonl").read_text().splitlines()[-1])
+    assert rec["share"] == 2.0 and rec["measured_by"] == "usage"
+
+
+def test_without_usage_another_sessions_reading_is_not_the_baseline(env):
+    pro(env)
+    cc._atomic_write(cc.state_root() / "claude_last.json",
+                     {"ts": __import__("time").time() - 60, "readings": {"week": {"used": 4.0, "resets_at": RESETS}}})
+    out = cmd("quota", "2%")
+    assert "taken at the next statusline refresh" in out
+
+
+def test_probe_starts_at_most_once_a_minute(env, monkeypatch):
+    pro(env)
+    _live(monkeypatch, 40.0)
+    cmd("quota", "2%")
+    statusline(sl_payload(40.0))
+    started = []
+    monkeypatch.setattr(cc.subprocess, "Popen", lambda argv, **kw: started.append(argv))
+    state = json.loads(cc.session_path(SID).read_text())
+    now = __import__("time").time()
+    assert cc.maybe_probe_usage(SID, state, now) is False           # /usage read just now
+    assert cc.maybe_probe_usage(SID, state, now + 61) is True
+    assert cc.maybe_probe_usage(SID, state, now + 62) is False      # one already running
+    assert len(started) == 1 and started[0][-3:] == ["usage-probe", "--session", SID]
+
+
+def test_usage_probe_writes_the_reading_and_clears_its_lock(env, monkeypatch):
+    _live(monkeypatch, 41.0)
+    lock = cc.usage_path(SID).with_suffix(".probe")
+    cc._atomic_write(lock, {"ts": 1})
+    out = io.StringIO()
+    cc.main(["usage-probe", "--session", SID], stdout=out)
+    assert json.loads(cc.usage_path(SID).read_text())["readings"]["week"]["used"] == 41.0
+    assert not lock.exists() and out.getvalue() == ""
+
+
+def test_own_denials_do_not_feed_the_plugin_error_breaker(env):
+    pro(env)
+    fail = {"session_id": SID, "hook_event_name": "PostToolUseFailure", "tool_name": "Read",
+            "error": "PreToolUse:Read hook error: agentcap: this session used 2.0% of the weekly quota"}
+    for _ in range(10):
+        assert hook("postfail", fail) is None

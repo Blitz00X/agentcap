@@ -273,10 +273,17 @@ How it works:
   tool calls: 8 in a row stops the agent on Pro (`continue: false`), Free gets a notice.
   Tool input and output are never stored, only a 16-char hash and counts; these per-session
   files are deleted after 7 days (on `SessionStart`).
+- `/usage` as well: `/agentcap:quota` takes its baseline from Claude Code's own
+  `claude -p /usage` (a local command, no model call, no quota), and while a quota is set the
+  `PreToolUse` hook starts a background `/usage` read at most once a minute. The share is the
+  higher of the statusline and `/usage` (the statusline lagged `/usage` by 1-2 points in live
+  tests, and a stale first value once looked like 1% of use). Without `/usage` the baseline is
+  only this session's own statusline reading, never another session's.
 - Read-only: no OAuth token, credentials file or API traffic is touched.
 
-Honest limits: the % is account-level (parallel sessions count), the stop can be one request
-late, and the share updates when the statusLine refreshes. Verified with real Claude Code
+Honest limits: the % is account-level (parallel sessions and other devices count), the stop can
+be one request late (a `/usage` check runs at most once a minute), and the share updates when the
+statusLine refreshes. Verified with real Claude Code
 2.1.197 (plugin install from the marketplace, hooks loaded, `/agentcap:quota` executed,
 PreToolUse deny blocked the tool) against a local fake API and synthetic `rate_limits`;
 **not yet checked against a real Max account.**

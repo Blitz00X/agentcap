@@ -2,9 +2,10 @@
 """AgentCap Claude Code plugin: per-session share of the Max/Pro subscription quota.
 
 Stdlib only.  Reuses ``agentcap.quota`` from this repo (``<plugin root>/src``),
-so the plugin needs no pip install.  Read-only by design: the only quota
-source is the ``rate_limits`` object Claude Code hands to the statusLine
-command.  No OAuth token, credential file or API traffic is ever touched.
+so the plugin needs no pip install.  Read-only by design: the quota sources are
+the ``rate_limits`` object Claude Code hands to the statusLine command and
+Claude Code's own ``claude -p /usage`` (a local command, no model call).  No
+OAuth token, credential file or API traffic is ever touched.
 
 Subcommands
   statusline              statusLine command (records readings, chains the user's line)
@@ -12,6 +13,7 @@ Subcommands
   quota <N%> [5h|week]    set this session's quota      (slash command)
   status | off            show / clear it                (slash commands)
   setup | unsetup         add / remove the statusLine in ~/.claude/settings.json
+  usage-probe             background /usage read started by the PreToolUse hook
 """
 
 from __future__ import annotations
@@ -41,10 +43,17 @@ from agentcap.quota import (  # noqa: E402
     parse_quota,
     state_root,
 )
+from agentcap.live_quota import live_enabled, live_readings  # noqa: E402
 
 WARN_FRACTION = 0.8
 MARK = "agentcap-cc"  # tag inside our statusLine command (setup/unsetup detection)
 WINDOW_NAMES = {"week": "weekly", "5h": "5-hour"}
+# /usage is checked in the background at most once a minute while a quota is set:
+# the statusline % lags /usage by 1-2 points and a stale first value made a 0% job
+# look like 1% (live CLI tests C1-C3, 12-13 Nov 2026).
+USAGE_POLL_S = 60.0
+PROBE_STALE_S = 120.0
+RESET_MATCH_S = 120.0
 
 
 # ----------------------------------------------------------------- paths
@@ -108,14 +117,84 @@ def resolve_session(raw: str | None, cwd: str | None = None) -> str | None:
     return sid if isinstance(sid, str) and sid else None
 
 
-def share_line(state: Mapping[str, Any]) -> str:
+def usage_path(sid: str) -> Path:
+    return cc_dir() / "usage" / f"{_safe(sid)}.json"
+
+
+def usage_share(state: Mapping[str, Any], sid: str | None) -> float | None:
+    """Share by /usage: this session's quota-time /usage read vs the newest one."""
+
+    base = state.get("usage_base")
+    window = state.get("window", "week")
+    if not sid or not isinstance(base, Mapping):
+        return None
+    cur = ((_read_json(usage_path(sid)) or {}).get("readings") or {}).get(window)
+    if not isinstance(cur, Mapping):
+        return None
+    try:
+        b_used, c_used = float(base["used"]), float(cur["used"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    b_reset, c_reset = base.get("resets_at"), cur.get("resets_at")
+    if b_reset is not None and c_reset is not None and abs(float(c_reset) - float(b_reset)) > RESET_MATCH_S:
+        return None  # the window reset since: the statusline tracker carries it
+    return max(0.0, round(c_used - b_used, 3))
+
+
+def effective_share(state: Mapping[str, Any], sid: str | None) -> float:
+    by_usage = usage_share(state, sid)
+    return max(float(state.get("share") or 0), by_usage or 0.0)
+
+
+def share_line(state: Mapping[str, Any], sid: str | None = None) -> str:
     quota = state.get("quota")
     window = state.get("window", "week")
     if quota is None:
         return ""
     if state.get("used") is None:
         return f"agentcap: quota {quota:g}% ({WINDOW_NAMES.get(window, window)}) — waiting for first reading"
-    return f"agentcap: session {float(state.get('share', 0)):.1f}% / {quota:g}% ({WINDOW_NAMES.get(window, window)})"
+    share = effective_share(state, sid or state.get("session_id"))
+    return f"agentcap: session {share:.1f}% / {quota:g}% ({WINDOW_NAMES.get(window, window)})"
+
+
+def maybe_probe_usage(sid: str, state: Mapping[str, Any], now: float) -> bool:
+    """Start a background `claude -p /usage` read when the last one is a minute old."""
+
+    if not state.get("usage_base") or not live_enabled():
+        return False
+    last = _read_json(usage_path(sid)) or {}
+    if now - float(last.get("ts") or 0) < USAGE_POLL_S:
+        return False
+    lock = usage_path(sid).with_suffix(".probe")
+    if now - float((_read_json(lock) or {}).get("ts") or 0) < PROBE_STALE_S:
+        return False  # one already running
+    _atomic_write(lock, {"ts": now})
+    try:
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "usage-probe", "--session", sid],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True,
+        )
+    except OSError:
+        return False
+    return True
+
+
+def cmd_usage_probe(sid: str | None, *, now: float) -> str:
+    if not sid:
+        return ""
+    lock = usage_path(sid).with_suffix(".probe")
+    try:
+        got = live_readings("claude")
+        if got:
+            _atomic_write(usage_path(sid), {"ts": time.time(), "readings": {
+                w: {"used": r.used, "resets_at": r.resets_at} for w, r in got.items()}})
+    finally:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+    return ""
 
 
 def apply_readings(state: dict[str, Any], readings: Mapping[str, Any], now: float) -> None:
@@ -152,7 +231,7 @@ def statusline_main(stdin: TextIO, stdout: TextIO, *, now: float | None = None) 
             state = load(sid)
             apply_readings(state, readings, now)
             save(sid, state)
-            line = share_line(state)
+            line = share_line(state, sid)
     except Exception:
         line = "agentcap: quota unavailable"
     prev = (_read_json(cc_dir() / "statusline.json") or {}).get("previous")
@@ -275,6 +354,8 @@ def hook_post(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
     if got is None:
         return 0
     sid, allst, st = got
+    if failed and "agentcap" in json.dumps(payload.get("error") or payload.get("tool_response") or "").lower():
+        return 0  # a pause by AgentCap itself, not a failing call (live C3, 12 Nov 2026)
     st["errors"] = int(st.get("errors", 0)) + 1 if failed else 0
     hit = st["errors"] >= LOOP_ERRORS
     nudge = hit and not pro and not st.get("err_nudged")
@@ -419,7 +500,8 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
     quota = state.get("quota")
     if quota is None or state.get("used") is None:
         return 0
-    share = float(state.get("share") or 0)
+    maybe_probe_usage(sid, state, now)
+    share = effective_share(state, sid)
     window = WINDOW_NAMES.get(state.get("window", "week"), "weekly")
     if share >= float(quota):
         if pro:
@@ -471,7 +553,8 @@ def hook_stop(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
     state = load(sid)
     if state.get("quota") is None or state.get("used") is None:
         return 0
-    share = round(float(state.get("share") or 0), 1)
+    by_usage = usage_share(state, sid)
+    share = round(effective_share(state, sid), 1)
     if state.get("receipt_share") == share:
         return 0
     state["receipt_share"] = share
@@ -479,11 +562,12 @@ def hook_stop(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
     if pro:
         rec = {"ts": now, "session_id": sid, "window": state.get("window"), "quota": state.get("quota"),
                "share": share, "used_now": state.get("used"), "denies": state.get("denies", 0),
+               "measured_by": "usage" if by_usage is not None else "statusline",
                "approvals": state.get("approvals", 0),
                "last_tool": (_read_json(_loop_path(sid)) or {}).get("last_tool")}
         with open(cc_dir() / "receipts.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
-    _emit(stdout, {"systemMessage": share_line(state)})
+    _emit(stdout, {"systemMessage": share_line(state, sid)})
     return 0
 
 
@@ -499,22 +583,33 @@ def cmd_quota(args: list[str], sid: str | None, *, now: float) -> str:
         return f"agentcap: {exc}".replace("--quota", "quota")
     window = "5h" if any(a.lower() in ("5h", "5-hour", "session") for a in args[1:]) else "week"
     state = load(sid)
-    for k in ("tracker", "share", "used", "resets_at", "warned", "nudged", "denies", "receipt_share"):
+    for k in ("tracker", "share", "used", "resets_at", "warned", "nudged", "denies", "receipt_share",
+              "usage_base"):
         state.pop(k, None)
     state.update({"quota": quota, "window": window, "set_at": now})
     tracker = ShareTracker()
-    seed = baseline_from_last(
-        {"ts": state.get("readings_ts"), "readings": state.get("last_readings")} if state.get("last_readings")
-        else _read_json(state_root() / "claude_last.json"),
-        window, now=now,
-    )
+    source = "statusline"
+    live = live_readings("claude") if live_enabled() else None
+    seed = live.get(window) if live else None
+    if seed is not None:
+        source = "/usage"
+        state["usage_base"] = {"used": seed.used, "resets_at": seed.resets_at, "ts": now}
+        _atomic_write(usage_path(sid), {"ts": now, "readings": {
+            w: {"used": r.used, "resets_at": r.resets_at} for w, r in live.items()}})
+    else:
+        # only this session's own reading: another session's (claude_last.json) can be
+        # minutes old while the account kept spending (live C1, 12 Nov 2026)
+        seed = baseline_from_last(
+            {"ts": state.get("readings_ts"), "readings": state.get("last_readings")}
+            if state.get("last_readings") else None, window, now=now)
     if seed is not None:
         tracker.seed(seed)
         state.update({"share": 0.0, "used": seed.used, "resets_at": seed.resets_at})
     state["tracker"] = tracker.to_dict()
     save(sid, state)
     lines = [f"agentcap: this session may use {quota:g}% of the {WINDOW_NAMES[window]} quota."]
-    lines.append(f"baseline {seed.used:g}% (exact)" if seed else "baseline: taken at the next statusline refresh")
+    lines.append(f"baseline {seed.used:g}% (exact, from {source})" if seed
+                 else "baseline: taken at the next statusline refresh")
     if not is_pro():
         lines.append("Free tier: you get the live meter and a notice at the limit. Enforcement (deny tool calls) is Pro.")
     if not (_read_json(cc_dir() / "statusline.json") or {}).get("installed"):
@@ -568,14 +663,17 @@ def cmd_status(sid: str | None) -> str:
     if state.get("quota") is None:
         return "agentcap: no quota set for this session. Use /agentcap:quota 5%."
     tier = "Pro (enforcing)" if is_pro() else "Free (watch only)"
-    return f"{share_line(state)} — {tier}"
+    checked = (_read_json(usage_path(sid)) or {}).get("ts")
+    seen = (f"; /usage checked {int(time.time() - float(checked))}s ago"
+            if state.get("usage_base") and checked else "")
+    return f"{share_line(state, sid)} — {tier}{seen}"
 
 
 def cmd_off(sid: str | None) -> str:
     if not sid:
         return "agentcap: no session found."
     state = load(sid)
-    for k in ("quota", "window", "tracker", "share", "used", "resets_at", "warned", "nudged"):
+    for k in ("quota", "window", "tracker", "share", "used", "resets_at", "warned", "nudged", "usage_base"):
         state.pop(k, None)
     save(sid, state)
     return "agentcap: quota cleared for this session."
@@ -693,6 +791,9 @@ def main(argv: list[str] | None = None, stdin: TextIO = sys.stdin, stdout: TextI
         out = cmd_setup(now=now)
     elif cmd == "unsetup":
         out = cmd_unsetup()
+    elif cmd == "usage-probe":
+        cmd_usage_probe(sid, now=now)
+        return 0
     else:
         out = f"agentcap: unknown command {cmd!r}"
     stdout.write(out + "\n")
