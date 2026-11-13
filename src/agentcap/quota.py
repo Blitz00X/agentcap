@@ -563,7 +563,10 @@ def user_statusline_command(cwd: Path | None = None, home: Path | None = None) -
 def claude_settings(job_dir: Path, python: str | None = None) -> dict[str, Any]:
     py = shlex.quote(python or sys.executable)
     job = shlex.quote(str(job_dir))
-    base = f"{py} -m agentcap.quota"
+    # -P: do not put the current directory first on sys.path.  With plain -m, an
+    # `agentcap/` folder in the project replaced the guard (live C2, 13 Nov 2026: the
+    # statusline ran a stale copy from the working directory).
+    base = f"{py} -P -m agentcap.quota"
     return {
         "statusLine": {
             "type": "command",

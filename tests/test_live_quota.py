@@ -463,3 +463,19 @@ def test_alerts_are_held_while_an_interactive_agent_owns_the_screen():
     assert err.getvalue() == ""
     r._release()
     assert "QUOTA LIMIT HIT" in err.getvalue()
+
+
+def test_guard_commands_ignore_an_agentcap_folder_in_the_project(tmp_path, monkeypatch):
+    # live C2: a stale agentcap/ copy in the working dir ran instead of the installed guard
+    import subprocess
+    evil = tmp_path / "agentcap"
+    evil.mkdir()
+    (evil / "__init__.py").write_text("")
+    (evil / "quota.py").write_text("print('HIJACKED')\n")
+    settings = q.claude_settings(tmp_path / "job")
+    cmd = settings["statusLine"]["command"]
+    assert " -P -m agentcap.quota " in cmd
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    out = subprocess.run(cmd, shell=True, cwd=tmp_path, input="{}", capture_output=True, text=True,
+                         env={**os.environ, "PYTHONPATH": src}, timeout=30).stdout
+    assert "HIJACKED" not in out
