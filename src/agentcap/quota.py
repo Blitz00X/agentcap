@@ -419,13 +419,29 @@ def codex_readings(event: Mapping[str, Any], *, now: float | None = None) -> dic
 _TTY_RESET = b"\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
 
 
+def _tty_foreground(fd: int) -> bool:
+    """True when this process group owns the terminal.  A background group that calls
+    tcsetattr is stopped by SIGTTOU (live C4, 13 Nov 2026: `timeout 900 agentcap run ...`
+    from a script hung frozen after the agent exited, before writing the receipt)."""
+
+    try:
+        if not os.isatty(fd):
+            return False
+    except OSError:
+        return False
+    try:
+        return os.tcgetpgrp(fd) == os.getpgrp()
+    except OSError:
+        return True  # not our controlling terminal: no job control, so no SIGTTOU
+
+
 def save_tty(fd: int = 0) -> Any:
-    """Terminal settings before an interactive agent starts (None when not a tty)."""
+    """Terminal settings before an interactive agent starts (None when not a tty we own)."""
 
     try:
         import termios
 
-        return termios.tcgetattr(fd) if os.isatty(fd) else None
+        return termios.tcgetattr(fd) if _tty_foreground(fd) else None
     except Exception:
         return None
 
@@ -434,7 +450,7 @@ def restore_tty(saved: Any, fd: int = 0, *, sequences: bool = True) -> None:
     """Put the terminal back after the agent stopped.  Live B6 (11 Nov 2026): the Codex TUI
     was stopped mid-turn, never restored the tty, and the shell printed in raw mode."""
 
-    if saved is None:
+    if saved is None or not _tty_foreground(fd):
         return
     try:
         import termios

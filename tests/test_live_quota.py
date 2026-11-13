@@ -490,3 +490,42 @@ def test_headless_claude_polls_usage_faster(tmp_path):
     assert r._claude_poll_s() == q.HEADLESS_LIVE_POLL_S == 30.0
     r2 = q.QuotaRunner(["claude"], quota=5.0, stderr=io.StringIO(), live_reader=lambda a: None)
     assert r2._claude_poll_s() == q.CLAUDE_LIVE_POLL_S
+
+
+BACKGROUND_TTY = r"""
+import os, pty, sys, time
+sys.path.insert(0, sys.argv[1])
+pid, fd = pty.fork()
+if pid == 0:                      # session leader that owns the pty
+    child = os.fork()
+    if child == 0:                # a background process group, like `timeout cmd` in a script
+        os.setpgid(0, 0)
+        from agentcap import quota as q
+        saved = q.save_tty(0)
+        import termios
+        q.restore_tty(saved if saved is not None else termios.tcgetattr(0), 0)
+        os._exit(0)
+    _, st = os.waitpid(child, os.WUNTRACED)
+    os._exit(1 if os.WIFSTOPPED(st) else os.waitstatus_to_exitcode(st))
+deadline = time.time() + 20
+while time.time() < deadline:
+    try:
+        os.read(fd, 1024)
+    except OSError:
+        pass
+    done, st = os.waitpid(pid, os.WNOHANG)
+    if done:
+        sys.exit(os.waitstatus_to_exitcode(st))
+    time.sleep(0.05)
+sys.exit(3)
+"""
+
+
+def test_a_background_agentcap_does_not_freeze_on_the_terminal(tmp_path):
+    # live C4: `timeout 900 agentcap run ...` in a script froze in state T (SIGTTOU)
+    import subprocess
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    script = tmp_path / "bg.py"
+    script.write_text(BACKGROUND_TTY)
+    r = subprocess.run([sys.executable, str(script), src], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, (r.returncode, r.stderr)
