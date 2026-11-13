@@ -99,16 +99,21 @@ LIVE_POLL_S = 30.0
 # one-response lag.  The statusline is compared only with itself; /usage, asked
 # at start, every minute and after exit, gives the receipt and catches a lag.
 CLAUDE_LIVE_POLL_S = 60.0
+# Headless `claude -p` has no statusline at all, so /usage is the only source there.
+HEADLESS_LIVE_POLL_S = 30.0
+HEADLESS_CLAUDE_LIVE_NOTE = (
+    "agentcap: headless Claude: no statusline in `claude -p`, so the quota is read from "
+    "`claude -p /usage` every {s:g} s; usage between two checks can overshoot the limit."
+)
 LIVE_SETTLE_S = 3.0
 FINAL_READ_S = 10.0
 LONG_EFFORTS = ("xhigh", "max")
 
 
 HEADLESS_CLAUDE_QUOTA_WARNING = (
-    "agentcap: WARNING: quota % is only supported in interactive Claude Code sessions. "
-    "Headless `claude -p` exposes no usage % to AgentCap, so this job will NOT be stopped "
-    "at the quota; the loop and error breakers are still active. Run `claude` "
-    "interactively for quota mode."
+    "agentcap: WARNING: headless `claude -p` has no statusline and `claude -p /usage` did not "
+    "answer, so this job will NOT be stopped at the quota; the loop and error breakers are "
+    "still active. Check that `claude -p /usage` works, or run `claude` interactively."
 )
 
 
@@ -1202,6 +1207,7 @@ class QuotaRunner:
         live_reader: Callable[[str], Mapping[str, Reading] | None] | None = None,
         live_poll_s: float | None = LIVE_POLL_S,
         claude_live_poll_s: float = CLAUDE_LIVE_POLL_S,
+        headless_live_poll_s: float = HEADLESS_LIVE_POLL_S,
         live_settle_s: float = LIVE_SETTLE_S,
     ) -> None:
         if window not in WINDOWS:
@@ -1239,6 +1245,7 @@ class QuotaRunner:
         self.live_reader = live_reader
         self.live_poll_s = live_poll_s
         self.claude_live_poll_s = claude_live_poll_s
+        self.headless_live_poll_s = headless_live_poll_s
         self._live_tracker: ShareTracker | None = None  # claude: /usage at start vs now
         self._live_written: tuple[float, float] | None = None
         self.live_settle_s = live_settle_s
@@ -1374,7 +1381,9 @@ class QuotaRunner:
 
             env = dict(os.environ)
             env["AGENTCAP_QUOTA_JOB"] = str(self.job_dir)
-            if not (self.agent == "claude" and self.headless):  # headless: see the warning below
+            # headless claude: blind unless /usage answered at start (then it is polled)
+            claude_blind = self.agent == "claude" and self.headless and self._live_tracker is None
+            if not claude_blind:  # blind headless: see the warning below
                 self._say(
                     f"agentcap: quota mode ({self.agent}, {self.window}): "
                     + (f"stopping this job at {self.quota:g}% of the account quota" if self.enforce
@@ -1384,12 +1393,14 @@ class QuotaRunner:
             if self.agent == "codex" and self.quota < 1:
                 self._say(f"agentcap: WARNING: Codex reports quota in whole percent, so a {self.quota:g}% cap "
                           "cannot trigger until the job has used a full 1%. Use --quota 1% or more for Codex.")
-            if 1 <= self.quota < SMALL_CAP_PCT and not (self.agent == "claude" and self.headless):
+            if 1 <= self.quota < SMALL_CAP_PCT and not claude_blind:
                 self._say(f"agentcap: note: {self.agent} reports quota in 1% steps and one model response "
                           f"can use a full 1%, so a {self.quota:g}% cap may stop the job after its first "
                           f"response. Use about {SMALL_CAP_PCT:g}% or more for room to work.")
-            if self.agent == "claude" and self.headless:
+            if claude_blind:
                 self._say(HEADLESS_CLAUDE_QUOTA_WARNING)
+            elif self.agent == "claude" and self.headless:
+                self._say(HEADLESS_CLAUDE_LIVE_NOTE.format(s=self._claude_poll_s()))
             elif self.agent == "claude" and self.quota < 1:
                 self._say(f"agentcap: WARNING: Claude Code reports quota in whole percent, so a {self.quota:g}% "
                           "cap trips at the next 1% step of the account (it may stop at once or overshoot). "
@@ -1400,7 +1411,7 @@ class QuotaRunner:
             if self.live_poll_s and live_enabled() and (
                 self.agent == "codex" or self._live_tracker is not None
             ):
-                interval = self.live_poll_s if self.agent == "codex" else self.claude_live_poll_s
+                interval = self.live_poll_s if self.agent == "codex" else self._claude_poll_s()
                 poller = _LivePoller(self.live_reader, self.agent, interval)
                 self._poller = poller
                 poller.start()
@@ -1479,7 +1490,9 @@ class QuotaRunner:
                             got = (poller.latest or {}).get(self.window)
                             if got is not None:
                                 self._live_tracker.update(got)
-                        if self._live_tracker is not None and self._live_tracker.share > 0:
+                        if self._live_tracker is not None and (
+                            self._live_tracker.share > 0 or (poller is not None and poller.count > 0)
+                        ):
                             observed = True
                             share = max(share, self._live_tracker.share)
                             self._write_live(self._live_tracker.share)
@@ -1563,7 +1576,7 @@ class QuotaRunner:
                     codex_waiting = (tailer is not None and tailer.own is not None
                                      and (tailer.response_open or tailer.token_counts > 0))
                     if (not observed and not no_data_warned and now - started > self.no_data_warn_s
-                            and not (self.agent == "claude" and self.headless) and not codex_waiting
+                            and not claude_blind and not codex_waiting
                             and code is None):  # after exit the receipt says it
                         no_data_warned = True
                         self._say("agentcap: no quota data yet; protection not verified "
@@ -1772,6 +1785,11 @@ class QuotaRunner:
         if not live:
             self._say(f"agentcap: {agent} did not answer; using the local readings.")
         return live
+
+    def _claude_poll_s(self) -> float:
+        if self.headless:
+            return min(self.claude_live_poll_s, self.headless_live_poll_s)
+        return self.claude_live_poll_s
 
     def _write_live(self, share: float) -> None:
         """Hand the /usage share to the PreToolUse hook (job/live.json)."""

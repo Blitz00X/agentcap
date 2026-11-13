@@ -311,8 +311,10 @@ agentcap quota                                 # read-only: current usage, asked
   The hook can stop Claude only before a tool call, so one large response overshoots: live, a
   3% limit ended at 5% after one response with 7 parallel file reads used 3%. Usage on the same
   account from anywhere else (claude.ai, the desktop or phone app, another terminal) counts
-  toward the job too. **Quota % is interactive-only:** headless `claude -p` exposes no usage %
-  to AgentCap, so `--quota` warns and only the loop/error breakers are active there.
+  toward the job too. **Headless `claude -p`** has no statusline, so there `/usage` is the only
+  source: it is checked every 30 s and the hook ends the run at the limit (SIGINT if it keeps
+  going). Usage between two checks can overshoot. If `/usage` does not answer at start,
+  `--quota` warns and only the loop/error breakers are active.
 - **Codex CLI:** AgentCap tails the `token_count` events Codex writes to
   `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits.primary/secondary.used_percent`,
   `window_minutes`, `resets_at`) and sends SIGINT at the limit. Exit code 3.
@@ -349,8 +351,8 @@ agentcap quota                                 # read-only: current usage, asked
 **Honest limits.** The percentage is **account-level**: a parallel session or claude.ai/chatgpt.com
 use in the same window counts against the job (AgentCap warns when it sees another session).
 Values arrive once per model response, so a job **can overshoot by up to one request**.
-Claude Code only reports `rate_limits` for Pro/Max logins and only in interactive sessions
-(the statusline does not run in `claude -p`). Codex's rollout format is undocumented and may change. Codex reports `used_percent` in whole percent, so a Codex cap under 1% cannot trigger until the job has used a full 1% (AgentCap warns at start). Use `--quota 1%` or more for Codex.
+Claude Code only reports `rate_limits` to the statusline for Pro/Max logins and only in
+interactive sessions (the statusline does not run in `claude -p`; there AgentCap reads `/usage`). Codex's rollout format is undocumented and may change. Codex reports `used_percent` in whole percent, so a Codex cap under 1% cannot trigger until the job has used a full 1% (AgentCap warns at start). Use `--quota 1%` or more for Codex.
 Claude Code reports whole percents too: a cap under 1% trips at the next 1% step (AgentCap warns).
 One response can move the account by a full step, so a 2.25% limit can end at 3%.
 The interactive Codex TUI ignores SIGINT mid-turn, so AgentCap escalates to SIGTERM; the
@@ -436,7 +438,7 @@ Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitatio
 | Harness + auth | Loop breaker (4x same call, exit 4) | Error breaker (8 failures, exit 4) | Quota % stop (exit 3) | $ / token cap |
 | --- | --- | --- | --- | --- |
 | Claude Code, Pro/Max sub, interactive | ✅ (deny keeps the session; resumes after approve) | ✅ | ✅ whole-% steps (deny keeps the session); `agentcap approve` ✅ | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
-| Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ❌ interactive only (warns at start) | ❌ by design (refused) |
+| Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ✅ via `/usage` every 30 s (coarser) | ❌ by design (refused) |
 | Codex, ChatGPT sub | ✅ | ✅ | ✅ `exec` and interactive TUI (whole %; warns under 1%; one-response timeout, default 5m; terminal restored after a TUI stop; approve mid-run). Live, Codex 0.167.1, 11 Nov 2026 | ❌ by design (no proxy on a subscription) |
 | opencode Go | ✅ | ✅ | ❌ not yet: opencode 1.x's session log reports Go cost as 0 and leaves out subagents (live test, 11 Nov 2026), so a Go % cap cannot be measured; do not rely on `--quota` with opencode | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
 | agy, Google sub (plain `agentcap run -- agy` needs no key: breakers only) | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |

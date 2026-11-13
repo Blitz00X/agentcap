@@ -351,6 +351,9 @@ def test_claude_usage_poll_stops_when_the_statusline_lags(fakebin, tmp_path, mon
     assert time.time() - t0 < 25
     assert r.summary.reason == "quota_exceeded" and r.summary.share >= 3.0
     assert (r.job_dir / "denies.log").exists()
+    out = err.getvalue()
+    assert "headless Claude: no statusline" in out and "will NOT be stopped" not in out
+    assert "quota mode (claude, week): stopping this job at 3%" in out
 
 
 def test_claude_without_usage_keeps_the_statusline_share(fakebin, tmp_path, monkeypatch):
@@ -479,3 +482,11 @@ def test_guard_commands_ignore_an_agentcap_folder_in_the_project(tmp_path, monke
     out = subprocess.run(cmd, shell=True, cwd=tmp_path, input="{}", capture_output=True, text=True,
                          env={**os.environ, "PYTHONPATH": src}, timeout=30).stdout
     assert "HIJACKED" not in out
+
+
+def test_headless_claude_polls_usage_faster(tmp_path):
+    import io
+    r = q.QuotaRunner(["claude", "-p", "x"], quota=5.0, stderr=io.StringIO(), live_reader=lambda a: None)
+    assert r._claude_poll_s() == q.HEADLESS_LIVE_POLL_S == 30.0
+    r2 = q.QuotaRunner(["claude"], quota=5.0, stderr=io.StringIO(), live_reader=lambda a: None)
+    assert r2._claude_poll_s() == q.CLAUDE_LIVE_POLL_S
