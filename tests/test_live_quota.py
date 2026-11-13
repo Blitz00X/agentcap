@@ -594,12 +594,13 @@ def test_post_hook_ignores_a_failing_wait(tmp_path):
 def _settle_setup(tmp_path, at_exit=0.0):
     receipt = tmp_path / "r.json"
     receipt.write_text(json.dumps({"type": "agentcap_quota_receipt", "share_pct": at_exit, "reason": "exited"}))
-    job = tmp_path / "job"
-    job.mkdir()
+    job = tmp_path / "jobs" / "job"
+    job.mkdir(parents=True)
     t = q.ShareTracker()
     t.seed(q.Reading(40.0, 5000.0))
     (job / "settle.json").write_text(json.dumps({"receipt": str(receipt), "window": "5h",
-                                                 "tracker": t.to_dict(), "until": 1000.0 + 150}))
+                                                 "tracker": t.to_dict(), "until": 1000.0 + 90,
+                                                 "ended_at": 1000.0}))
     return receipt, job
 
 
@@ -616,7 +617,7 @@ def test_settle_rewrites_the_receipt_with_the_late_usage(tmp_path):
                   clock=lambda: clock[0], step_s=20)
     r = json.loads(receipt.read_text())
     assert r["share_pct"] == 2.0 and r["share_pct_at_exit"] == 0.0 and r["settled"] is True
-    assert clock[0] - 1000.0 <= 150
+    assert clock[0] - 1000.0 <= 90
 
 
 def test_settle_never_lowers_the_receipt(tmp_path):
@@ -661,3 +662,23 @@ def test_settle_entry_point_runs_as_a_detached_process(tmp_path):
     code = subprocess.run([sys.executable, "-P", "-m", "agentcap.quota", "settle", "--job", str(job)],
                           env=env, timeout=60).returncode
     assert code == 0 and json.loads(receipt.read_text())["settled"] is True
+
+
+
+def test_settle_stops_when_the_next_quota_job_starts(tmp_path):
+    # live 0.4.1 check: the next job's 1% was charged to the previous job's settled receipt
+    receipt, job = _settle_setup(tmp_path)
+    clock = [1000.0]
+    reads = iter([41.0, 42.0, 45.0, 46.0])
+
+    def reader(agent):
+        if clock[0] >= 1040.0 and not (job.parent / "next").exists():
+            nxt = job.parent / "next"
+            nxt.mkdir()
+            (nxt / "job.json").write_text(json.dumps({"started_at": 1045.0}))
+        return {"5h": q.Reading(next(reads), 5000.0)}
+
+    q.settle_main(job, reader=reader, sleep=lambda s: clock.__setitem__(0, clock[0] + s),
+                  clock=lambda: clock[0], step_s=20)
+    r = json.loads(receipt.read_text())
+    assert r["share_pct"] == 2.0 and r["settle_cut"] == "another quota job started"

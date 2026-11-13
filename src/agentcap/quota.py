@@ -103,7 +103,7 @@ CLAUDE_LIVE_POLL_S = 60.0
 # 13 Nov 2026: eight short jobs all read 0.0% while the account rose 21% -> 28%; each
 # job's share appeared at the next job's start).  After a Claude job exits, a detached
 # process keeps reading /usage for a while and rewrites the receipt with the settled share.
-CLAUDE_SETTLE_S = 150.0
+CLAUDE_SETTLE_S = 90.0  # the lag measured live was 30-90 s; a longer window catches other usage
 SETTLE_STEP_S = 20.0
 # Headless `claude -p` has no statusline at all, so /usage is the only source there.
 HEADLESS_LIVE_POLL_S = 30.0
@@ -1387,14 +1387,16 @@ class QuotaRunner:
         _atomic_write(self.job_dir / "settle.json", {
             "receipt": str(self._receipt_path), "window": self.window,
             "tracker": self._live_tracker.to_dict(), "until": time.time() + self.settle_s,
+            "ended_at": time.time(),
         })
         self._spawn_detached(
             [sys.executable, "-P", "-m", "agentcap.quota", "settle", "--job", str(self.job_dir)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True, close_fds=True, env=_probe_env(),
         )
-        self._print(f"agentcap: Claude's /usage shows usage up to ~2 min late; the receipt is re-checked "
-                    f"in the background and updated with the settled share ({self._receipt_path}).")
+        self._print(f"agentcap: Claude's /usage shows usage up to ~90 s late; the receipt is re-checked "
+                    f"in the background for {self.settle_s:g} s and updated with the settled share "
+                    f"({self._receipt_path}). Claude use elsewhere on the account in that time counts too.")
 
     def _run(self) -> int:
         lock = JobLock(state_root() / "quota.lock")
@@ -2064,6 +2066,16 @@ def _reset_text(resets_at: Any, now: float) -> str:
     return f", resets in {left // 3600}h{(left % 3600) // 60:02d}m"
 
 
+def _job_started_after(job_dir: Path, ts: float) -> bool:
+    try:
+        for d in job_dir.parent.iterdir():
+            if d != job_dir and (_num((_read_json(d / "job.json") or {}).get("started_at")) or 0.0) > ts:
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def settle_main(job_dir: Path, *, reader: Callable[[str], Mapping[str, Reading] | None] | None = None,
                 sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.time,
                 step_s: float = SETTLE_STEP_S) -> int:
@@ -2079,9 +2091,16 @@ def settle_main(job_dir: Path, *, reader: Callable[[str], Mapping[str, Reading] 
     tracker = ShareTracker.from_dict(cfg.get("tracker"))
     at_exit = float(receipt.get("share_pct") or 0.0)
     start, until = clock(), float(cfg.get("until") or 0.0)
+    ended = float(cfg.get("ended_at") or start)
     unchanged = 0
+    cut: str | None = None
     while clock() < until:
         sleep(max(0.0, min(step_s, until - clock())))
+        if _job_started_after(job_dir, ended):
+            # the % is account-wide: a newer job's usage would be charged to this receipt
+            # (live 0.4.1 check, 13 Nov 2026: a polling job's receipt took the next job's 1%)
+            cut = "another quota job started"
+            break
         try:
             got = (reader("claude") or {}).get(cfg["window"])
         except Exception:
@@ -2096,6 +2115,8 @@ def settle_main(job_dir: Path, *, reader: Callable[[str], Mapping[str, Reading] 
     settled = max(at_exit, tracker.share)
     receipt.update({"share_pct": settled, "share_pct_at_exit": at_exit, "settled": True,
                     "settled_at": clock()})
+    if cut:
+        receipt["settle_cut"] = cut
     _atomic_write(receipt_path, receipt)
     _atomic_write(job_dir / "settled.json", {"ts": clock(), "share_pct": settled, "at_exit": at_exit})
     return 0

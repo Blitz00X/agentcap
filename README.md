@@ -321,8 +321,10 @@ agentcap quota                                 # read-only: current usage, asked
   `/usage` difference (`measured_by: usage`). `/usage` itself shows a job's usage 30-90 s after
   its requests (live gate test: short jobs read 0.0% at exit and the % appeared a minute later),
   so a quota stop can come that much later, and after a Claude job a detached process keeps
-  reading `/usage` for up to 2.5 minutes and rewrites the receipt with the settled share
-  (`settled: true`, `share_pct_at_exit` keeps the first value).
+  reading `/usage` for up to 90 s and rewrites the receipt with the settled share
+  (`settled: true`, `share_pct_at_exit` keeps the first value). It stops early when the value
+  holds or when another AgentCap quota job starts (`settle_cut`); other Claude use on the account
+  in those 90 s (another chat, another device) still counts toward the receipt.
   The hook can stop Claude only before a tool call, so one large response overshoots: live, a
   3% limit ended at 5% after one response with 7 parallel file reads used 3%. Usage on the same
   account from anywhere else (claude.ai, the desktop or phone app, another terminal) counts
