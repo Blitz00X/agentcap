@@ -19,7 +19,7 @@
 
   <div class="topline">
     <div class="wrap topline-inner">
-      <span>AgentCap 0.3</span>
+      <span>AgentCap 0.4</span>
       <span class="topline-mid">Local spend control for coding agents</span>
       <span class="topline-links">
         <a href="https://pypi.org/project/agentcap-cli/">PyPI <span aria-hidden="true">↗</span></a>
@@ -180,14 +180,14 @@
               <span class="step">02</span>
               <div>
                 <h3>AgentCap watches the run</h3>
-                <p>For subscriptions it reads Claude Code&rsquo;s official statusline <code>rate_limits</code> and Codex&rsquo;s local session logs. For API keys, requests go through a proxy on <code>127.0.0.1</code>. Your login, tokens and settings are not touched.</p>
+                <p>For subscriptions it asks the agents themselves: Claude Code&rsquo;s statusline and its own <code>/usage</code>, Codex&rsquo;s session logs and its own <code>codex app-server</code>. No model call, no quota spent. For API keys, requests go through a proxy on <code>127.0.0.1</code>. Your login, tokens and settings are not touched.</p>
               </div>
             </li>
             <li>
               <span class="step">03</span>
               <div>
                 <h3>At the limit, it stops</h3>
-                <p>The next request is blocked and the local process group is stopped: <code>SIGTERM</code> first, <code>SIGKILL</code> after five seconds. The terminal says why, the receipt is saved, and the run exits with code 3. The loop breaker exits with 4.</p>
+                <p>With an API key, the next request is blocked and the process group is stopped: <code>SIGTERM</code> first, <code>SIGKILL</code> after five seconds. On a subscription, Claude Code&rsquo;s next tool call is denied and the session stays open for <code>agentcap approve</code>; Codex and headless runs get <code>SIGINT</code>. The terminal says why, the receipt is saved, and the run exits with code 3. The loop breaker exits with 4.</p>
               </div>
             </li>
           </ol>
@@ -298,7 +298,7 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
               </tbody>
             </table>
           </div>
-          <p class="fineprint">Codex 0.165 was verified against real OpenAI-compatible upstreams (Ollama Cloud and OpenRouter, with matching ledger usage and a cap stop at exit 3). Gemini CLI 0.66 was verified with a real Gemini API key. Not yet against OpenAI billing. Claude Code 2.1.197 hooks are verified on fixtures and real hooks, not yet on a real Max/ChatGPT account.</p>
+          <p class="fineprint">Codex 0.165 was verified against real OpenAI-compatible upstreams (Ollama Cloud and OpenRouter, with matching ledger usage and a cap stop at exit 3). Gemini CLI 0.66 was verified with a real Gemini API key. Not yet against OpenAI billing. Quota stops were verified live on a real Claude Pro account (Claude Code 2.1.323: interactive, headless <code>claude -p</code> and the plugin) and a real ChatGPT Plus account (Codex 0.167, <code>exec</code> and the TUI), 11&ndash;13 November 2026.</p>
         </div>
       </div>
     </section>
@@ -447,7 +447,7 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
             </details>
             <details>
               <summary>Does it work with subscription or OAuth logins?</summary>
-              <p>The proxy does not meter OAuth traffic. Quota mode is different: it reads Claude Code&rsquo;s statusline limits and Codex&rsquo;s local logs, then stops the local job. It never touches the login or the traffic. ChatGPT and Google sign-in traffic is not metered by the dollar cap.</p>
+              <p>The proxy does not meter OAuth traffic. Quota mode is different: it reads the % from the agents themselves (Claude Code&rsquo;s statusline and <code>/usage</code>, Codex&rsquo;s logs and <code>codex app-server</code>), then stops the local job. It never touches the login or the traffic. ChatGPT and Google sign-in traffic is not metered by the dollar cap.</p>
             </details>
             <details>
               <summary>Which providers does it support?</summary>
@@ -520,7 +520,7 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
     <div class="wrap footer-bottom">
       <span>© 2026 Launchbench</span>
       <span>Set in Instrument Serif and IBM Plex.</span>
-      <span>Checked against 0.3.1 · 13 Nov 2026.</span>
+      <span>Checked against 0.4.0 · 13 Nov 2026.</span>
     </div>
   </footer>
 
