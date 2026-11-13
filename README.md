@@ -369,18 +369,6 @@ Codex's own sandbox (bubblewrap) fails inside some agent shells on Ubuntu
 (`kernel.apparmor_restrict_unprivileged_userns=1`); in a normal terminal it works.
 Verified on real accounts: see the harness support matrix under "Supported & tested".
 
-## The 0.4 user flow
-
-The five stages — install, start, status, stop, next step — and the exact text
-for each surface are in [docs/USER_FLOW_0.4.md](docs/USER_FLOW_0.4.md). The four
-states are `waiting for the first reading`, `protection active`, `data stale
-(protection not verified)` and `stopped`. Free is always `watch only (Pro stops
-at the limit)`; it never claims it will stop. Claude Code stays in the same
-session after a stop (`agentcap approve` raises the limit by 50%, at most
-twice); Codex is stopped with SIGINT, so approve says to restart with a higher
-`--quota`. A licence change applies to the next job; it never silently changes
-the mode of a running one.
-
 ## opencode and agy (Antigravity CLI)
 
 Headless runs only. AgentCap reads each agent's own event stream; nothing is proxied in these modes.

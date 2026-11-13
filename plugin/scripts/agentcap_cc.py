@@ -41,7 +41,6 @@ from agentcap.quota import (  # noqa: E402
     baseline_from_last,
     claude_readings,
     parse_quota,
-    protection_state,
     state_root,
 )
 from agentcap.live_quota import live_enabled, live_readings  # noqa: E402
@@ -152,27 +151,10 @@ def share_line(state: Mapping[str, Any], sid: str | None = None) -> str:
     window = state.get("window", "week")
     if quota is None:
         return ""
-    now = time.time()
-    started = float(state.get("started_at") or now)
     if state.get("used") is None:
-        _, state_text = protection_state(
-            has_reading=False,
-            started_age_s=now - started,
-            enforce=is_pro(),
-        )
-        return (f"agentcap: quota {quota:g}% ({WINDOW_NAMES.get(window, window)})"
-                f" — {state_text}")
+        return f"agentcap: quota {quota:g}% ({WINDOW_NAMES.get(window, window)}) — waiting for first reading"
     share = effective_share(state, sid or state.get("session_id"))
-    age = now - float(state.get("readings_ts") or now)
-    _, state_text = protection_state(
-        has_reading=True,
-        reading_age_s=age,
-        max_age_s=60.0,
-        started_age_s=now - started,
-        enforce=is_pro(),
-    )
-    return (f"agentcap: session {share:.1f}% / {quota:g}%"
-            f" ({WINDOW_NAMES.get(window, window)}) — {state_text}")
+    return f"agentcap: session {share:.1f}% / {quota:g}% ({WINDOW_NAMES.get(window, window)})"
 
 
 def maybe_probe_usage(sid: str, state: Mapping[str, Any], now: float) -> bool:
