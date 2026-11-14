@@ -337,7 +337,12 @@ quota is spent and only you can type them.
 failing calls in a row; `sleep N` waits count for neither. Quota comes from `codex app-server`
 (at set time, every 30 s and at turn end) plus the rollout.
 
-Honest limits: Codex hooks need your one-time trust. Codex 0.167 cannot end a turn from a hook,
+Honest limits: Codex hooks need your trust, once per installed version: Codex fingerprints the
+plugin, so **after every AgentCap update open Codex once and trust its hooks again**; until then
+Codex shows `hook: ... Failed` and AgentCap is not active (seen live after 0.4.2 → 0.5.0).
+A denial that says `agentcap guard (not a quota stop)` only refuses that one command (approving
+your own limit, or writing to AgentCap's state or installed plugin); reading those files and
+editing or testing your project are not blocked. Codex 0.167 cannot end a turn from a hook,
 so every tool call at the limit is denied with the reason and the model is expected to stop and
 tell you to type `agentcap approve` (it did in live tests). The % is account-wide, and one
 response or one 30 s check can overshoot.
