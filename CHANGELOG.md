@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.2
+Security release from an adversarial bug-bounty review of 0.4.0 (DeepSeek via opencode, 13-14 Nov 2026; every finding reproduced with a PoC, fixed, and turned into a test that failed before the fix). **Upgrade from 0.4.x and 0.3.x.**
+- **High: a project's `statusLine` was executed.** `agentcap run --quota -- claude` chained the user's statusline and also read the *project's* `.claude/settings.json` / `settings.local.json`, then ran that command in a shell without Claude Code's workspace-trust check: an untrusted repository could run commands as you. Only the user-level `~/.claude/settings.json` (or `CLAUDE_CONFIG_DIR`) statusline is chained now. **Behaviour change:** project statuslines are no longer shown under AgentCap.
+- **High: the guard could be replaced through `PYTHONPATH`.** 0.4.0's `python -P` stopped the project directory but not `PYTHONPATH`. Guard commands (statusline, hooks, settle) now run `python -E -P -c` with AgentCap's own package path pinned.
+- **High: `agentcap serve` logged query-string API keys** (`?key=` for Gemini) through uvicorn's access log. The access log is off, as in `agentcap run`.
+- **Medium: an aborted request was billed as output 0.** A stream that ends before its terminal event, and an aborted non-stream request, now charge the full reservation, so aborting a request cannot get output past the `--cap`.
+- **Medium: the plugin read its state dir, licence file and live-quota switch from environment variables**, which a project's settings `env` could set to silence the hook or drop Pro. Those overrides are honoured only with `AGENTCAP_TESTING=1`.
+- Low: `/agentcap:setup`'s settings backup is written 0600 without following symlinks; `python -c "import agentcap.cli ... approve"`, `python -m agentcap.cli approve` and `approve_job` are caught as self-approval; the plugin self-guard treats `git --output`, `--open-files-in-pager`, `--exec-path` and `--config-env` as writes and no longer blocks unrelated `agentcap-*` paths with globs.
+- Hardening: NaN/infinite quota, token and cost values are rejected; hop-by-hop headers (`Proxy-Authorization`, `Connection`, `Transfer-Encoding`, ...) are not forwarded upstream; request bodies over 32 MiB are refused (413) before any reservation.
+- Known, not fixed in this release: the loopback proxy has no per-run authentication, so another local process can trigger a stop (denial of service, no data leak).
+
 ## 0.4.1
 From the technical gate tests on real ChatGPT Plus and Claude Pro accounts (13 Nov 2026): the loop breaker stopped 4 of 4 repeat runs at the 4th identical call and the error breaker 2 of 2 failing runs (exit 4, Codex and Claude); 6 normal coding jobs (fix a test, add a feature, explain and fix) were not stopped.
 - **Waiting is not looping.** A shell call that starts with `sleep N` (`sleep 4; ls done.flag`, `sleep 30 && curl ...`) no longer counts toward the loop breaker or the error streak, in the CLI (Claude hooks, Claude transcript, Codex rollout including its code-mode `exec`) and the plugin. Live, a job waiting for a file was stopped as a loop at its 4th check.

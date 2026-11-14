@@ -309,7 +309,9 @@ agentcap quota                                 # read-only: current usage, asked
 - **Claude Code:** for this run only, AgentCap adds a settings layer with `claude --settings <file>`
   (your `~/.claude/settings.json` and project settings are never edited). It contains a
   statusline command that records the official `rate_limits` (`five_hour` / `seven_day`
-  `used_percentage`, `resets_at`) and then runs **your own statusline command unchanged**,
+  `used_percentage`, `resets_at`) and then runs **your own statusline command unchanged**
+  (only the one in your user-level `~/.claude/settings.json`: a project's `statusLine` is never
+  run, since the project may be untrusted),
   plus a `PreToolUse` hook that denies further tool calls with a clear reason once the job's
   share reaches the limit and ends the turn (`continue: false`). An interactive session stays open
   (run `agentcap approve` to continue, or quit); a session where the hook never fired gets
