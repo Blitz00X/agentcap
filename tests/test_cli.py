@@ -731,3 +731,26 @@ def test_license_activate_prompts_hidden_on_tty(recorder, monkeypatch, capsys):
 def test_license_activate_positional_still_works(recorder, capsys):
     assert cli.main(["license", "activate", "KEY-ARG"]) == 0
     assert recorder.seen == ["KEY-ARG"]
+
+
+def test_serve_disables_access_log(monkeypatch, tmp_path):
+    """H-3: query-string credentials must not be written to serve logs."""
+
+    import argparse
+
+    captured = {}
+
+    def fake_run(app, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+    monkeypatch.setenv("AGENTCAP_DB", str(tmp_path / "ledger.db"))
+    monkeypatch.setattr(
+        cli, "status_from_environment",
+        lambda: LicenseStatus(False, "free", "test"),
+    )
+    args = argparse.Namespace(
+        port=8787, cap="1", allow_unmetered=False, clamp_output=True, quiet=True,
+    )
+    assert cli._serve(args) == 0
+    assert captured["access_log"] is False

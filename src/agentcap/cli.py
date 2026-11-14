@@ -817,7 +817,7 @@ def _serve(args: argparse.Namespace) -> int:
         print(f"export ANTHROPIC_BASE_URL={base}/anthropic")
         print(f"# run id: {run_id}, cap: ${cap:.2f}")
         sys.stdout.flush()
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info", access_log=False)
     return 0
 
 
