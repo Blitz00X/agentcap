@@ -699,3 +699,43 @@ def test_first_quota_deny_writes_a_receipt(env, monkeypatch):
     hook("pre", dict(PRE, tool_input={"command": "y"}))
     recs = [json.loads(l) for l in (cc.cc_dir() / "receipts.jsonl").read_text().splitlines()]
     assert len(recs) == 1 and recs[0]["reason"] == "quota_exceeded" and recs[0]["share"] == 3.0
+
+
+def test_packaged_headless_hooks_write_a_receipt_without_stop(env):
+    """A headless denial must leave a receipt even if Stop never runs."""
+    import time
+
+    pro(env)
+    entry = ROOT / "plugin" / "scripts" / SCRIPT.name
+
+    def invoke(*args, payload=None):
+        proc = subprocess.run(
+            [sys.executable, "-B", "-E", "-P", str(entry), *args],
+            input=json.dumps(payload) if payload is not None else None,
+            capture_output=True, text=True, cwd=env, timeout=10, check=True,
+        )
+        assert not proc.stderr
+        return proc.stdout
+
+    invoke("default", "2%", "5h")
+    started = {"session_id": SID, "hook_event_name": "SessionStart", "source": "startup", "cwd": str(env)}
+    assert "default limit 2%" in invoke("hook", "start", payload=started)
+
+    def reading(value):
+        cc._atomic_write(cc.usage_path(SID), {
+            "ts": time.time(), "readings": {"5h": {"used": value, "resets_at": 2_000_000_000}},
+        })
+
+    reading(40.0)
+    first = dict(PRE, cwd=str(env), tool_input={"command": "first task"})
+    assert invoke("hook", "pre", payload=first) == ""
+
+    reading(43.0)
+    second = dict(PRE, cwd=str(env), tool_input={"command": "next task"})
+    denial = json.loads(invoke("hook", "pre", payload=second))
+    assert denial["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert denial["continue"] is False
+    recs = [json.loads(line) for line in (cc.cc_dir() / "receipts.jsonl").read_text().splitlines()]
+    assert len(recs) == 1
+    assert recs[0]["reason"] == "quota_exceeded" and recs[0]["share"] == 3.0
+    assert recs[0]["source"] == "default" and recs[0]["measured_by"] == "usage"

@@ -247,10 +247,14 @@ The easiest path on a Claude Max or Pro plan. Inside Claude Code:
 /plugin marketplace add Blitz00X/agentcap
 /plugin install agentcap@agentcap
 /agentcap:setup          # once: adds AgentCap's read-only statusLine (your own line keeps showing)
+/agentcap:default 10% 5h # every new session (also `claude -p`) starts with this limit
 /agentcap:quota 5%       # this session may use 5% of the weekly quota (`2% 5h` for the 5-hour window)
 /agentcap:status         # session 3.1% / 5% (weekly)
 /agentcap:off            # clear it;  /agentcap:unsetup restores your old statusLine
 ```
+
+`/agentcap:setup` is optional: the quota is measured with `/usage`; setup only adds a live
+statusline meter.
 
 No pip install: the plugin is stdlib Python (`python3` on PATH). The marketplace installs only
 the self-contained `plugin/` folder (commands, hooks, the script and the few `agentcap` modules it
@@ -279,18 +283,64 @@ How it works:
   files are deleted after 7 days (on `SessionStart`).
 - `/usage` as well: `/agentcap:quota` takes its baseline from Claude Code's own
   `claude -p /usage` (a local command, no model call, no quota), and while a quota is set the
-  `PreToolUse` hook starts a background `/usage` read at most once a minute. The share is the
+  `PreToolUse` hook starts a background `/usage` read at most every 30 s. The share is the
   higher of the statusline and `/usage` (the statusline lagged `/usage` by 1-2 points in live
   tests, and a stale first value once looked like 1% of use). Without `/usage` the baseline is
   only this session's own statusline reading, never another session's.
 - Read-only: no OAuth token, credentials file or API traffic is touched.
 
 Honest limits: the % is account-level (parallel sessions and other devices count), the stop can
-be one request late (a `/usage` check runs at most once a minute), and the share updates when the
+be one request late (a `/usage` check runs at most every 30 s), and the share updates when the
 statusLine refreshes. Verified live on a real Claude Pro account with Claude Code 2.1.323
 (13 Nov 2026): `/agentcap:setup`, `/agentcap:quota 2% 5h` with its baseline from `/usage`,
 the stop at the limit, `/agentcap:approve`, `/agentcap:unsetup`, and the self-guard denying
 `env -u CLAUDECODE agentcap approve` from the model.
+
+When the quota hook ends a headless `claude -p` turn, the command can exit 0 with no output.
+The plugin writes a receipt on the first quota denial; that receipt path is covered by automated
+tests but has not yet been verified in a live headless run.
+In an isolated Claude Code 2.1.325 test, `--output-format json` reported
+`terminal_reason: "hook_stopped"` and the denied tool in `permission_denials`. A hook can stop
+for other reasons too, so check the receipt's `reason` to identify a quota denial.
+
+## Install as a Codex plugin (ChatGPT subscriptions)
+
+Codex 0.167+ (verified on 0.167.1). Inside Codex:
+
+```
+/plugins        # Add Marketplace → Blitz00X/agentcap → AgentCap → Install
+                # then trust AgentCap's 5 hooks when Codex asks
+```
+
+Or from a shell:
+
+```bash
+codex plugin marketplace add Blitz00X/agentcap
+codex plugin add agentcap@agentcap
+```
+
+No pip install: the hooks run `python3 -B -E -P` on the plugin's own script, which asks Codex's
+`app-server` and reads the session rollout (read-only; no token or traffic is touched). Type
+these as a prompt: a `UserPromptSubmit` hook handles them and they never reach the model, so no
+quota is spent and only you can type them.
+
+| Type in Codex | Effect |
+| --- | --- |
+| `agentcap 10% 5h` | this session may use 10% of the 5-hour quota (`week` for the weekly quota) |
+| `agentcap status` | current share of the limit |
+| `agentcap off` | clear this session's limit |
+| `agentcap approve` | raise the limit by 50% after a stop (Pro, at most twice) |
+| `agentcap default 10% 5h` | every new session, `codex exec` included, starts with this limit |
+| `agentcap default off` | no default limit |
+
+`PreToolUse` denies a tool call at the limit, on the 4th identical call in a row and after 8
+failing calls in a row; `sleep N` waits count for neither. Quota comes from `codex app-server`
+(at set time, every 30 s and at turn end) plus the rollout.
+
+Honest limits: Codex hooks need your one-time trust. Codex 0.167 cannot end a turn from a hook,
+so every tool call at the limit is denied with the reason and the model is expected to stop and
+tell you to type `agentcap approve` (it did in live tests). The % is account-wide, and one
+response or one 30 s check can overshoot.
 
 ## Works with Claude Max / ChatGPT subscriptions (quota mode)
 
@@ -453,12 +503,14 @@ Models without a bundled price (for example OpenRouter or Ollama ids) are blocke
 ### Harness support matrix (real runs)
 
 Legend: ✅ verified on a real account/endpoint · ⚠️ works with a limitation · ❌ not supported · **needs X** = untested, X blocks it.
+Exit codes in the headings describe the wrapper. In-session plugins deny tool calls; as noted
+above, a headless Claude turn can exit 0 after a denial.
 
-| Harness + auth | Loop breaker (4x same call, exit 4) | Error breaker (8 failures, exit 4) | Quota % stop (exit 3) | $ / token cap |
+| Harness + auth | Loop breaker (4x same call, wrapper exit 4) | Error breaker (8 failures, wrapper exit 4) | Quota % stop (wrapper exit 3) | $ / token cap |
 | --- | --- | --- | --- | --- |
-| Claude Code, Pro/Max sub, interactive | ✅ (deny keeps the session; resumes after approve) | ✅ | ✅ statusline + `/usage` every minute (deny keeps the session); `agentcap approve` ✅. Live, Claude Code 2.1.322/323, Pro, 12-13 Nov 2026 | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
-| Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ✅ via `/usage` every 30 s (coarser; live: a 2% cap ended at 4%) | ❌ by design (refused) |
-| Codex, ChatGPT sub | ✅ | ✅ | ✅ `exec` and interactive TUI (whole %; warns under 1%; one-response timeout, default 5m; terminal restored after a TUI stop; approve mid-run; live % from `codex app-server` at start, every 30 s and after exit). Live, Codex 0.167.1, Plus, 11-12 Nov 2026 | ❌ by design (no proxy on a subscription) |
+| Claude Code, Pro/Max sub, interactive | ✅ (deny keeps the session; resumes after approve) | ✅ | ✅ statusline + `/usage` every 30 s (deny keeps the session); `agentcap approve` ✅; plugin. Live, Claude Code 2.1.322/323, Pro, 12-13 Nov 2026; in-session plugin, 14 Nov | ❌ by design (no proxy on a subscription login; AgentCap refuses) |
+| Claude Code, Pro/Max sub, headless `claude -p` | ✅ (exit 4) | ✅ (exit 4) | ✅ via `/usage` every 30 s (coarser; live: a 2% cap ended at 4%); plugin, default limit for `claude -p` | ❌ by design (refused) |
+| Codex, ChatGPT sub | ✅ | ✅ | ✅ `exec` and interactive TUI (whole %; warns under 1%; one-response timeout, default 5m; terminal restored after a TUI stop; approve mid-run; live % from `codex app-server` at start, every 30 s and after exit). Live, Codex 0.167.1, Plus, 11-12 Nov 2026; in-session plugin (TUI + exec), 14 Nov with test-local hooks; installed-plugin trust flow not yet verified | ❌ by design (no proxy on a subscription) |
 | opencode Go | ✅ | ✅ | ❌ not yet: opencode 1.x's session log reports Go cost as 0 and leaves out subagents (live test, 11 Nov 2026), so a Go % cap cannot be measured; do not rely on `--quota` with opencode | ✅ `--tokens`; `--log-cap` uses opencode's own price table |
 | agy, Google sub (plain `agentcap run -- agy` needs no key: breakers only) | ✅ | ✅ | ✅ (tested at 0.5%; ~10 s polling, can overshoot) | ❌ (sub); $ only via Gemini API |
 | opencode + OpenRouter (free model) | ✅ | ✅ | n/a | ✅ $ cap |
