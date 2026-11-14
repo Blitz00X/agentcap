@@ -233,16 +233,30 @@ def claude_live(*, binary: str | None = None, timeout: float = CLAUDE_TIMEOUT_S,
 LiveReader = Callable[[str], "dict[str, Reading] | None"]
 
 
-def live_readings(agent: str) -> dict[str, Reading] | None:
-    """Current account readings for *agent* ('claude' / 'codex'), or None."""
+def live_readings(
+    agent: str,
+    *,
+    enabled: bool | None = None,
+    state_dir: Path | None = None,
+) -> dict[str, Reading] | None:
+    """Current account readings for *agent* ('claude' / 'codex'), or None.
 
-    if not live_enabled():
+    ``enabled`` lets a caller that must ignore the ambient
+    ``AGENTCAP_LIVE_QUOTA`` override force live reads on.  ``state_dir`` keeps
+    the probe directory under the caller's pinned state root.
+    """
+
+    if enabled is None:
+        enabled = live_enabled()
+    if not enabled:
         return None
     if agent == "codex":
         return codex_live()
     if agent == "claude":
         from .quota import state_root
-        probe = state_root() / "probe"
+
+        root = state_dir if state_dir is not None else state_root()
+        probe = root / "probe"
         try:
             probe.mkdir(parents=True, exist_ok=True, mode=0o700)
         except OSError:

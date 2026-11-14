@@ -338,6 +338,7 @@ MODEL_SELF_CALLS = [
     f"python3 {P} $(printf appr; printf ove)",
     "python3 /home/u/.claude/plugins/cache/agentcap/agentcap/0.3.0/scripts/agentcap*.py approve",
     f"python3 -c \"import runpy,sys; sys.argv=['x','approve']; runpy.run_path('{P}')\"",
+    "python3 -c \"import agentcap.cli as c; c.main(['approve'])\"",
     f"python3 -c 'import sys; sys.path.insert(0, \"/p/scripts\"); import agentcap_cc; agentcap_cc.main([\"approve\"])'",
     f"sed -i 's/APPROVE_MAX = 2/APPROVE_MAX = 99/' {P}",
     f"cp /tmp/evil.py {P}",
@@ -576,3 +577,59 @@ def test_plugin_waits_trip_neither_breaker(env):
     for _ in range(3):
         assert hook("pre", dict(PRE, tool_input={"command": "pwd"})) is None
     assert hook("pre", dict(PRE, tool_input={"command": "pwd"}))["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_plugin_ignores_security_env_overrides_without_testing(env, monkeypatch):
+    """M-3: project settings env must not redirect state/licence or blind live reads."""
+
+    monkeypatch.setenv("AGENTCAP_QUOTA_DIR", str(env / "attacker-state"))
+    monkeypatch.setenv("AGENTCAP_LICENSE_FILE", str(env / "attacker-license.json"))
+    monkeypatch.setenv("AGENTCAP_LIVE_QUOTA", "0")
+    monkeypatch.delenv("AGENTCAP_TESTING", raising=False)
+
+    assert cc.state_root() == Path.home() / ".local" / "state" / "agentcap" / "quota"
+    assert cc.license_path() == Path.home() / ".config" / "agentcap" / "license.json"
+    assert cc.live_enabled() is True
+
+    monkeypatch.setenv("AGENTCAP_TESTING", "1")
+    assert cc.state_root() == env / "attacker-state"
+    assert cc.license_path() == env / "attacker-license.json"
+    assert cc.live_enabled() is False
+
+
+def test_setup_backup_is_private(env, monkeypatch):
+    """L-1: the settings backup may hold env API keys and must be owner-only."""
+
+    import stat
+
+    settings = cc.claude_settings_path()
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({
+        "statusLine": {"type": "command", "command": "echo old"},
+        "env": {"ANTHROPIC_API_KEY": "synthetic-not-a-real-key"},
+    }))
+    settings.chmod(0o600)
+
+    cc.cmd_setup(now=1.0)
+    backup = settings.with_name(settings.name + ".agentcap-backup")
+    assert backup.exists()
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+
+def test_git_output_is_not_treated_as_a_plain_read(env):
+    """L-3: --output writes state/plugin files even though git looks read-only."""
+
+    state = cc.state_root()
+    assert cc.command_touches_plugin(
+        f"git show --output={state}/cc/sessions/x.json HEAD:x.json", "/w"
+    )
+    assert cc.command_touches_plugin(
+        f"git --open-files-in-pager=sh grep x {state}/cc/sessions/x.json", "/w"
+    )
+
+
+def test_unrelated_agentcap_glob_is_allowed_but_plugin_glob_is_not(env):
+    """Item 11: only a glob in the same path component as agentcap is the plugin."""
+
+    assert not cc.command_touches_plugin("ls /tmp/agentcap-040-x/*.md", "/w")
+    assert cc.command_touches_plugin("cat ~/.claude/plugins/x/agentcap*", "/w")

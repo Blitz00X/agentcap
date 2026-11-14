@@ -42,10 +42,42 @@ from agentcap.quota import (  # noqa: E402
     baseline_from_last,
     claude_readings,
     parse_quota,
-    state_root,
+    state_root as _quota_state_root,
 )
-from agentcap.live_quota import live_enabled, live_readings  # noqa: E402
+from agentcap.live_quota import (  # noqa: E402
+    live_enabled as _live_enabled,
+    live_readings as _live_readings,
+)
+from agentcap.private import write_private_text  # noqa: E402
 from agentcap.waste import is_wait_call  # noqa: E402
+
+
+def _testing() -> bool:
+    """Environment overrides are a test facility, not a production input.
+
+    A project-level Claude settings ``env`` block must not be able to redirect
+    the plugin's quota state or licence cache (or turn live reads off).
+    """
+
+    return os.environ.get("AGENTCAP_TESTING") == "1"
+
+
+def state_root() -> Path:
+    """Plugin state root, pinned to the user's home unless explicitly testing."""
+
+    if _testing():
+        return _quota_state_root()
+    return Path.home() / ".local" / "state" / "agentcap" / "quota"
+
+
+def live_enabled() -> bool:
+    if _testing():
+        return _live_enabled()
+    return True
+
+
+def live_readings(agent: str) -> "dict[str, Any] | None":
+    return _live_readings(agent, enabled=live_enabled(), state_dir=state_root())
 
 WARN_FRACTION = 0.8
 MARK = "agentcap-cc"  # tag inside our statusLine command (setup/unsetup detection)
@@ -83,7 +115,9 @@ def claude_settings_path() -> Path:
 # ----------------------------------------------------------------- licence
 def license_path() -> Path:
     env = os.environ.get("AGENTCAP_LICENSE_FILE")
-    return Path(env).expanduser() if env else Path.home() / ".config" / "agentcap" / "license.json"
+    if _testing() and env:
+        return Path(env).expanduser()
+    return Path.home() / ".config" / "agentcap" / "license.json"
 
 
 def is_pro() -> bool:
@@ -391,8 +425,11 @@ SELF_GUARD_REASON = (
     "/agentcap:approve, /agentcap:quota or /agentcap:off themselves."
 )
 # the script itself (any path, `python -m agentcap_cc`, `import agentcap_cc`) or a glob for it
-_SCRIPT_RE = re.compile(r"agentcap_cc\b|agentcap\S*[*?]|CLAUDE_PLUGIN_ROOT|\.claude/plugins\S*agentcap")
+_SCRIPT_RE = re.compile(
+    r"agentcap_cc\b|agentcap[^/\s]*[*?]|CLAUDE_PLUGIN_ROOT|\.claude/plugins\S*agentcap"
+)
 _STATE_RE = re.compile(r"state/agentcap\b|" + re.escape(STATE_ENV))
+_SCRIPT_GLOB_RE = re.compile(r"agentcap[^/\s]*[*?]")
 # only plain reads of those paths may pass; anything that can execute or write is denied
 _EXEC_OR_WRITE_RE = re.compile(r"\$\(|`|>|<\(")
 _SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|[;&|()]")
@@ -401,7 +438,10 @@ READ_ONLY_HEADS = frozenset({
     "ls", "tree", "du", "diff", "cmp", "sha256sum", "sha1sum", "md5sum", "realpath", "readlink",
     "basename", "dirname", "cd", "pwd", "echo", "true", "jq",
 })
-_GIT_RISKY_RE = re.compile(r"(?:^|\s)-c\b|config|alias|!|exec|upload-pack|receive-pack|ssh|checkout|restore|reset|apply|\bam\b")
+_GIT_RISKY_RE = re.compile(
+    r"(?:^|\s)-c\b|--output|--open-files-in-pager|--exec-path|--config-env|"
+    r"config|alias|!|exec|upload-pack|receive-pack|ssh|checkout|restore|reset|apply|\bam\b"
+)
 READ_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "NotebookRead"})
 PATH_KEYS = ("file_path", "notebook_path", "path")
 
@@ -464,7 +504,10 @@ def command_touches_plugin(command: str, cwd: str) -> bool:
     hit = bool(_SCRIPT_RE.search(text) or _STATE_RE.search(text))
     if not hit:
         hit = any(form in text for root in _protected_roots(cwd) for form in _path_forms(root))
-    return hit and not _read_only(command)
+    # A glob that can match the installed script is denied even when the
+    # command is otherwise a plain read (e.g. `cat .../agentcap*`).
+    glob_hit = bool(_SCRIPT_GLOB_RE.search(text))
+    return hit and (glob_hit or not _read_only(command))
 
 
 def path_touches_plugin(raw: str, cwd: str) -> bool:
@@ -721,7 +764,9 @@ def cmd_setup(*, now: float) -> str:
     _atomic_write(cc_dir() / "statusline.json", {"installed": True, "previous": current, "ts": now, "settings": str(path)})
     backup = path.with_name(path.name + ".agentcap-backup")
     if path.exists() and not backup.exists():
-        backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        # Settings can contain env API keys/apiKeyHelper.  Write the backup
+        # owner-only and never through a pre-existing symlink.
+        write_private_text(backup, path.read_text(encoding="utf-8"))
     cmd = f"python3 {shlex.quote(str(launcher_path()))} # {MARK}"
     data["statusLine"] = {"type": "command", "command": cmd, "refreshInterval": 5}
     path.parent.mkdir(parents=True, exist_ok=True)

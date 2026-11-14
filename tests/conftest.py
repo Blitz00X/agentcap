@@ -74,6 +74,13 @@ def _isolated_budget_config(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _testing_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Permit test-only state/licence overrides in the plugin."""
+
+    monkeypatch.setenv("AGENTCAP_TESTING", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_live_quota(monkeypatch: pytest.MonkeyPatch) -> None:
     """Never start the real claude/codex to read the live quota from a test."""
     monkeypatch.setenv("AGENTCAP_LIVE_QUOTA", "0")
