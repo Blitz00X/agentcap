@@ -81,6 +81,10 @@ def test_hook_denies_bash_self_approve(tmp_path):
         "agentcap${IFS}approve",
         "env -u CLAUDECODE -u AGENTCAP_GUARDED /home/k/.local/bin/agentcap 'approve'",
         "python -m agentcap approve",
+        "python -m agentcap.cli approve",
+        "python -c \"import agentcap.cli as c; c.main(['approve'])\"",
+        "python -c 'from agentcap.cli import main; main([\"approve\"])'",
+        "python -c 'import agentcap.quota as q; q.approve_job()'",
     ],
 )
 def test_hook_denies_obfuscated_self_approve(tmp_path, command):

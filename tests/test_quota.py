@@ -173,14 +173,36 @@ def test_hook_fails_open_without_state(tmp_path):
     assert q.hook_main(tmp_path, io.StringIO("{}"), io.StringIO()) == 0
 
 
-def test_user_statusline_precedence(tmp_path):
+def test_user_statusline_never_reads_project_settings(tmp_path):
+    """H-1: a project statusLine is untrusted repository input, not a chain."""
+
     home, cwd = tmp_path / "h", tmp_path / "p"
     (home / ".claude").mkdir(parents=True)
     (cwd / ".claude").mkdir(parents=True)
-    (home / ".claude" / "settings.json").write_text(json.dumps({"statusLine": {"type": "command", "command": "user.sh"}}))
+    (home / ".claude" / "settings.json").write_text(
+        json.dumps({"statusLine": {"type": "command", "command": "user.sh"}})
+    )
+    (cwd / ".claude" / "settings.json").write_text(
+        json.dumps({"statusLine": {"type": "command", "command": "project.sh"}})
+    )
+    (cwd / ".claude" / "settings.local.json").write_text(
+        json.dumps({"statusLine": {"type": "command", "command": "local.sh"}})
+    )
     assert q.user_statusline_command(cwd, home) == "user.sh"
-    (cwd / ".claude" / "settings.local.json").write_text(json.dumps({"statusLine": {"type": "command", "command": "local.sh"}}))
-    assert q.user_statusline_command(cwd, home) == "local.sh"
+
+    # No user-level statusLine: project/local settings must not fill the gap.
+    (home / ".claude" / "settings.json").unlink()
+    assert q.user_statusline_command(cwd, home) is None
+
+
+def test_user_statusline_uses_claude_config_dir(tmp_path, monkeypatch):
+    configured = tmp_path / "claude-config"
+    configured.mkdir()
+    (configured / "settings.json").write_text(
+        json.dumps({"statusLine": {"type": "command", "command": "configured.sh"}})
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
+    assert q.user_statusline_command(tmp_path, tmp_path / "home") == "configured.sh"
 
 
 def test_settings_layer_and_injection(tmp_path):
@@ -884,10 +906,10 @@ def test_parallel_batch_failures_counted_by_post_hooks(tmp_path):
 
 def test_claude_settings_register_post_hooks(tmp_path):
     from agentcap import quota as q
-    import inspect
-    fn = [f for n, f in inspect.getmembers(q, inspect.isfunction) if "PostToolUseFailure" in inspect.getsource(f) and n != "post_main"][0]
-    src = inspect.getsource(fn)
-    assert "post --job" in src
+
+    settings = q.claude_settings(tmp_path / "job")
+    cmd = settings["hooks"]["PostToolUseFailure"][0]["hooks"][0]["command"]
+    assert " post " in f" {cmd} " and " --job " in f" {cmd} "
 
 
 def test_share_tracker_ignores_same_window_jitter():
@@ -1219,3 +1241,38 @@ def test_quota_status_marks_old_and_reset_readings(tmp_path, monkeypatch):
     assert five.startswith("claude 5h: unknown now: the window reset 2h00m ago") and "19.0%" in five
     fresh = q._status_line("codex", "5h", 15.0, now + 3600, 120, now, "x")
     assert "STALE" not in fresh and "last seen 2m ago" in fresh
+
+
+def test_quota_readings_reject_non_finite_numbers():
+    """Lead 2: NaN/±inf cannot become a baseline or hide a cap."""
+
+    import math
+
+    for value in (float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-inf"):
+        assert q._num(value) is None
+    assert q._num("5.5") == 5.5
+    assert q._num(3) == 3.0
+
+
+def test_project_statusline_is_not_chained_or_executed(tmp_path):
+    """H-1 end-to-end at the statusline boundary: project command never runs."""
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".claude").mkdir(parents=True)
+    (project / ".claude").mkdir(parents=True)
+    marker = project / "PWNED"
+    (project / ".claude" / "settings.json").write_text(json.dumps({
+        "statusLine": {"type": "command",
+                       "command": f"/bin/sh -c 'echo x > {marker}'"},
+    }))
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "job.json").write_text(json.dumps({
+        "quota": 5, "window": "week", "started_at": NOW, "enforce": True,
+        "chain": q.user_statusline_command(project, home),
+    }))
+    out = io.StringIO()
+    q.statusline_main(job, io.StringIO(json.dumps(statusline_payload())), out, now=NOW)
+    assert not marker.exists()
+    assert "agentcap: job" in out.getvalue()

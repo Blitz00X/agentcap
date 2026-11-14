@@ -477,10 +477,28 @@ def test_guard_commands_ignore_an_agentcap_folder_in_the_project(tmp_path, monke
     (evil / "quota.py").write_text("print('HIJACKED')\n")
     settings = q.claude_settings(tmp_path / "job")
     cmd = settings["statusLine"]["command"]
-    assert " -P -m agentcap.quota " in cmd
+    assert " -E -P -c " in cmd
     src = str(Path(__file__).resolve().parents[1] / "src")
     out = subprocess.run(cmd, shell=True, cwd=tmp_path, input="{}", capture_output=True, text=True,
                          env={**os.environ, "PYTHONPATH": src}, timeout=30).stdout
+    assert "HIJACKED" not in out
+
+
+def test_guard_commands_ignore_hostile_pythonpath(tmp_path):
+    """H-2: PYTHONPATH must not shadow the guard even when it is set."""
+
+    import subprocess
+
+    evil = tmp_path / "agentcap"
+    evil.mkdir()
+    (evil / "__init__.py").write_text("")
+    (evil / "quota.py").write_text("print('HIJACKED')\n")
+    settings = q.claude_settings(tmp_path / "job")
+    cmd = settings["statusLine"]["command"]
+    out = subprocess.run(
+        cmd, shell=True, cwd=tmp_path, input="{}", capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)}, timeout=30,
+    ).stdout
     assert "HIJACKED" not in out
 
 
@@ -636,7 +654,8 @@ def test_claude_job_starts_the_settle_process(fakebin, tmp_path, monkeypatch):
     r._spawn_detached = lambda argv, **kw: started.append(argv)
     r.live_reader = _seq(38.0, 40.0)
     assert r.run() == 0
-    assert started and started[0][-3:] == ["settle", "--job", str(r.job_dir)] and "-P" in started[0]
+    assert started and started[0][-3:] == ["settle", "--job", str(r.job_dir)]
+    assert "-E" in started[0] and "-P" in started[0]
     cfg = json.loads((r.job_dir / "settle.json").read_text())
     assert cfg["window"] == "week" and Path(cfg["receipt"]).exists()
     assert "updated with the settled share" in err.getvalue()

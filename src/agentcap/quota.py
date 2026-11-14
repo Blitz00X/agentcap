@@ -28,6 +28,7 @@ overshoot by up to one request.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shlex
@@ -223,6 +224,15 @@ def approve_job(root: Path | None = None) -> str:
 
 AGENT_ENV_MARKERS = ("AGENTCAP_QUOTA_JOB", "AGENTCAP_GUARDED", "CLAUDECODE")
 SELF_APPROVE_RE = re.compile(r"\bagentcap(?:\.cli)?\s+approve\b")
+# Importing the CLI and calling its approve entry point is not a literal
+# `agentcap approve`; these forms are equivalent and must be caught too.
+_SELF_APPROVE_IMPORT_RE = (
+    re.compile(r"\bpython[0-9.]*\s+-m\s+agentcap(?:\.cli)?\s+approve\b"),
+    re.compile(r"\bagentcap\.cli\b.*\bapprove\b"),
+    re.compile(r"\bagentcap(?:\.cli)?\s+import\b.*\bapprove\b"),
+    re.compile(r"\bfrom\s+agentcap(?:\.cli)?\s+import\b.*\bapprove\b"),
+    re.compile(r"\bapprove_job\b"),
+)
 _QUOTE_OR_ESCAPE_RE = re.compile(r"[\"'\\]")
 _SHELL_IFS_RE = re.compile(r"\$\{IFS\}|\$IFS")
 
@@ -242,9 +252,13 @@ def _normalized_shell_text(command: str) -> str:
 
 
 def is_self_approve_command(command: str) -> bool:
-    """True when a Bash command would run ``agentcap approve``."""
+    """True when a Bash command would run AgentCap's approve entry point."""
 
-    return bool(SELF_APPROVE_RE.search(_normalized_shell_text(command)))
+    text = _normalized_shell_text(command)
+    return bool(
+        SELF_APPROVE_RE.search(text)
+        or any(pattern.search(text) for pattern in _SELF_APPROVE_IMPORT_RE)
+    )
 
 
 def self_approve_refusal(env: Mapping[str, str]) -> str | None:
@@ -324,13 +338,17 @@ def _num(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+        result = float(value)
+    elif isinstance(value, str):
         try:
-            return float(value)
+            result = float(value)
         except ValueError:
             return None
-    return None
+    else:
+        return None
+    # NaN and ±inf are not readings: accepting them poisons ShareTracker
+    # baselines (a NaN baseline makes every later share 0) and hides a cap.
+    return result if math.isfinite(result) else None
 
 
 def claude_readings(payload: Mapping[str, Any]) -> dict[str, Reading]:
@@ -561,43 +579,76 @@ def _readings_dict(readings: Mapping[str, Reading]) -> dict[str, Any]:
 
 
 # ------------------------------------------------- Claude: statusline + hook
-def user_statusline_command(cwd: Path | None = None, home: Path | None = None) -> str | None:
-    """The statusLine command the user would get without AgentCap.
+def _claude_user_settings_path(home: Path | None = None) -> Path:
+    """The user-level Claude settings file, never a project file.
 
-    Precedence (low → high): user, project, local project settings.
+    ``CLAUDE_CONFIG_DIR`` is Claude Code's own user-level override; project
+    ``.claude/settings.json`` and ``settings.local.json`` are deliberately not
+    read here.  A project can be untrusted and AgentCap must not execute its
+    statusLine command.
     """
 
-    home = home or Path.home()
-    cwd = cwd or Path.cwd()
-    found: str | None = None
-    for path in (
-        home / ".claude" / "settings.json",
-        cwd / ".claude" / "settings.json",
-        cwd / ".claude" / "settings.local.json",
-    ):
-        data = _read_json(path)
-        if not data or "statusLine" not in data:
-            continue
-        block = data.get("statusLine")
-        if isinstance(block, Mapping) and block.get("type", "command") == "command":
-            cmd = block.get("command")
-            found = cmd if isinstance(cmd, str) and cmd.strip() else None
-        else:
-            found = None
-    return found
+    configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser() / "settings.json"
+    return (home or Path.home()) / ".claude" / "settings.json"
+
+
+def user_statusline_command(cwd: Path | None = None, home: Path | None = None) -> str | None:
+    """The user-level statusLine command the user would get without AgentCap.
+
+    ``cwd`` is kept for API compatibility but project/local settings are never
+    used: their statusLine command is untrusted repository input.
+    """
+
+    path = _claude_user_settings_path(home)
+    data = _read_json(path)
+    if not data:
+        return None
+    block = data.get("statusLine")
+    if isinstance(block, Mapping) and block.get("type", "command") == "command":
+        cmd = block.get("command")
+        return cmd if isinstance(cmd, str) and cmd.strip() else None
+    return None
+
+
+def _guard_bootstrap() -> str:
+    """A tiny ``-c`` program that imports the guard from AgentCap's own package root.
+
+    ``-E`` ignores PYTHONPATH/PYTHONHOME and ``-P`` removes the current
+    directory; the explicit path below is the only way the guard module can be
+    found.  This keeps a project's ``agentcap/`` folder and a hostile
+    ``PYTHONPATH`` from replacing the guard.
+    """
+
+    root = Path(__file__).resolve().parent.parent
+    return (
+        "import sys; "
+        f"sys.path.insert(0, {str(root)!r}); "
+        "from agentcap.quota import main; "
+        "raise SystemExit(main())"
+    )
+
+
+def guard_command(action: str, job_dir: Path, python: str | None = None) -> str:
+    """Shell command for one guard entry point (statusline/hook/post/settle)."""
+
+    py = shlex.quote(python or sys.executable)
+    code = shlex.quote(_guard_bootstrap())
+    return (
+        f"{py} -E -P -c {code} {shlex.quote(action)} --job "
+        f"{shlex.quote(str(job_dir))}"
+    )
 
 
 def claude_settings(job_dir: Path, python: str | None = None) -> dict[str, Any]:
-    py = shlex.quote(python or sys.executable)
-    job = shlex.quote(str(job_dir))
-    # -P: do not put the current directory first on sys.path.  With plain -m, an
-    # `agentcap/` folder in the project replaced the guard (live C2, 13 Nov 2026: the
-    # statusline ran a stale copy from the working directory).
-    base = f"{py} -P -m agentcap.quota"
+    base = guard_command("statusline", job_dir, python=python)
+    hook = guard_command("hook", job_dir, python=python)
+    post = guard_command("post", job_dir, python=python)
     return {
         "statusLine": {
             "type": "command",
-            "command": f"{base} statusline --job {job}",
+            "command": base,
             "refreshInterval": 5,
         },
         "hooks": {
@@ -605,7 +656,7 @@ def claude_settings(job_dir: Path, python: str | None = None) -> dict[str, Any]:
                 {
                     "matcher": "*",
                     "hooks": [
-                        {"type": "command", "command": f"{base} hook --job {job}", "timeout": 10}
+                        {"type": "command", "command": hook, "timeout": 10}
                     ],
                 }
             ],
@@ -613,11 +664,11 @@ def claude_settings(job_dir: Path, python: str | None = None) -> dict[str, Any]:
             # batch, so failures are also counted as they happen.
             "PostToolUse": [
                 {"matcher": "*", "hooks": [
-                    {"type": "command", "command": f"{base} post --job {job}", "timeout": 10}]}
+                    {"type": "command", "command": post, "timeout": 10}]}
             ],
             "PostToolUseFailure": [
                 {"matcher": "*", "hooks": [
-                    {"type": "command", "command": f"{base} post --job {job}", "timeout": 10}]}
+                    {"type": "command", "command": post, "timeout": 10}]}
             ],
         },
     }
@@ -1390,7 +1441,8 @@ class QuotaRunner:
             "ended_at": time.time(),
         })
         self._spawn_detached(
-            [sys.executable, "-P", "-m", "agentcap.quota", "settle", "--job", str(self.job_dir)],
+            [sys.executable, "-E", "-P", "-c", _guard_bootstrap(),
+             "settle", "--job", str(self.job_dir)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True, close_fds=True, env=_probe_env(),
         )
