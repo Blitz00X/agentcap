@@ -685,3 +685,17 @@ def test_the_usage_probe_session_never_gets_a_default(env, monkeypatch):
     out = hook("start", {"session_id": "probe-sid", "hook_event_name": "SessionStart", "source": "startup",
                          "cwd": probe_cwd})
     assert out is None and started == [] and not cc.session_path("probe-sid").exists()
+
+
+def test_first_quota_deny_writes_a_receipt(env, monkeypatch):
+    # headless claude -p ends at the deny with no output and no Stop hook (live 14 Nov 2026)
+    import time as _t
+    pro(env)
+    _live(monkeypatch, 40.0)
+    cmd("quota", "2%")
+    cc._atomic_write(cc.usage_path(SID), {"ts": _t.time(), "readings": {"week": {"used": 43.0, "resets_at": RESETS}}})
+    monkeypatch.setattr(cc, "maybe_probe_usage", lambda *a, **k: False)
+    assert hook("pre", dict(PRE, tool_input={"command": "x"}))["hookSpecificOutput"]["permissionDecision"] == "deny"
+    hook("pre", dict(PRE, tool_input={"command": "y"}))
+    recs = [json.loads(l) for l in (cc.cc_dir() / "receipts.jsonl").read_text().splitlines()]
+    assert len(recs) == 1 and recs[0]["reason"] == "quota_exceeded" and recs[0]["share"] == 3.0

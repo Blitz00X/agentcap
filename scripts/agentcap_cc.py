@@ -87,7 +87,7 @@ WINDOW_NAMES = {"week": "weekly", "5h": "5-hour"}
 # /usage is checked in the background at most once a minute while a quota is set:
 # the statusline % lags /usage by 1-2 points and a stale first value made a 0% job
 # look like 1% (live CLI tests C1-C3, 12-13 Nov 2026).
-USAGE_POLL_S = 60.0
+USAGE_POLL_S = 30.0   # headless `claude -p` has no statusline: /usage is the only source
 PROBE_STALE_S = 120.0
 RESET_MATCH_S = 120.0
 
@@ -644,6 +644,10 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
                 "/agentcap:quota or clear it with /agentcap:off."
             )
             state["denies"] = int(state.get("denies", 0)) + 1
+            if state["denies"] == 1:
+                # headless `claude -p` ends here with no output and no Stop hook: the
+                # receipt is the only record of why (live 14 Nov 2026)
+                _write_receipt(state, sid, now, share, reason="quota_exceeded")
             save(sid, state)
             _emit(stdout, {  # deny + end the turn; the session itself stays open
                 "continue": False,
@@ -692,15 +696,26 @@ def hook_stop(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
     state["receipt_share"] = share
     save(sid, state)
     if pro:
-        rec = {"ts": now, "session_id": sid, "window": state.get("window"), "quota": state.get("quota"),
-               "share": share, "used_now": state.get("used"), "denies": state.get("denies", 0),
-               "measured_by": "usage" if by_usage is not None else "statusline",
-               "approvals": state.get("approvals", 0),
-               "last_tool": (_read_json(_loop_path(sid)) or {}).get("last_tool")}
-        with open(cc_dir() / "receipts.jsonl", "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec) + "\n")
+        _write_receipt(state, sid, now, share, reason="turn_end", by_usage=by_usage)
     _emit(stdout, {"systemMessage": share_line(state, sid)})
     return 0
+
+
+def _write_receipt(state: Mapping[str, Any], sid: str, now: float, share: float, *, reason: str,
+                   by_usage: float | None = None) -> None:
+    if by_usage is None:
+        by_usage = usage_share(state, sid)
+    rec = {"ts": now, "session_id": sid, "window": state.get("window"), "quota": state.get("quota"),
+           "share": round(share, 1), "used_now": state.get("used"), "denies": state.get("denies", 0),
+           "measured_by": "usage" if by_usage is not None else "statusline",
+           "approvals": state.get("approvals", 0), "reason": reason, "source": state.get("source"),
+           "last_tool": (_read_json(_loop_path(sid)) or {}).get("last_tool")}
+    try:
+        cc_dir().mkdir(parents=True, exist_ok=True)
+        with open(cc_dir() / "receipts.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
 
 
 # ----------------------------------------------------------------- commands
@@ -745,7 +760,9 @@ def cmd_quota(args: list[str], sid: str | None, *, now: float) -> str:
     if not is_pro():
         lines.append("Free tier: you get the live meter and a notice at the limit. Enforcement (deny tool calls) is Pro.")
     if not (_read_json(cc_dir() / "statusline.json") or {}).get("installed"):
-        lines.append("Not active yet: run /agentcap:setup (adds AgentCap's statusLine, which is the only place Claude Code exposes quota %).")
+        lines.append("Active: measured with /usage (checked every 30 s). Optional: /agentcap:setup adds a live "
+                     "meter to the statusline." if source == "/usage" else
+                     "Not active yet: /usage did not answer; run /agentcap:setup (statusline) or try again.")
     return "\n".join(lines)
 
 
