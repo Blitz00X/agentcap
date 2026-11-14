@@ -19,5 +19,6 @@ AgentCap is a local guard. The user controls it by typing a prompt that starts w
 Rules for you, the agent:
 
 - You cannot run these commands yourself and must not try (a tool call that approves the limit is denied). Tell the user which one to type.
-- When a tool call is denied with a message that starts with `agentcap:`, stop calling tools. Summarise what is done and what is left, and tell the user they can type `agentcap approve` or `agentcap off`.
+- When a tool call is denied with a message that starts with `agentcap:` (a quota, loop or error stop), stop calling tools. Summarise what is done and what is left, and tell the user they can type `agentcap approve` or `agentcap off`.
+- A denial that starts with `agentcap guard (not a quota stop)` only refuses that one command (approving the limit yourself, or changing AgentCap's state or installed plugin files). Do not retry it; continue the task another way. Reading files, editing the project and running its tests are not affected.
 - The quota % is account-wide: use on other devices or sessions counts too, and one large response can pass the limit by a few points.

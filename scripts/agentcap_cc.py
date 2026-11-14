@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Mapping, TextIO
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.dont_write_bytecode = True  # keep the installed plugin package unchanged (no __pycache__)
 sys.path.insert(0, str(ROOT / "src"))
 
 from agentcap.quota import (  # noqa: E402

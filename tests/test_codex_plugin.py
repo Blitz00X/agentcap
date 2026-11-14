@@ -340,3 +340,45 @@ def test_copied_codex_plugin_runs_without_the_repo(tmp_path):
     # Codex fingerprints the plugin: a hook that writes __pycache__ into it makes Codex refuse
     # every later hook ("plugin contents changed"), even when the command lacks -B
     assert not list(dest.rglob("__pycache__")) and not list(dest.rglob("*.pyc"))
+
+
+# ------------------------------------------------- self-guard false positives (live 14 Nov 2026)
+def _tool(tool, tool_input, sid=SID):
+    return hook("PreToolUse", {"session_id": sid, "turn_id": "t", "cwd": "/w", "transcript_path": None,
+                               "hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input})
+
+
+def test_a_patch_that_only_mentions_the_approve_command_is_allowed(env):
+    # Codex editing AgentCap's own README was denied because the patch text quoted the command
+    patch = ("*** Begin Patch\n*** Update File: README.md\n@@\n+Type `agentcap " + "approve` to raise the limit.\n"
+             "*** End Patch\n")
+    assert _tool("apply_patch", {"command": patch}) is None
+    assert _tool("apply_patch", patch) is None
+
+
+def test_a_patch_into_agentcap_state_or_the_installed_plugin_is_denied(env):
+    for target in ("~/.local/state/agentcap/quota/codex/sessions/x.json",
+                   "/home/u/.codex/plugins/cache/agentcap/agentcap/0.5.0/hooks/hooks.json"):
+        patch = f"*** Begin Patch\n*** Update File: {target}\n@@\n-a\n+b\n*** End Patch\n"
+        out = _tool("apply_patch", {"command": patch})
+        assert denied(out) and "not a quota stop" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("command", [
+    "sed -n 1,40p ~/.local/state/agentcap/quota/codex/sessions/x.json",
+    "find ~/.local/state/agentcap -name '*.json' | head",
+    "git -C ~/.local/state/agentcap log --oneline",
+    "python3 scripts/agentcap_codex.py hook Stop",            # a dev checkout of AgentCap, not the plugin
+    "pytest tests/test_codex_plugin.py -q",
+])
+def test_reads_and_developing_agentcap_are_allowed(env, command):
+    assert pre(command) is None
+
+
+@pytest.mark.parametrize("command", [
+    "sed -i s/2/99/ ~/.local/state/agentcap/quota/codex/sessions/x.json",
+    "find ~/.local/state/agentcap -delete",
+])
+def test_writes_to_state_are_still_denied(env, command):
+    out = pre(command)
+    assert denied(out) and "not a quota stop" in out["hookSpecificOutput"]["permissionDecisionReason"]

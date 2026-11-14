@@ -381,22 +381,67 @@ def run_command(text: str, sid: str, now: float) -> str:
 
 
 # ----------------------------------------------------------------- self-guard
-_STATE_RE = re.compile(r"state/agentcap\b|\.codex/plugins\S*agentcap|agentcap_codex\b")
-_READ_HEADS = frozenset({"cat", "head", "tail", "less", "grep", "rg", "ls", "wc", "stat", "jq", "diff", "file"})
+# Only the installed plugin and AgentCap's state dir are protected (not a repo checkout of
+# AgentCap: developing it inside Codex must stay possible).
+_STATE_RE = re.compile(r"state/agentcap\b|\.codex/plugins\S*agentcap")
+_READ_HEADS = frozenset({
+    "cat", "head", "tail", "less", "more", "grep", "egrep", "rg", "ls", "wc", "stat", "jq", "diff", "file",
+    "tree", "du", "nl", "cut", "sort", "uniq", "od", "xxd", "sha256sum", "md5sum", "realpath", "readlink",
+    "basename", "dirname", "echo", "pwd", "cd", "true", "test", "[", "find", "sed",
+})
+# Shell tools only.  A patch or file write that merely *contains* the words of a command
+# (live 14 Nov 2026: a README patch quoting the approve command was denied) is not running it.
+_SHELL_TOOLS = frozenset({"Bash", "exec_command", "shell", "local_shell", "exec", "unified_exec"})
+
+
+def _segment_reads(seg: str) -> bool:
+    words = seg.split()
+    if not words or re.search(r">|\$\(|`|<\(", seg):
+        return False
+    head = words[0]
+    if head == "sed":
+        return not any(w.startswith("-i") or w == "--in-place" for w in words[1:])
+    if head == "find":
+        return not any(w in ("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf")
+                       for w in words[1:])
+    if head == "git":
+        rest = words[1:]
+        while rest and rest[0] in ("-C", "--no-pager", "-P"):   # never `-c` (config can run commands)
+            rest = rest[2:] if rest[0] == "-C" else rest[1:]
+        return (bool(rest) and rest[0] in ("log", "show", "diff", "status", "blame", "ls-files", "rev-parse")
+                and not any(w.startswith("--output") or w == "--ext-diff" for w in rest))
+    return head in _READ_HEADS
+
+
+_PATCH_PATH_RE = re.compile(r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.MULTILINE)
+
+
+def _patch_targets(tool_input: Any) -> list[str]:
+    text = tool_input if isinstance(tool_input, str) else json.dumps(tool_input)
+    return [m.strip() for m in _PATCH_PATH_RE.findall(text.replace("\\n", "\n"))]
 
 
 def self_guard(payload: Mapping[str, Any]) -> str | None:
+    tool = payload.get("tool_name")
+    if tool == "apply_patch":
+        # judge a patch by the files it writes, never by the text it contains
+        if any(_STATE_RE.search(os.path.expanduser(p)) for p in _patch_targets(payload.get("tool_input"))):
+            return ("agentcap guard (not a quota stop): the agent may not change AgentCap's state or "
+                    "installed plugin files. Continue the task without it.")
+        return None
+    if tool not in _SHELL_TOOLS:
+        return None
     cmd = command_text(payload.get("tool_input"))
     if not cmd:
         return None
     if is_self_approve_command(cmd):
-        return ("agentcap: the agent may not approve its own limit; the user types "
-                "`agentcap approve` as a prompt.")
+        return ("agentcap guard (not a quota stop): the agent may not approve its own limit; the user "
+                "types the approve command as a prompt. Continue the task without it.")
     if _STATE_RE.search(cmd):
         segments = [s.strip() for s in re.split(r"\|\||&&|[;|]", cmd) if s.strip()]
-        if any(re.search(r">|\$\(|`", s) or s.split()[0] not in _READ_HEADS for s in segments):
-            return ("agentcap: the agent may not change AgentCap's state or plugin files; "
-                    "the limit belongs to the user.")
+        if not all(_segment_reads(s) for s in segments):
+            return ("agentcap guard (not a quota stop): the agent may not change AgentCap's state or "
+                    "installed plugin files (reading them is fine). Continue the task without it.")
     return None
 
 
