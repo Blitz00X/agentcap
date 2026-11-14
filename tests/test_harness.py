@@ -573,3 +573,19 @@ def test_missing_harness_binary_is_still_a_start_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(empty))
     with pytest.raises(FileNotFoundError):
         run(["opencode", "run", "hi"], tmp_path, tokens=10**9)
+
+
+def test_harness_numbers_reject_non_finite():
+    import math
+
+    from agentcap import harness as h
+
+    assert h._num(float("nan")) == 0
+    assert h._num(float("inf")) == 0
+    assert h._num("-inf") == 0
+    try:
+        h.opencode_go_limits({"AGENTCAP_OPENCODE_GO_LIMITS": "5h=nan"})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("NaN Go limit must be rejected")

@@ -22,6 +22,7 @@ Adapters:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
@@ -77,9 +78,11 @@ def detect_harness(argv: Sequence[str]) -> str | None:
 
 
 def _num(v: Any) -> int:
+    if isinstance(v, float) and not math.isfinite(v):
+        return 0
     try:
         return int(v or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -105,8 +108,8 @@ def opencode_go_limits(env: Mapping[str, str] | None = None) -> dict[str, float]
             usd = float(val)
         except ValueError:
             raise ValueError(f"AGENTCAP_OPENCODE_GO_LIMITS: {key} is not a number: {val!r}") from None
-        if usd <= 0:
-            raise ValueError(f"AGENTCAP_OPENCODE_GO_LIMITS: {key} must be positive")
+        if not math.isfinite(usd) or usd <= 0:
+            raise ValueError(f"AGENTCAP_OPENCODE_GO_LIMITS: {key} must be a finite positive number")
         limits[key] = usd
     return limits
 
@@ -157,7 +160,11 @@ class OpenCodeAdapter:
             tokens = (_num(t.get("input")) + _num(t.get("output")) + _num(t.get("reasoning"))
                       + _num(cache.get("read")) + _num(cache.get("write")))
             cost = part.get("cost")
-            return [Usage(tokens, float(cost) if isinstance(cost, (int, float)) else None)]
+            if isinstance(cost, (int, float)) and math.isfinite(float(cost)):
+                cost_value = float(cost)
+            else:
+                cost_value = None
+            return [Usage(tokens, cost_value)]
         if kind == "error":
             err = obj.get("error") if isinstance(obj.get("error"), dict) else {}
             return [ApiError(str(err.get("type") or "error"))]
