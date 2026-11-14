@@ -1,0 +1,61 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B -E -P \"${PLUGIN_ROOT}/scripts/agentcap_codex.py\" hook SessionStart",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B -E -P \"${PLUGIN_ROOT}/scripts/agentcap_codex.py\" hook UserPromptSubmit",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B -E -P \"${PLUGIN_ROOT}/scripts/agentcap_codex.py\" hook PreToolUse",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B -E -P \"${PLUGIN_ROOT}/scripts/agentcap_codex.py\" hook PostToolUse",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B -E -P \"${PLUGIN_ROOT}/scripts/agentcap_codex.py\" hook Stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

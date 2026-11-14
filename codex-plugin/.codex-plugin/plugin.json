@@ -1,0 +1,23 @@
+{
+  "name": "agentcap",
+  "version": "0.4.2",
+  "description": "Cap one Codex session's share of your ChatGPT plan quota and stop tool loops, inside Codex. Read-only: uses Codex's own app-server and rollout; never touches tokens or traffic.",
+  "author": {
+    "name": "Blitz00X",
+    "url": "https://github.com/Blitz00X"
+  },
+  "homepage": "https://agentcap.launchbench.studio",
+  "repository": "https://github.com/Blitz00X/agentcap",
+  "license": "MIT",
+  "keywords": ["quota", "usage", "rate-limit", "budget", "loop"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "AgentCap",
+    "shortDescription": "Quota cap and loop breaker for this session",
+    "longDescription": "Type `agentcap 10% 5h` in Codex: this session may use 10% of the 5-hour quota, and tool calls are denied at the limit. Also stops a tool loop (same call 4x) or an error streak (8 failures). `agentcap default 10% 5h` applies a limit to every new session, `codex exec` included.",
+    "developerName": "Launchbench",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read"]
+  }
+}

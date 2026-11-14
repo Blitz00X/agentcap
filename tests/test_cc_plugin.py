@@ -633,3 +633,55 @@ def test_unrelated_agentcap_glob_is_allowed_but_plugin_glob_is_not(env):
 
     assert not cc.command_touches_plugin("ls /tmp/agentcap-040-x/*.md", "/w")
     assert cc.command_touches_plugin("cat ~/.claude/plugins/x/agentcap*", "/w")
+
+
+# ------------------------------------------- default limit (also headless claude -p)
+def test_default_command_set_show_off(env):
+    assert "no default" in cmd("default")
+    assert "every new Claude Code session" in cmd("default", "3%", "5h")
+    assert "3% of the 5-hour" in cmd("default")
+    assert "removed" in cmd("default", "off")
+    assert "no default" in cmd("default")
+
+
+def test_session_start_applies_the_default_and_adopts_the_first_usage_read(env, monkeypatch):
+    import time as _t
+    pro(env)
+    monkeypatch.setattr(cc, "live_enabled", lambda: True)
+    started = []
+    monkeypatch.setattr(cc.subprocess, "Popen", lambda argv, **kw: started.append(argv))
+    cmd("default", "2%", "5h")
+    out = hook("start", {"session_id": SID, "hook_event_name": "SessionStart", "source": "startup", "cwd": "/w"})
+    assert "default limit 2% of the 5-hour quota" in out["systemMessage"]
+    assert started and started[0][-3:] == ["usage-probe", "--session", SID]
+    st = json.loads(cc.session_path(SID).read_text())
+    assert st["quota"] == 2.0 and st["source"] == "default" and st.get("used") is None
+    assert hook("pre", dict(PRE, tool_input={"command": "a"})) is None      # no baseline yet
+    # the background probe answered: baseline 30%
+    cc._atomic_write(cc.usage_path(SID), {"ts": _t.time(), "readings": {"5h": {"used": 30.0, "resets_at": RESETS - 3600}}})
+    assert hook("pre", dict(PRE, tool_input={"command": "b"})) is None
+    st = json.loads(cc.session_path(SID).read_text())
+    assert st["used"] == 30.0 and st["usage_base"]["used"] == 30.0
+    # later /usage: 32% -> the 2% limit is hit
+    cc._atomic_write(cc.usage_path(SID), {"ts": _t.time() + 1, "readings": {"5h": {"used": 32.0, "resets_at": RESETS - 3600}}})
+    deny = hook("pre", dict(PRE, tool_input={"command": "c"}))
+    assert deny["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_a_resumed_session_keeps_its_own_limit(env, monkeypatch):
+    monkeypatch.setattr(cc.subprocess, "Popen", lambda argv, **kw: None)
+    statusline(sl_payload(10.0))
+    cmd("quota", "7%")
+    cmd("default", "2%", "5h")
+    hook("start", {"session_id": SID, "hook_event_name": "SessionStart", "source": "resume", "cwd": "/w"})
+    assert json.loads(cc.session_path(SID).read_text())["quota"] == 7.0
+
+
+def test_the_usage_probe_session_never_gets_a_default(env, monkeypatch):
+    started = []
+    monkeypatch.setattr(cc.subprocess, "Popen", lambda argv, **kw: started.append(argv))
+    cmd("default", "2%", "5h")
+    probe_cwd = str(cc.state_root() / "probe")
+    out = hook("start", {"session_id": "probe-sid", "hook_event_name": "SessionStart", "source": "startup",
+                         "cwd": probe_cwd})
+    assert out is None and started == [] and not cc.session_path("probe-sid").exists()

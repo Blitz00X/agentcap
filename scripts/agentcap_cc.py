@@ -34,6 +34,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agentcap.quota import (  # noqa: E402
     STATE_ENV,
+    Reading,
+    _num,
     ShareTracker,
     _atomic_write,
     _normalized_shell_text,
@@ -193,10 +195,12 @@ def share_line(state: Mapping[str, Any], sid: str | None = None) -> str:
     return f"agentcap: session {share:.1f}% / {quota:g}% ({WINDOW_NAMES.get(window, window)})"
 
 
-def maybe_probe_usage(sid: str, state: Mapping[str, Any], now: float) -> bool:
-    """Start a background `claude -p /usage` read when the last one is a minute old."""
+def maybe_probe_usage(sid: str, state: Mapping[str, Any], now: float, *, force: bool = False) -> bool:
+    """Start a background `claude -p /usage` read when the last one is a minute old.
 
-    if not state.get("usage_base") or not live_enabled():
+    ``force``: a limit without a baseline yet (a default applied at SessionStart)."""
+
+    if not (state.get("usage_base") or force) or not live_enabled():
         return False
     last = _read_json(usage_path(sid)) or {}
     if now - float(last.get("ts") or 0) < USAGE_POLL_S:
@@ -214,6 +218,64 @@ def maybe_probe_usage(sid: str, state: Mapping[str, Any], now: float) -> bool:
     except OSError:
         return False
     return True
+
+
+def adopt_usage_baseline(state: dict[str, Any], sid: str) -> bool:
+    """A limit set without a reading (default at SessionStart) takes its baseline from
+    the first `/usage` read made after it was set."""
+
+    if state.get("quota") is None or state.get("usage_base") or state.get("used") is not None:
+        return False
+    cur = _read_json(usage_path(sid)) or {}
+    if float(cur.get("ts") or 0) < float(state.get("set_at") or 0) - 5:
+        return False
+    block = (cur.get("readings") or {}).get(state.get("window", "week"))
+    if not isinstance(block, Mapping) or _num(block.get("used")) is None:
+        return False
+    seed = Reading(float(block["used"]), _num(block.get("resets_at")))
+    tracker = ShareTracker()
+    tracker.seed(seed)
+    state.update({"usage_base": {"used": seed.used, "resets_at": seed.resets_at, "ts": cur.get("ts")},
+                  "tracker": tracker.to_dict(), "share": 0.0, "used": seed.used, "resets_at": seed.resets_at})
+    return True
+
+
+def defaults_path() -> Path:
+    return cc_dir() / "defaults.json"
+
+
+def _is_probe_session(cwd: str) -> bool:
+    """AgentCap's own `claude -p /usage` probe runs in state_root()/probe; its hooks
+    must not apply a default (or start another probe)."""
+
+    try:
+        return os.path.realpath(cwd) == os.path.realpath(str(state_root() / "probe"))
+    except (OSError, ValueError):
+        return False
+
+
+def cmd_default(args: list[str], *, now: float) -> str:
+    if not args:
+        d = _read_json(defaults_path())
+        return (f"agentcap: default for new sessions: {float(d['quota']):g}% of the "
+                f"{WINDOW_NAMES.get(d.get('window', 'week'), 'weekly')} quota."
+                if d and d.get("quota") is not None else
+                "agentcap: no default limit. Set one with /agentcap:default 10% 5h.")
+    if args[0].lower() in ("off", "none", "clear"):
+        try:
+            defaults_path().unlink()
+        except OSError:
+            pass
+        return "agentcap: default limit removed; new sessions start without one."
+    try:
+        quota = parse_quota(args[0])
+    except ValueError as exc:
+        return f"agentcap: {exc}".replace("--quota", "default")
+    window = "5h" if any(a.lower() in ("5h", "5-hour", "session") for a in args[1:]) else "week"
+    _atomic_write(defaults_path(), {"quota": quota, "window": window, "set_at": now})
+    return (f"agentcap: every new Claude Code session (interactive and `claude -p`) now starts with a "
+            f"{quota:g}% limit of the {WINDOW_NAMES[window]} quota. This session is unchanged; "
+            f"/agentcap:quota {quota:g}% {window} sets it here too.")
 
 
 def cmd_usage_probe(sid: str | None, *, now: float) -> str:
@@ -312,11 +374,25 @@ def hook_start(payload: Mapping[str, Any], stdout: TextIO, *, now: float) -> int
     if not isinstance(sid, str) or not sid:
         return 0
     cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else os.getcwd()
+    if _is_probe_session(cwd):
+        return 0
     _atomic_write(cc_dir() / "by_cwd" / f"{cwd_key(cwd)}.json", {"session_id": sid, "ts": now})
     _atomic_write(cc_dir() / "plugin_root.json", {"root": str(ROOT), "ts": now})
     prune_loop_state(now)
-    if not (_read_json(cc_dir() / "statusline.json") or {}).get("installed"):
-        _emit(stdout, {"systemMessage": "agentcap: run /agentcap:setup once so it can read your subscription quota (statusLine)."})
+    messages = []
+    d = _read_json(defaults_path())
+    state = load(sid)
+    if d and d.get("quota") is not None and state.get("quota") is None:
+        state.update({"quota": float(d["quota"]), "window": d.get("window", "week"), "set_at": now,
+                      "source": "default", "tracker": ShareTracker().to_dict()})
+        save(sid, state)
+        maybe_probe_usage(sid, state, now, force=True)
+        messages.append(f"agentcap: default limit {float(d['quota']):g}% of the "
+                        f"{WINDOW_NAMES.get(d.get('window', 'week'), 'weekly')} quota for this session.")
+    if not (_read_json(cc_dir() / "statusline.json") or {}).get("installed") and not d:
+        messages.append("agentcap: run /agentcap:setup once so it can read your subscription quota (statusLine).")
+    if messages:
+        _emit(stdout, {"systemMessage": " ".join(messages)})
     return 0
 
 
@@ -549,6 +625,11 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
         return 0
     state = load(sid)
     quota = state.get("quota")
+    if quota is not None and state.get("used") is None:
+        if adopt_usage_baseline(state, sid):
+            save(sid, state)
+        else:
+            maybe_probe_usage(sid, state, now, force=True)
     if quota is None or state.get("used") is None:
         return 0
     maybe_probe_usage(sid, state, now)
@@ -844,6 +925,8 @@ def main(argv: list[str] | None = None, stdin: TextIO = sys.stdin, stdout: TextI
         out = cmd_setup(now=now)
     elif cmd == "unsetup":
         out = cmd_unsetup()
+    elif cmd == "default":
+        out = cmd_default(rest, now=now)
     elif cmd == "usage-probe":
         cmd_usage_probe(sid, now=now)
         return 0

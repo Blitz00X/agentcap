@@ -74,10 +74,10 @@ def _agentcap_imports(path: Path, *, in_package: bool) -> set[str]:
     return out
 
 
-def import_closure() -> list[str]:
+def import_closure(entry: Path = ENTRY) -> list[str]:
     """Sorted module names under src/agentcap that the plugin script needs."""
     seen: set[str] = set()
-    todo = sorted(_agentcap_imports(ENTRY, in_package=False))
+    todo = sorted(_agentcap_imports(entry, in_package=False))
     while todo:
         name = todo.pop()
         if name in seen:
@@ -189,23 +189,96 @@ def render_icon(path: Path, size: int = 1024) -> None:
     img.save(path, format="PNG", optimize=True)
 
 
+# ------------------------------------------------------------------ Codex plugin
+# ``.agents/plugins/marketplace.json`` points Codex at ``./codex-plugin`` (Codex reads
+# that file before ``.claude-plugin/marketplace.json``, so each agent gets its own
+# package).  Sources: codex/plugin.json, codex/hooks.json, codex/skills/,
+# scripts/agentcap_codex.py and its agentcap import closure.
+CODEX_PLUGIN = ROOT / "codex-plugin"
+CODEX_ENTRY = ROOT / "scripts" / "agentcap_codex.py"
+
+
+def codex_manifest() -> dict[Path, Path]:
+    files: dict[Path, Path] = {
+        Path(".codex-plugin/plugin.json"): ROOT / "codex" / "plugin.json",
+        Path("hooks/hooks.json"): ROOT / "codex" / "hooks.json",
+        Path("scripts/agentcap_codex.py"): CODEX_ENTRY,
+        Path("LICENSE"): ROOT / "LICENSE",
+    }
+    for f in sorted((ROOT / "codex" / "skills").rglob("*")):
+        if f.is_file():
+            files[Path("skills") / f.relative_to(ROOT / "codex" / "skills")] = f
+    modules = import_closure(CODEX_ENTRY)
+    for rel in ["__init__.py", *(f"{m}.py" for m in modules), *path_loaded_files(modules)]:
+        files[Path("src/agentcap") / rel] = PKG / rel
+    return dict(sorted(files.items()))
+
+
+def _target_problems(dest_root: Path, want: dict[Path, Path], keep: set[Path], label: str) -> list[str]:
+    have = ({p.relative_to(dest_root) for p in dest_root.rglob("*") if p.is_file() or p.is_symlink()}
+            if dest_root.exists() else set())
+    out: list[str] = []
+    for rel, src in want.items():
+        dest = dest_root / rel
+        if rel not in have:
+            out.append(f"missing: {label}/{rel}")
+        elif dest.is_symlink() or _sha(dest) != _sha(src):
+            out.append(f"stale: {label}/{rel} != {src.relative_to(ROOT)}")
+    for rel in sorted(have - set(want) - keep):
+        out.append(f"stray: {label}/{rel}")
+    return out
+
+
+def _target_sync(dest_root: Path, want: dict[Path, Path], label: str) -> list[str]:
+    changed: list[str] = []
+    have = ({p.relative_to(dest_root) for p in dest_root.rglob("*") if p.is_file() or p.is_symlink()}
+            if dest_root.exists() else set())
+    for rel in sorted(have - set(want)):
+        (dest_root / rel).unlink()
+        changed.append(f"removed {label}/{rel}")
+    if dest_root.exists():
+        for d in sorted((q for q in dest_root.rglob("*") if q.is_dir()), key=lambda q: len(q.parts), reverse=True):
+            if not any(d.iterdir()):
+                d.rmdir()
+    for rel, src in want.items():
+        dest = dest_root / rel
+        if dest.is_file() and not dest.is_symlink() and _sha(dest) == _sha(src):
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.is_symlink():
+            dest.unlink()
+        shutil.copyfile(src, dest)
+        shutil.copymode(src, dest)
+        changed.append(f"wrote {label}/{rel}")
+    return changed
+
+
+def codex_problems() -> list[str]:
+    return _target_problems(CODEX_PLUGIN, codex_manifest(), set(), "codex-plugin")
+
+
+def codex_sync() -> list[str]:
+    return _target_sync(CODEX_PLUGIN, codex_manifest(), "codex-plugin")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true", help="report drift, change nothing")
     ap.add_argument("--icon", action="store_true", help="re-render plugin/.claude-plugin/icon.png")
     args = ap.parse_args(argv)
     if args.check:
-        found = problems()
+        found = problems() + codex_problems()
         for line in found:
             print(line)
-        print("plugin/ is in sync" if not found else f"{len(found)} problem(s); run scripts/build_plugin.py")
+        print("plugin/ and codex-plugin/ are in sync" if not found
+              else f"{len(found)} problem(s); run scripts/build_plugin.py")
         return 1 if found else 0
     if args.icon:
         render_icon(PLUGIN / ICON)
         print(f"rendered plugin/{ICON}")
-    for line in sync():
+    for line in sync() + codex_sync():
         print(line)
-    leftover = problems()
+    leftover = problems() + codex_problems()
     for line in leftover:
         print(line, file=sys.stderr)
     return 1 if leftover else 0
