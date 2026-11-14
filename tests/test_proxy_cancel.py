@@ -15,9 +15,18 @@ from agentcap.estimate import (
 from agentcap.ledger import Caps, Ledger
 from agentcap.pricing import cost as pricing_cost
 from agentcap.pricing import load_pricing
-from agentcap.proxy import ProxyConfig, create_app
+from agentcap.proxy import ProxyConfig, _Settlement, create_app
 
-from proxy_support import D, costs, openai_chat_body
+from proxy_support import (
+    ChunkStream,
+    D,
+    Upstream,
+    build,
+    costs,
+    openai_chat_body,
+    proxy_client,
+    sse,
+)
 
 STORE = load_pricing()
 CHAT_URL = "/openai/v1/chat/completions"
@@ -51,11 +60,11 @@ def _expected_input_only(body: dict) -> Decimal:
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_cancelled_request_settles_input_only_and_leaves_no_reservation(
+def test_cancelled_request_charges_full_reservation_and_leaves_no_open_reservation(
     tmp_path, stream
 ):
     body = openai_chat_body(max_completion_tokens=200, stream=stream)
-    expected = _expected_input_only(body)
+    input_only = _expected_input_only(body)
 
     async def scenario():
         transport = SlowTransport()
@@ -85,14 +94,71 @@ def test_cancelled_request_settles_input_only_and_leaves_no_reservation(
     summary = ledger.summary("run-1")
     assert summary["open"] == 0
     assert summary["settled"] == 1
-    assert summary["actual_usd"] == expected
-    assert ledger.spent("run-1") == expected
 
     disconnect = costs(events, "client_disconnect")
     assert len(disconnect) == 1
-    assert Decimal(disconnect[0]["charged_usd"]) == expected
-    assert Decimal(disconnect[0]["reserved_usd"]) >= expected
+    reserved = Decimal(disconnect[0]["reserved_usd"])
+    assert Decimal(disconnect[0]["charged_usd"]) == reserved
+    assert summary["actual_usd"] == reserved
+    assert ledger.spent("run-1") == reserved
+    assert reserved > input_only  # no more "output = 0" assumption
 
-    # The input-only charge is far below the cap: no false kill.
+    # The full reservation is still below the cap: no false kill.
     assert proxy.killed is False
     assert "cap_exceeded" not in [event["type"] for event in events]
+
+
+def test_stream_abort_after_content_charges_full_reservation(tmp_path):
+    """M-2: content delivered before an abort must not be free.
+
+    Drive the production ``_stream`` iterator and close it after the content
+    chunk, before the final message_delta carries output usage.  The proxy must
+    charge the full reservation, not just the prompt.
+    """
+    chunks = [
+        sse({"type": "message_start", "message": {"usage": {
+            "input_tokens": 1000, "output_tokens": 1,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}}),
+        sse({"type": "content_block_delta", "index": 0,
+             "delta": {"type": "text_delta", "text": "X" * 4000}}),
+        sse({"type": "message_delta", "usage": {"output_tokens": 5000}}),
+    ]
+    upstream = Upstream(httpx.Response(
+        200, headers={"content-type": "text/event-stream"},
+        stream=ChunkStream(chunks),
+    ))
+    app, ledger, events = build(tmp_path, upstream, caps=Caps(run_usd=D("1")))
+    proxy = app.state.proxy
+    price = STORE.get("anthropic/claude-sonnet-5-5")
+    reserved = Decimal("0.040960")
+    reservation_id = ledger.reserve(
+        "run-1", "anthropic", "claude-sonnet-5-5", reserved, Caps(run_usd=D("1"))
+    )
+    request = httpx.Request(
+        "POST", "https://api.anthropic.com/v1/messages",
+        content=b'{"model":"claude-sonnet-5-5","max_tokens":1000,"stream":true}',
+    )
+
+    async def scenario():
+        response = await proxy._stream(
+            request,
+            reservation_id=reservation_id,
+            reserved=reserved,
+            settlement=_Settlement(price=price, input_tokens=1000),
+            model="claude-sonnet-5-5",
+            kind="anthropic",
+            provider="anthropic",
+        )
+        iterator = response.body_iterator
+        await iterator.__anext__()   # message_start
+        await iterator.__anext__()   # content chunk
+        await iterator.aclose()      # client aborts before message_delta
+        await proxy._client.aclose()
+
+    asyncio.run(scenario())
+
+    settled = costs(events, "request_settled")
+    assert settled, [event["type"] for event in events]
+    assert Decimal(settled[-1]["cost_usd"]) == reserved
+    assert "usage_missing" in [event["type"] for event in events]
+    assert ledger.summary("run-1")["open"] == 0

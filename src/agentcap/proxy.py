@@ -84,6 +84,9 @@ AUTH_REJECTED_STATUSES = frozenset({401, 402, 403})
 _GEMINI_KEY_INVALID = "API_KEY_INVALID"
 _ERROR_BODY_MAX = 65536
 _ERROR_MESSAGE_MAX = 120
+#: Upper bound for one request body.  A loopback proxy has no client auth
+#: (yet), so an unbounded body is an easy memory DoS; reject before reserving.
+MAX_REQUEST_BODY = 32 * 1024 * 1024
 _KEY_SHAPED = (
     re.compile(r"(?i)\bbearer\s+\S+"),
     re.compile(r"(?i)\b(?:sk|pk|rk)-[A-Za-z0-9_\-*.]{4,}"),
@@ -118,7 +121,23 @@ _GEMINI_METERED = re.compile(
     r"(?:^|/)models/(?P<model>[^/:]+):(?P<action>generateContent|streamGenerateContent)$"
 )
 
-_REQUEST_HEADER_DROP = frozenset({"host", "content-length", "accept-encoding"})
+#: Hop-by-hop headers must not be forwarded to the upstream connection.
+_REQUEST_HEADER_DROP = frozenset(
+    {
+        "host",
+        "content-length",
+        "accept-encoding",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
 _RESPONSE_HEADER_DROP = frozenset(
     {"content-length", "transfer-encoding", "content-encoding"}
 )
@@ -581,6 +600,23 @@ class _Proxy:
     async def _handle_anthropic(self, request: Request) -> Response:
         return await self._handle(request, "anthropic")
 
+    async def _read_body(self, request: Request) -> bytes | None:
+        """Read a bounded request body; ``None`` means it is too large."""
+
+        raw_length = request.headers.get("content-length")
+        if raw_length is not None:
+            try:
+                if int(raw_length) > MAX_REQUEST_BODY:
+                    return None
+            except ValueError:
+                pass
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > MAX_REQUEST_BODY:
+                return None
+            body.extend(chunk)
+        return bytes(body)
+
     async def _handle(self, request: Request, provider: str) -> Response:
         path = request.path_params["path"]
         # Codex can fall back to a websocket transport.  The proxy cannot meter
@@ -599,7 +635,17 @@ class _Proxy:
                 headers={"Allow": "POST"},
                 media_type="text/plain",
             )
-        body = await request.body()
+        body = await self._read_body(request)
+        if body is None:
+            self._count_blocked()
+            return _agentcap_error(
+                413,
+                "agentcap: request body too large "
+                f"(limit {MAX_REQUEST_BODY} bytes); request NOT sent.",
+                "agentcap_request_too_large",
+                code="agentcap_request_too_large",
+                headers={"x-agentcap-blocked": "size"},
+            )
         decision = self._classify(provider, path, request.method)
         if decision == "blocked":
             self._observe()
@@ -1455,10 +1501,11 @@ class _Proxy:
         else:
             parser = OpenAIStreamUsage()
         finalized = False
+        completed = False
         response_tier: str | None = None
 
         async def body_stream() -> AsyncIterator[bytes]:
-            nonlocal finalized, response_tier
+            nonlocal finalized, completed, response_tier
             try:
                 async for chunk in response.aiter_bytes():
                     if provider == "openai" and response_tier is None:
@@ -1469,24 +1516,35 @@ class _Proxy:
                             )
                     parser.feed(chunk)
                     yield chunk
+                completed = True
             finally:
                 if not finalized:
                     finalized = True
-                    usage = parser.finish()
-                    if usage is not None:
-                        self._settle_actual(
-                            reservation_id,
-                            reserved,
-                            settlement,
-                            model,
-                            provider,
-                            usage,
-                            response_tier=response_tier,
-                        )
-                    else:
+                    # A stream that ends without reaching its natural end
+                    # (client abort, cancellation, upstream failure) may still
+                    # have produced and billed output that the provider has
+                    # not reported yet.  Charge the full reservation; settling
+                    # from a partial usage block would make that output free.
+                    if not completed:
                         self._settle_missing(
                             reservation_id, reserved, model, provider
                         )
+                    else:
+                        usage = parser.finish()
+                        if usage is not None:
+                            self._settle_actual(
+                                reservation_id,
+                                reserved,
+                                settlement,
+                                model,
+                                provider,
+                                usage,
+                                response_tier=response_tier,
+                            )
+                        else:
+                            self._settle_missing(
+                                reservation_id, reserved, model, provider
+                            )
                 with contextlib.suppress(BaseException):
                     await response.aclose()
 
@@ -1566,15 +1624,14 @@ class _Proxy:
     ) -> None:
         """Settle a reservation after a client disconnect / cancellation.
 
-        Output is assumed to be zero because the connection was closed; the
-        provider may still have billed the input.  The reservation must never
-        be left open, so a fallback charge (the full reservation) is used if
-        the input cost cannot be computed, and a failed settle is released.
+        A closed client connection does not mean the provider produced no
+        output: it may have generated (and billed) the whole response before
+        the disconnect, and for a non-stream request AgentCap cannot see how
+        much was delivered.  Charge the full reservation rather than assuming
+        output is zero; the cap must not be bypassed by aborting a request.
         """
 
-        charged = self._input_only_cost(settlement)
-        if charged is None:
-            charged = reserved
+        charged = reserved
         try:
             self.ledger.settle(reservation_id, charged)
         except Exception:

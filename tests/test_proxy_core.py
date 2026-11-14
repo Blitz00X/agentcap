@@ -582,3 +582,59 @@ def test_redaction_keeps_secrets_out_of_events_and_ledger(tmp_path):
 
     summary = ledger.summary("run-1")
     assert summary["reservations"] == 2
+
+
+def test_request_body_limit_rejects_before_upstream(tmp_path, monkeypatch):
+    """M-1: an unauthenticated loopback client cannot send an unbounded body."""
+
+    import agentcap.proxy as proxy_module
+
+    monkeypatch.setattr(proxy_module, "MAX_REQUEST_BODY", 1024)
+    upstream = Upstream(openai_chat_response())
+    app, ledger, _events = build(tmp_path, upstream)
+    body = b'{"model":"gpt-4o-mini","messages":[' + b"x" * 4096 + b"]}"
+
+    async def scenario():
+        async with proxy_client(app) as client:
+            return await client.post(CHAT_URL, content=body)
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 413
+    assert "too large" in response.json()["error"]["message"]
+    assert upstream.calls == 0
+    assert ledger.summary("run-1")["reservations"] == 0
+
+
+def test_hop_by_hop_headers_are_not_forwarded(tmp_path):
+    """Lead 4: proxy credentials and connection management stay local."""
+
+    upstream = Upstream(openai_chat_response())
+    app, _ledger, _events = build(tmp_path, upstream)
+
+    async def scenario():
+        async with proxy_client(app) as client:
+            return await client.post(
+                CHAT_URL,
+                json=openai_chat_body(),
+                headers={
+                    "proxy-authorization": "Basic SECRET",
+                    "proxy-connection": "keep-alive",
+                    "connection": "keep-alive",
+                    "keep-alive": "timeout=5",
+                    "te": "trailers",
+                    "trailer": "x-trailer",
+                    "transfer-encoding": "chunked",
+                    "upgrade": "h2c",
+                },
+            )
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 200
+    forwarded = {k.lower() for k in upstream.requests[0].headers}
+    # httpx manages its own ``connection: keep-alive`` on the new socket; the
+    # client's hop-by-hop values (including Proxy-Authorization) must be gone.
+    for name in (
+        "proxy-authorization", "proxy-connection", "keep-alive",
+        "te", "trailer", "transfer-encoding", "upgrade",
+    ):
+        assert name not in forwarded, name
