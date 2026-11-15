@@ -297,8 +297,8 @@ the stop at the limit, `/agentcap:approve`, `/agentcap:unsetup`, and the self-gu
 `env -u CLAUDECODE agentcap approve` from the model.
 
 When the quota hook ends a headless `claude -p` turn, the command can exit 0 with no output.
-The plugin writes a receipt on the first quota denial; that receipt path is covered by automated
-tests but has not yet been verified in a live headless run.
+The plugin writes a receipt on the first quota denial (verified live on 14 Nov 2026: a 2% default
+stopped a `claude -p` job with a `quota_exceeded` receipt, matching `/usage`).
 In an isolated Claude Code 2.1.325 test, `--output-format json` reported
 `terminal_reason: "hook_stopped"` and the denied tool in `permission_denials`. A hook can stop
 for other reasons too, so check the receipt's `reason` to identify a quota denial.

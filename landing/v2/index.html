@@ -174,6 +174,7 @@
                 <p>Put AgentCap in front of the agent and give it one limit: a share of the weekly quota for a subscription, or a dollar cap for an API key.</p>
                 <pre><code><span class="p">$</span> agentcap run --quota 5% -- claude
 <span class="p">$</span> agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
+                <p>On a subscription you can skip the wrapper and set the limit from inside the agent with the plugins: <code>/agentcap:quota 5% 5h</code> in Claude Code, <code>agentcap 10% 5h</code> in Codex.</p>
               </div>
             </li>
             <li>
@@ -187,7 +188,7 @@
               <span class="step">03</span>
               <div>
                 <h3>At the limit, it stops</h3>
-                <p>With an API key, the next request is blocked and the process group is stopped: <code>SIGTERM</code> first, <code>SIGKILL</code> after five seconds. On a subscription, Claude Code&rsquo;s next tool call is denied and the session stays open for <code>agentcap approve</code>; Codex and headless runs get <code>SIGINT</code>. The terminal says why, the receipt is saved, and the run exits with code 3. The loop breaker exits with 4.</p>
+                <p>With an API key, the next request is blocked and the process group is stopped: <code>SIGTERM</code> first, <code>SIGKILL</code> after five seconds. On a subscription, Claude Code&rsquo;s next tool call is denied and the session stays open for <code>agentcap approve</code>; With the Codex plugin, every tool call at the limit is denied with the reason until you type <code>agentcap approve</code> or <code>agentcap off</code>. Wrapped Codex and headless runs get <code>SIGINT</code>. The terminal says why, the receipt is saved, and the run exits with code 3. The loop breaker exits with 4.</p>
               </div>
             </li>
           </ol>
@@ -265,7 +266,11 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
             </div>
             <div>
               <h3>Claude Code plugin</h3>
-              <p>No pip install. <code>/plugin marketplace add Blitz00X/agentcap</code>, <code>/plugin install agentcap@agentcap</code>, then <code>/agentcap:setup</code> once. Read-only; <code>/agentcap:unsetup</code> removes the statusline change.</p>
+              <p>No pip install. <code>/plugin marketplace add Blitz00X/agentcap</code>, <code>/plugin install agentcap@agentcap</code>. Then, inside Claude Code, <code>/agentcap:quota 5% 5h</code> caps this session; <code>/agentcap:default 5% 5h</code> caps every new one, <code>claude -p</code> included. Optional: <code>/agentcap:setup</code> adds a live statusline meter; <code>/agentcap:unsetup</code> removes it.</p>
+            </div>
+            <div>
+              <h3>Codex plugin</h3>
+              <p>No pip install, Codex 0.167+. <code>codex plugin marketplace add Blitz00X/agentcap</code>, <code>codex plugin add agentcap@agentcap</code>, then trust AgentCap&rsquo;s 5 hooks when Codex asks (once per version). Inside Codex, type <code>agentcap 10% 5h</code>; <code>agentcap default 10% 5h</code> covers every new session, <code>codex exec</code> included. These lines never reach the model.</p>
             </div>
             <div>
               <h3>VS Code / Cursor</h3>
