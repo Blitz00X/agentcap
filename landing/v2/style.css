@@ -362,6 +362,7 @@ h1 .period {
 
 .install-line code {
   flex: 1;
+  min-width: 0; /* long commands scroll inside the box on phones */
   padding: 11px 13px;
   overflow-x: auto;
   white-space: nowrap;
@@ -666,6 +667,7 @@ figcaption code,
 
 .chapter-body {
   max-width: 840px;
+  min-width: 0; /* let wide code blocks scroll inside instead of widening the page */
 }
 
 h2 {
@@ -1338,7 +1340,7 @@ h2 {
   }
 
   .hero-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 44px;
   }
 

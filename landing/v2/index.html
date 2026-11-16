@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>AgentCap — stop Claude Code and Codex runs that loop or eat your weekly quota</title>
-  <meta name="description" content="AgentCap stops Claude Code, Codex and Gemini CLI runs that repeat the same tool call, keep failing, or eat their share of the weekly quota. Every stop leaves a receipt. Free agentcap waste shows where your tokens already went.">
-  <meta property="og:title" content="AgentCap — stop Claude Code and Codex runs that loop or eat your weekly quota">
-  <meta property="og:description" content="A local spend cap for coding agents. Loop breaker, per-job quota, dollar cap, evidence receipt. Free waste report. Pro $12 one-time in launch week, then $19.">
+  <title>AgentCap — leave Claude Code and Codex unattended; they stop at the limit</title>
+  <meta name="description" content="Set a limit from inside Claude Code or Codex. AgentCap stops the session when it repeats the same tool call, keeps failing, or uses up its share of your quota, and leaves a receipt. Free agentcap waste shows where your tokens already went.">
+  <meta property="og:title" content="AgentCap — leave Claude Code and Codex unattended; they stop at the limit">
+  <meta property="og:description" content="A local spend cap for coding agents. Loop breaker, per-job quota, dollar cap, evidence receipt. Free waste report. Pro $12 one-time, early price.">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#f4f1e7">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2317170f'/%3E%3Cpath d='M9 23v-4M16 23V9M23 23v-7' stroke='%23f4f1e7' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
@@ -19,7 +19,7 @@
 
   <div class="topline">
     <div class="wrap topline-inner">
-      <span>AgentCap 0.4</span>
+      <span>AgentCap 0.5</span>
       <span class="topline-mid">Local spend control for coding agents</span>
       <span class="topline-links">
         <a href="https://pypi.org/project/agentcap-cli/">PyPI <span aria-hidden="true">↗</span></a>
@@ -54,9 +54,9 @@
     <section class="hero" id="top">
       <div class="wrap hero-grid">
         <div class="hero-copy">
-          <p class="kicker"><span class="kicker-square" aria-hidden="true"></span>Claude Code · Codex · Gemini CLI</p>
-          <h1>The run stops at the limit. <em>Not after the invoice</em><span class="period">.</span></h1>
-          <p class="standfirst">AgentCap wraps your coding agent and stops it when it repeats the same tool call, keeps failing, or reaches its share of the weekly quota. Every stop leaves a receipt with the reason and the numbers.</p>
+          <p class="kicker"><span class="kicker-square" aria-hidden="true"></span>Inside Claude Code and Codex</p>
+          <h1>Leave your agent unattended. <em>It stops at the limit</em><span class="period">.</span></h1>
+          <p class="standfirst">Type <code>/agentcap:quota 5% 5h</code> in Claude Code or <code>agentcap 5% 5h</code> in Codex. AgentCap stops the session when it repeats the same tool call, keeps failing, or uses up its share of your quota, and leaves a receipt with the reason and the numbers.</p>
           <p class="sub">Free, it also reads your local Claude Code and Codex logs and shows where the tokens already went: subagents, Opus, cache misses, loops.</p>
 
           <div class="hero-actions">
@@ -65,47 +65,47 @@
           </div>
 
           <div class="install-line">
-            <code id="install-cmd">pipx install agentcap-cli</code>
-            <button class="copy" type="button" data-copy="pipx install agentcap-cli" aria-label="Copy install command">Copy</button>
+            <code id="install-cmd">/plugin marketplace add Blitz00X/agentcap</code>
+            <button class="copy" type="button" data-copy="/plugin marketplace add Blitz00X/agentcap" aria-label="Copy Claude Code install command">Copy</button>
           </div>
-          <p class="fineprint">No account. Read-only on subscription logins. Prompts and keys are never stored or uploaded.</p>
+          <p class="fineprint">In Claude Code, then <code>/plugin install agentcap@agentcap</code>. Codex: <code>codex plugin marketplace add Blitz00X/agentcap</code>. No account, no pip install. Read-only on subscription logins; prompts and keys are never stored or uploaded.</p>
         </div>
 
         <figure class="receipt-figure">
           <div class="receipt">
             <div class="receipt-head">
               <span class="receipt-brand">AgentCap</span>
-              <span class="receipt-no">No. 3BC125</span>
+              <span class="receipt-no">No. 435EAD</span>
             </div>
-            <p class="receipt-title">Run receipt</p>
+            <p class="receipt-title">Session receipt</p>
 
             <dl class="receipt-meta">
-              <div><dt>run</dt><dd>run-3bc1257940cb</dd></div>
-              <div><dt>mode</dt><dd>simulated demo</dd></div>
-              <div><dt>limit</dt><dd>$0.05 run cap</dd></div>
+              <div><dt>agent</dt><dd>claude -p</dd></div>
+              <div><dt>plan</dt><dd>Claude Pro, live</dd></div>
+              <div><dt>rule</dt><dd>2% of the 5-hour quota</dd></div>
             </dl>
 
             <div class="perf" role="presentation"></div>
 
             <dl class="receipt-lines">
-              <div><dt>requests</dt><dd>44</dd></div>
-              <div><dt>refused</dt><dd>2</dd></div>
-              <div><dt>clamped</dt><dd>8</dd></div>
+              <div><dt>set by</dt><dd>/agentcap:default</dd></div>
+              <div><dt>measured by</dt><dd>/usage</dd></div>
+              <div><dt>last tool</dt><dd>Read</dd></div>
             </dl>
 
             <div class="perf" role="presentation"></div>
 
             <dl class="receipt-lines">
-              <div><dt>spent</dt><dd>$0.0500</dd></div>
-              <div><dt>cap</dt><dd>$0.0500</dd></div>
-              <div><dt>reason</dt><dd class="warn">cap_exceeded</dd></div>
-              <div><dt>exit code</dt><dd>3</dd></div>
+              <div><dt>used</dt><dd>4.0%</dd></div>
+              <div><dt>limit</dt><dd>2.0%</dd></div>
+              <div><dt>reason</dt><dd class="warn">quota_exceeded</dd></div>
+              <div><dt>next tool</dt><dd>denied</dd></div>
             </dl>
 
-            <p class="receipt-foot">Local proxy · 127.0.0.1</p>
-            <span class="stamp" aria-hidden="true">Stopped<br><span>at the cap</span></span>
+            <p class="receipt-foot">Claude Code plugin · 14 Nov 2026</p>
+            <span class="stamp" aria-hidden="true">Stopped<br><span>at the limit</span></span>
           </div>
-          <figcaption>Fig. 1 — output of <code>agentcap demo</code> against a fake local API. No key, no real money.</figcaption>
+          <figcaption>Fig. 1 — a real receipt from a live test on a Claude Pro account. One response landed after the limit, so it stopped at 4% instead of 2%; Claude&rsquo;s own <code>/usage</code> went from 25% to 29%.</figcaption>
         </figure>
       </div>
 
@@ -121,7 +121,7 @@
           </div>
           <div>
             <dt><span class="rule-n">5%</span><span class="rule-label">Quota</span></dt>
-            <dd>of the weekly limit, per job</dd>
+            <dd>of the 5-hour or weekly quota, per session</dd>
           </div>
           <div>
             <dt><span class="rule-n">$</span><span class="rule-label">Spend</span></dt>
@@ -164,17 +164,19 @@
           <span class="side-label">The stop</span>
         </div>
         <div class="chapter-body">
-          <h2>Wrap the command. Three things happen.</h2>
+          <h2>Set a limit inside the agent. Three things happen.</h2>
 
           <ol class="protocol">
             <li>
               <span class="step">01</span>
               <div>
-                <h3>Wrap the run</h3>
-                <p>Put AgentCap in front of the agent and give it one limit: a share of the weekly quota for a subscription, or a dollar cap for an API key.</p>
-                <pre><code><span class="p">$</span> agentcap run --quota 5% -- claude
-<span class="p">$</span> agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
-                <p>On a subscription you can skip the wrapper and set the limit from inside the agent with the plugins: <code>/agentcap:quota 5% 5h</code> in Claude Code, <code>agentcap 10% 5h</code> in Codex.</p>
+                <h3>Set the limit</h3>
+                <p>Type it where you already work. The line never reaches the model, so it costs no quota, and only you can type it. A default limit covers every new session, headless runs included.</p>
+                <pre><code><span class="c"># Claude Code</span>
+/agentcap:quota 5% 5h
+<span class="c"># Codex</span>
+agentcap 5% 5h</code></pre>
+                <p>On an API key, wrap the command with a dollar cap instead: <code>agentcap run --cap 2 -- codex exec "fix the failing tests"</code>.</p>
               </div>
             </li>
             <li>
@@ -242,28 +244,22 @@
           <span class="side-label">Install</span>
         </div>
         <div class="chapter-body">
-          <h2>One command, then put a limit on the run.</h2>
+          <h2>Add the plugin, then type a limit.</h2>
 
-          <div class="install-block">
-            <code><span class="p">$</span> pipx install agentcap-cli</code>
-            <button class="copy copy-dark" type="button" data-copy="pipx install agentcap-cli" aria-label="Copy install command">Copy</button>
-          </div>
-          <p class="fineprint">Installs the <code>agentcap</code> command. No pipx? macOS: <code>brew install pipx &amp;&amp; pipx ensurepath</code>. Linux: <code>python3 -m pip install --user pipx</code>, then <code>python3 -m pipx ensurepath</code>.</p>
+          <pre class="examples"><code><span class="c"># Claude Code: add the plugin once</span>
+/plugin marketplace add Blitz00X/agentcap
+/plugin install agentcap@agentcap
+<span class="c"># then, in any session: this one may use 5% of the 5-hour quota</span>
+/agentcap:quota 5% 5h
 
-          <pre class="examples"><code><span class="c"># Claude Code on a Max/Pro plan: stop at 5% of the weekly quota</span>
-agentcap run --quota 5% -- claude
-
-<span class="c"># Codex on a ChatGPT plan: same, on the 5-hour window</span>
-agentcap run --quota 10% --window 5h -- codex
-
-<span class="c"># API key: a $2 cap plus the loop and burn breaker</span>
-agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
+<span class="c"># Codex 0.167+: add the plugin once, trust its 5 hooks when Codex asks</span>
+codex plugin marketplace add Blitz00X/agentcap
+codex plugin add agentcap@agentcap
+<span class="c"># then type this as a prompt; it never reaches the model</span>
+agentcap 5% 5h</code></pre>
+          <p class="fineprint">Every new session, headless included, can start with a limit: <code>/agentcap:default 5% 5h</code> or <code>agentcap default 5% 5h</code>. Use <code>week</code> instead of <code>5h</code> for the weekly quota.</p>
 
           <div class="surfaces">
-            <div>
-              <h3>Command line</h3>
-              <p>The whole product in one binary: <code>run</code>, <code>waste</code>, <code>report</code>, <code>quota</code>, <code>license</code>. Linux, tested live. macOS should work but is not tested yet. Windows via WSL2.</p>
-            </div>
             <div>
               <h3>Claude Code plugin</h3>
               <p>No pip install. <code>/plugin marketplace add Blitz00X/agentcap</code>, <code>/plugin install agentcap@agentcap</code>. Then, inside Claude Code, <code>/agentcap:quota 5% 5h</code> caps this session; <code>/agentcap:default 5% 5h</code> caps every new one, <code>claude -p</code> included. Optional: <code>/agentcap:setup</code> adds a live statusline meter; <code>/agentcap:unsetup</code> removes it.</p>
@@ -271,6 +267,10 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
             <div>
               <h3>Codex plugin</h3>
               <p>No pip install, Codex 0.167+. <code>codex plugin marketplace add Blitz00X/agentcap</code>, <code>codex plugin add agentcap@agentcap</code>, then trust AgentCap&rsquo;s 5 hooks when Codex asks (once per version). Inside Codex, type <code>agentcap 10% 5h</code>; <code>agentcap default 10% 5h</code> covers every new session, <code>codex exec</code> included. These lines never reach the model.</p>
+            </div>
+            <div>
+              <h3>Command line</h3>
+              <p><code>pipx install agentcap-cli</code>. Free <code>waste</code> and <code>report</code> on your logs, <code>quota</code>, <code>license</code>, and <code>agentcap run --cap 2 -- &lt;agent&gt;</code> for a dollar cap on API keys. Linux, tested live. macOS should work but is not tested yet. Windows via WSL2.</p>
             </div>
             <div>
               <h3>VS Code / Cursor</h3>
@@ -334,9 +334,9 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
               <a class="btn btn-outline" href="#install">Install free</a>
             </div>
             <div class="price-col price-pro">
-              <p class="tier">Pro <span class="tag">Launch week</span></p>
+              <p class="tier">Pro <span class="tag">Early price</span></p>
               <p class="amount">$12 <small>one-time</small></p>
-              <p class="price-note">Then $19 after 18 November.</p>
+              <p class="price-note">Early price for the first users. Licences already bought keep every 0.x update.</p>
               <ul class="price-list">
                 <li>Loop breaker on Claude Code and Codex, subscriptions included</li>
                 <li>Per-job quota: stop at 5% of your weekly or 5-hour limit</li>
@@ -349,12 +349,13 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
               <a class="btn" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
             </div>
           </div>
+          <p class="note"><strong>Running agents unattended?</strong> We are giving 10 free Pro licences to design partners: run AgentCap on one real overnight or long job, share the receipt, and give us 20 minutes of feedback. Email <a href="mailto:kutaykarahan6@gmail.com?subject=AgentCap%20design%20partner">kutaykarahan6@gmail.com</a>.</p>
           <p class="fineprint">Payments handled by Polar as merchant of record. Not a subscription. 14-day refunds, no questions asked. Activation: <code>agentcap license activate</code>, then check <code>agentcap license status</code> for <code>tier: pro</code>.</p>
 
           <details class="fold" id="terms">
             <summary>Purchase terms, refunds and licence</summary>
             <ul class="terms">
-              <li><strong>Price:</strong> Pro is $12 one-time during launch week, until 18 November; $19 after. There is no subscription.</li>
+              <li><strong>Price:</strong> Pro is $12 one-time at the early price. The price may rise later; a licence you already bought is not affected. There is no subscription.</li>
               <li><strong>Refunds:</strong> 14 days, no questions asked. Email <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>.</li>
               <li><strong>Machines:</strong> one licence key activates on up to three machines.</li>
               <li><strong>Licence check:</strong> the key is checked with Polar about once a week.</li>
@@ -460,7 +461,7 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
             </details>
             <details>
               <summary>Is Pro a subscription?</summary>
-              <p>No. It is a one-time purchase: $12 during launch week, until 18 November; $19 after. See the <a href="#terms">purchase terms</a> for refunds, licence checks and fail-open behavior.</p>
+              <p>No. It is a one-time purchase: $12 at the early price. See the <a href="#terms">purchase terms</a> for refunds, licence checks and fail-open behavior.</p>
             </details>
             <details>
               <summary>Refunds?</summary>
@@ -488,7 +489,7 @@ agentcap run --cap 2 -- codex exec "fix the failing tests"</code></pre>
             </details>
             <details>
               <summary>What does the one-time purchase include?</summary>
-              <p>$12 once during launch week ($19 after 18 November), all 0.x updates. Not a promise of future major versions. 14-day refund window per the purchase terms.</p>
+              <p>$12 once at the early price, all 0.x updates. Not a promise of future major versions. 14-day refund window per the purchase terms.</p>
             </details>
           </div>
         </div>
