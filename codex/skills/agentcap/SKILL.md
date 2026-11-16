@@ -9,11 +9,12 @@ AgentCap is a local guard. The user controls it by typing a prompt that starts w
 
 | User types | Effect |
 |---|---|
-| `agentcap 10% 5h` | this session may use 10% of the 5-hour quota (`week` for the weekly quota) |
+| `agentcap 10% 5h` | this session may use 10 more points of the 5-hour quota (`week` for the weekly quota) |
+| `agentcap until 70% 5h` | stop when the 5-hour quota reaches 70% |
 | `agentcap status` | current share of the limit |
 | `agentcap off` | clear this session's limit |
 | `agentcap approve` | raise the limit by 50% after a stop (Pro, at most twice) |
-| `agentcap default 10% 5h` | every new session, `codex exec` included, starts with this limit |
+| `agentcap default 10% 5h` | every new session, `codex exec` included, starts with this limit (`until 70%` works too) |
 | `agentcap default off` | no default limit |
 
 Rules for you, the agent:

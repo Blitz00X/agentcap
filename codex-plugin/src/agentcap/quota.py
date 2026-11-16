@@ -300,6 +300,71 @@ def parse_quota(raw: str) -> float:
     return value
 
 
+WINDOW_WORDS = {"5h": "5h", "5-hour": "5h", "5hour": "5h", "session": "5h",
+                "week": "week", "weekly": "week", "7d": "week"}
+
+
+def parse_limit_words(words: list[str]) -> tuple[float, str, bool]:
+    """In-agent limit: ``50% 5h`` (this session may use 50 more points) or ``until 70% 5h``
+    (stop when the window reaches 70%).  Returns (value, window, until)."""
+
+    words = [w for w in words if w]
+    until = bool(words) and words[0].lower() in ("until", "to", "upto", "up-to")
+    if until:
+        words = words[1:]
+    if not words:
+        raise ValueError("give a limit, e.g. `50% 5h` or `until 70% 5h`")
+    try:
+        value = parse_quota(words[0])
+    except ValueError:
+        raise ValueError(f"a limit looks like 50% or until 70% (got {words[0]!r})") from None
+    window = "week"
+    for w in words[1:]:
+        if w.lower() not in WINDOW_WORDS:
+            raise ValueError(f"unknown window {w!r}: use 5h or week")
+        window = WINDOW_WORDS[w.lower()]
+    return value, window, until
+
+
+def resolve_until(state: dict[str, Any]) -> bool:
+    """An ``until N%`` limit becomes a share (N - baseline) once the baseline is known."""
+
+    until = state.get("until")
+    if until is None or state.get("until_done"):
+        return False
+    tracker = ShareTracker.from_dict(state.get("tracker"))
+    if tracker.baseline is None:
+        return False
+    state["quota"] = round(max(float(until) - float(tracker.baseline), 0.0), 3)
+    state["until_done"] = True
+    return True
+
+
+def _pct(value: float) -> str:
+    return f"{round(float(value), 1):g}%"
+
+
+def stop_text(quota: float, share: float, used_now: float | None, window_name: str) -> str:
+    """'5-hour quota at 20% now → stops at 70%' - the absolute point the user can check."""
+
+    left = max(float(quota) - float(share), 0.0)
+    if used_now is None:
+        return f"{window_name} quota: the stop point is shown after the first reading"
+    stop = float(used_now) + float(quota) - float(share)   # past the limit: the point already passed
+    if float(share) >= float(quota):
+        return f"{window_name} quota at {_pct(used_now)} now; this session's stop point was {_pct(stop)}"
+    if stop >= 100:
+        return (f"{window_name} quota at {_pct(used_now)} now → this session can run until the window "
+                f"is used up ({round(left, 1):g} points left)")
+    return f"{window_name} quota at {_pct(used_now)} now → stops at {_pct(stop)}"
+
+
+def approve_quota(quota: float, factor: float) -> float:
+    """+50% of the session's points; an `until` target that was already reached (0 points) gets 1."""
+
+    return round(float(quota) * factor, 4) if float(quota) > 0 else 1.0
+
+
 def parse_duration(raw: str) -> float | None:
     """'5m', '90s', '1h', '300' (seconds) or 'off' -> seconds (None = off)."""
 

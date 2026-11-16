@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+The limit is easy to read now (user feedback, 16 Nov 2026: "50% 5h" read as both "up to 50%" and "50% more").
+- **Every message says where the session stops:** `5-hour quota at 20% now → stops at 70% (this session used 12 of 50 points)` — on set, `status`, the 80% warning, the deny, `approve` and the turn-end line, in Claude Code and Codex. In Claude the % is the fresher of the statusline and `/usage`.
+- **`until N%`: an absolute stop point.** `/agentcap:quota until 70% 5h` (Claude) and `agentcap until 70% 5h` (Codex) stop when the window reaches 70%, wherever it is now; `default until 70% 5h` gives every new session its own stop at 70%. Set before the first reading, the target is resolved when the first reading arrives; a target already reached says so and denies. `N% 5h` keeps its meaning: N more points from now.
+- `approve` reports the new stop point; after an already-reached `until` target (0 points) it grants 1 point.
+
 ## 0.5.0
 AgentCap now runs inside Codex, not only around it, and Claude Code can start every new session with a default limit. Verified live on a real ChatGPT Plus and a real Claude Pro account, 14 Nov 2026.
 - **Codex plugin (new): AgentCap inside Codex**, TUI and `codex exec`, no wrapper. Install: in Codex `/plugins` → Add Marketplace → `Blitz00X/agentcap` → AgentCap → Install, then trust its 5 hooks when Codex asks (or `codex plugin marketplace add Blitz00X/agentcap` + `codex plugin add agentcap@agentcap`). Commands are typed as a prompt, handled by a `UserPromptSubmit` hook and never sent to the model (no quota spent; only the user can type them): `agentcap 10% 5h`, `agentcap status`, `agentcap off`, `agentcap approve` (Pro, +50%, at most twice), `agentcap default 10% 5h` / `agentcap default off` (every new session, `codex exec` included). `PreToolUse` denies at the limit, on 4 identical calls and after 8 failing calls; `sleep N` waits count for neither. Quota comes from `codex app-server` (at set time, every 30 s, at turn end) plus the rollout. Codex 0.167 cannot end a turn from a hook, so every call is denied with the reason; in live tests the model stopped and told the user to type `agentcap approve`.

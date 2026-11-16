@@ -8,7 +8,8 @@ writes; no token, login file or model traffic is touched.
 
 Everything happens inside Codex (TUI or ``codex exec``):
 
-  agentcap 10% 5h          this session may use 10% of the 5-hour quota (``week`` too)
+  agentcap 10% 5h          this session may use 10 more points of the 5-hour quota (``week`` too)
+  agentcap until 70% 5h    stop when the 5-hour quota reaches 70%
   agentcap status          share, limit, where the numbers come from
   agentcap off             clear this session's limit
   agentcap approve         +50% after a stop (Pro, at most twice)
@@ -51,8 +52,11 @@ from agentcap.quota import (  # noqa: E402
     _atomic_write,
     _read_json,
     codex_readings,
+    approve_quota,
     is_self_approve_command,
-    parse_quota,
+    parse_limit_words,
+    resolve_until,
+    stop_text,
 )
 from agentcap.quota import state_root as _quota_state_root  # noqa: E402
 from agentcap.waste import _codex_error, _digest, command_text, is_wait_call  # noqa: E402
@@ -234,20 +238,43 @@ def refresh(state: dict[str, Any], sid: str, payload: Mapping[str, Any], now: fl
 
 
 def start_quota(state: dict[str, Any], sid: str, quota: float, window: str, now: float,
-                *, source: str) -> str:
-    for key in ("tracker", "share", "warned", "nudged", "denies", "approvals", "receipt_share"):
+                *, source: str, until: bool = False) -> str:
+    """Set the limit and return the sentence that says where this session stops."""
+
+    for key in ("tracker", "share", "warned", "nudged", "denies", "approvals", "receipt_share",
+                "until", "until_done"):
         state.pop(key, None)
     state.update({"quota": quota, "window": window, "set_at": now, "source": source})
+    if until:
+        state["until"] = quota
     live = read_live(sid, now)
     reading = (live or {}).get(window)
     if reading is None:
         state["tracker"] = ShareTracker().to_dict()
-        return "baseline: not available yet (Codex did not answer); it is taken from the next reading"
-    tracker = ShareTracker()
-    tracker.seed(reading)
-    state["tracker"] = tracker.to_dict()
-    state["share"] = 0.0
-    return f"baseline {reading.used:g}% (from codex app-server)"
+    else:
+        tracker = ShareTracker()
+        tracker.seed(reading)
+        state["tracker"] = tracker.to_dict()
+        state["share"] = 0.0
+        resolve_until(state)
+    return limit_sentence(state)
+
+
+def limit_sentence(state: Mapping[str, Any]) -> str:
+    window = WINDOW_NAMES.get(state.get("window", "week"), "weekly")
+    tracker = ShareTracker.from_dict(state.get("tracker"))
+    quota = float(state.get("quota") or 0)
+    until = state.get("until")
+    if tracker.baseline is None:
+        what = (f"this session stops when the {window} quota reaches {float(until):g}%" if until is not None
+                else f"this session may use {quota:g} more points of the {window} quota")
+        return f"{what}; Codex has not reported the current % yet, the stop point is shown at the next reading"
+    if until is not None and quota <= 0:
+        return (f"the {window} quota is already at {float(tracker.baseline):g}%, at or above your target "
+                f"{float(until):g}%, so tool calls are denied now; set a higher target or `agentcap off`")
+    head = (f"this session stops at {float(until):g}% of the {window} quota" if until is not None
+            else f"this session may use {quota:g} more points of the {window} quota")
+    return f"{head}: {stop_text(quota, float(state.get('share') or 0), tracker.last_used, window)}"
 
 
 def ensure_baseline(state: dict[str, Any], sid: str, payload: Mapping[str, Any]) -> None:
@@ -267,6 +294,7 @@ def ensure_baseline(state: dict[str, Any], sid: str, payload: Mapping[str, Any])
         tracker.seed(got)
         state["tracker"] = tracker.to_dict()
         state["share"] = 0.0
+        resolve_until(state)
 
 
 def share_line(state: Mapping[str, Any]) -> str:
@@ -274,37 +302,38 @@ def share_line(state: Mapping[str, Any]) -> str:
     if quota is None:
         return "agentcap: no limit for this session (type `agentcap 10% 5h`)"
     window = WINDOW_NAMES.get(state.get("window", "week"), "weekly")
-    if ShareTracker.from_dict(state.get("tracker")).baseline is None:
-        return f"agentcap: limit {float(quota):g}% of the {window} quota, waiting for the first reading"
-    return f"agentcap: session {float(state.get('share') or 0):.1f}% / {float(quota):g}% ({window})"
+    tracker = ShareTracker.from_dict(state.get("tracker"))
+    if tracker.baseline is None:
+        return f"agentcap: {limit_sentence(state)}"
+    share = float(state.get("share") or 0)
+    return (f"agentcap: {stop_text(float(quota), share, tracker.last_used, window)} "
+            f"(this session used {share:.1f} of {float(quota):g} points)")
 
 
 # ----------------------------------------------------------------- commands (UserPromptSubmit)
 HELP = (
     "agentcap commands (typed as a prompt in Codex; the model never sees them):\n"
-    "  agentcap 10% 5h          this session may use 10% of the 5-hour quota (or `week`)\n"
-    "  agentcap status          current share\n"
+    "  agentcap 10% 5h          this session may use 10 more points of the 5-hour quota (or `week`)\n"
+    "  agentcap until 70% 5h    stop when the 5-hour quota reaches 70%\n"
+    "  agentcap status          where the quota is now and where this session stops\n"
     "  agentcap off             clear this session's limit\n"
     "  agentcap approve         raise the limit by 50% after a stop (Pro, at most twice)\n"
-    "  agentcap default 10% 5h  every new session, also `codex exec`, starts with this limit\n"
+    "  agentcap default 10% 5h  every new session, also `codex exec`, starts with this limit (`until` too)\n"
     "  agentcap default off     no default"
 )
 
 
-def _parse_limit(words: list[str]) -> tuple[float, str]:
+def _parse_limit(words: list[str]) -> tuple[float, str, bool]:
     if not words:
-        raise ValueError("give a limit, e.g. `agentcap 10% 5h`")
-    quota = parse_quota(words[0])
-    window = "week"
-    for w in words[1:]:
-        lw = w.lower()
-        if lw in ("5h", "5-hour", "5hour", "session"):
-            window = "5h"
-        elif lw in ("week", "weekly", "7d"):
-            window = "week"
-        else:
-            raise ValueError(f"unknown window {w!r}: use 5h or week")
-    return quota, window
+        raise ValueError("give a limit, e.g. `agentcap 10% 5h` or `agentcap until 70% 5h`")
+    return parse_limit_words(words)
+
+
+def _default_text(d: Mapping[str, Any]) -> str:
+    window = WINDOW_NAMES.get(d.get("window", "week"), "weekly")
+    if d.get("until"):
+        return f"a stop at {float(d['quota']):g}% of the {window} quota"
+    return f"a limit of {float(d['quota']):g} more points of the {window} quota"
 
 
 def run_command(text: str, sid: str, now: float) -> str:
@@ -318,13 +347,14 @@ def run_command(text: str, sid: str, now: float) -> str:
             maybe_probe(sid, now)
         tier = "Pro (stops at the limit)" if is_pro() else "Free (watch only; Pro stops at the limit)"
         default = _read_json(defaults_path())
-        extra = (f"; default for new sessions: {default['quota']:g}% {default['window']}"
+        extra = (f"; new sessions start with {_default_text(default)}"
                  if default and default.get("quota") is not None else "")
         loop = state.get("loop") or {}
         paused = f"; PAUSED: {loop['tripped']} (type `agentcap approve`)" if loop.get("tripped") else ""
         return f"{share_line(state)} — {tier}{extra}{paused}"
     if verb == "off":
-        for key in ("quota", "window", "tracker", "share", "warned", "nudged", "set_at", "source"):
+        for key in ("quota", "window", "tracker", "share", "warned", "nudged", "set_at", "source",
+                    "until", "until_done"):
             state.pop(key, None)
         save(sid, state)
         return "agentcap: limit cleared for this session."
@@ -343,20 +373,23 @@ def run_command(text: str, sid: str, now: float) -> str:
             save(sid, state)
             return (f"agentcap: already approved twice (limit {float(state['quota']):g}%). "
                     "Use `agentcap <N%>` to set a new limit on purpose.")
-        new = round(float(state["quota"]) * APPROVE_FACTOR, 4)
+        new = approve_quota(float(state["quota"]), APPROVE_FACTOR)
         state.update({"quota": new, "approvals": n + 1, "nudged": False, "warned": False})
+        state.pop("until", None)  # from here on the limit is points; the stop point is shown below
         save(sid, state)
         share = float(state.get("share") or 0)
-        note = (f" The session is already at {share:.1f}%, so tools stay denied; approve again or set a "
-                "higher limit." if share >= new else " Tell Codex to continue.")
-        return (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g}%"
-                + ("; breaker cleared" if cleared else "") + "." + note)
+        tracker = ShareTracker.from_dict(state.get("tracker"))
+        window = WINDOW_NAMES.get(state.get("window", "week"), "weekly")
+        where = f" {stop_text(new, share, tracker.last_used, window)}." if tracker.baseline is not None else ""
+        note = (f" The session already used {share:.1f} points, so tools stay denied; approve again or set "
+                "a higher limit." if share >= new else " Tell Codex to continue.")
+        return (f"agentcap: approved ({n + 1}/{APPROVE_MAX}): limit raised to {new:g} points"
+                + ("; breaker cleared" if cleared else "") + "." + where + note)
     if verb == "default":
         rest = words[1:]
         if not rest:
             d = _read_json(defaults_path())
-            return (f"agentcap: default for new sessions: {d['quota']:g}% of the "
-                    f"{WINDOW_NAMES[d['window']]} quota." if d and d.get("quota") is not None
+            return (f"agentcap: new sessions start with {_default_text(d)}." if d and d.get("quota") is not None
                     else "agentcap: no default limit. Set one with `agentcap default 10% 5h`.")
         if rest[0].lower() in ("off", "none", "clear"):
             try:
@@ -364,20 +397,20 @@ def run_command(text: str, sid: str, now: float) -> str:
             except OSError:
                 pass
             return "agentcap: default limit removed; new sessions start without one."
-        quota, window = _parse_limit(rest)
-        _atomic_write(defaults_path(), {"quota": quota, "window": window, "set_at": now})
-        return (f"agentcap: every new Codex session (TUI and `codex exec`) now starts with a "
-                f"{quota:g}% limit of the {WINDOW_NAMES[window]} quota. This session is unchanged; "
-                f"`agentcap {quota:g}% {window}` sets it here too.")
+        quota, window, until = _parse_limit(rest)
+        d = {"quota": quota, "window": window, "until": until, "set_at": now}
+        _atomic_write(defaults_path(), d)
+        here = f"agentcap {'until ' if until else ''}{quota:g}% {window}"
+        return (f"agentcap: every new Codex session (TUI and `codex exec`) now starts with {_default_text(d)}. "
+                f"This session is unchanged; `{here}` sets it here too.")
     if verb in ("quota", "set", "limit"):
         words = words[1:]
-    quota, window = _parse_limit(words)
-    detail = start_quota(state, sid, quota, window, now, source="command")
+    quota, window, until = _parse_limit(words)
+    detail = start_quota(state, sid, quota, window, now, source="command", until=until)
     save(sid, state)
     tier = "" if is_pro() else (" Free: you get the meter and one notice at the limit; stopping is Pro "
                                 f"({PRICING_URL}).")
-    return (f"agentcap: this session may use {quota:g}% of the {WINDOW_NAMES[window]} quota; "
-            f"{detail}. Tool calls are denied at the limit.{tier}")
+    return f"agentcap: {detail}. Tool calls are denied at the limit.{tier}"
 
 
 # ----------------------------------------------------------------- self-guard
@@ -461,10 +494,10 @@ def hook_session_start(payload: Mapping[str, Any], *, now: float) -> dict[str, A
     d = _read_json(defaults_path())
     if not d or d.get("quota") is None or d.get("window") not in WINDOW_NAMES:
         return None
-    detail = start_quota(state, sid, float(d["quota"]), d["window"], now, source="default")
+    detail = start_quota(state, sid, float(d["quota"]), d["window"], now, source="default",
+                         until=bool(d.get("until")))
     save(sid, state)
-    return {"systemMessage": (f"agentcap: default limit {float(d['quota']):g}% of the "
-                              f"{WINDOW_NAMES[d['window']]} quota for this session; {detail}.")}
+    return {"systemMessage": f"agentcap (default limit): {detail}."}
 
 
 def hook_prompt(payload: Mapping[str, Any], *, now: float) -> dict[str, Any] | None:
@@ -524,6 +557,7 @@ def hook_pre(payload: Mapping[str, Any], *, now: float, pro: bool) -> dict[str, 
     ensure_baseline(state, sid, payload)
     maybe_probe(sid, now)
     refresh(state, sid, payload, now)
+    resolve_until(state)
     quota = float(state["quota"])
     share = float(state.get("share") or 0)
     window = WINDOW_NAMES.get(state.get("window", "week"), "weekly")
@@ -531,16 +565,19 @@ def hook_pre(payload: Mapping[str, Any], *, now: float, pro: bool) -> dict[str, 
     if ShareTracker.from_dict(state.get("tracker")).baseline is not None and share >= quota:
         if pro:
             state["denies"] = int(state.get("denies", 0)) + 1
-            out = _deny(f"agentcap: this session used {share:.1f}% of the {window} quota (limit {quota:g}%). "
-                        "Stop now: do not call more tools; summarise what is done and what is left. "
+            now_used = ShareTracker.from_dict(state.get("tracker")).last_used
+            at = f"the {window} quota is at {float(now_used):g}%; " if now_used is not None else ""
+            out = _deny(f"agentcap: {at}this session used {share:.1f} of its {quota:g} points and reached its "
+                        "stop point. Stop now: do not call more tools; summarise what is done and what is left. "
                         "The user can type `agentcap approve` (+50%) or `agentcap off`.")
         elif not state.get("nudged"):
             state["nudged"] = True
-            out = {"systemMessage": f"agentcap: this session passed its {quota:g}% {window} limit "
-                                    f"({share:.1f}%). AgentCap Pro would stop the agent here: {PRICING_URL}"}
+            out = {"systemMessage": f"agentcap: this session passed its stop point ({share:.1f} of {quota:g} "
+                                    f"points of the {window} quota). AgentCap Pro would stop the agent here: "
+                                    f"{PRICING_URL}"}
     elif share >= quota * WARN_FRACTION and not state.get("warned"):
         state["warned"] = True
-        out = {"systemMessage": f"agentcap: session at {share:.1f}% of its {quota:g}% {window} limit."}
+        out = {"systemMessage": f"{share_line(state)}."}
     save(sid, state)
     return out
 
@@ -598,6 +635,7 @@ def hook_stop(payload: Mapping[str, Any], *, now: float) -> dict[str, Any] | Non
     if ShareTracker.from_dict(state.get("tracker")).baseline is not None:
         read_live(sid, now)  # the turn's last response is now on the server
         refresh(state, sid, payload, now)
+        resolve_until(state)
     share = round(float(state.get("share") or 0), 1)
     line = share_line(state)
     if state.get("receipt_share") != share:

@@ -248,13 +248,20 @@ The easiest path on a Claude Max or Pro plan. Inside Claude Code:
 /plugin install agentcap@agentcap
 /agentcap:setup          # once: adds AgentCap's read-only statusLine (your own line keeps showing)
 /agentcap:default 10% 5h # every new session (also `claude -p`) starts with this limit
-/agentcap:quota 5%       # this session may use 5% of the weekly quota (`2% 5h` for the 5-hour window)
-/agentcap:status         # session 3.1% / 5% (weekly)
+/agentcap:quota 5% 5h    # this session may use 5 more points of the 5-hour quota (`week` for weekly)
+/agentcap:quota until 70% 5h  # or: stop when the 5-hour quota reaches 70%
+/agentcap:status         # 5-hour quota at 32% now → stops at 37% (this session used 3.1 of 5 points)
 /agentcap:off            # clear it;  /agentcap:unsetup restores your old statusLine
 ```
 
 `/agentcap:setup` is optional: the quota is measured with `/usage`; setup only adds a live
 statusline meter.
+
+**Two ways to say the limit.** `5% 5h` means *5 more points* from where the 5-hour quota is when
+you type it: at 20% it stops at 25%. `until 70% 5h` means *stop when the 5-hour quota reaches
+70%*, wherever it is now. Every AgentCap message says both numbers, e.g. `5-hour quota at 20% now
+→ stops at 25%`, so you never have to work it out. The same two forms work in Codex
+(`agentcap 5% 5h`, `agentcap until 70% 5h`) and for defaults (`default until 70% 5h`).
 
 No pip install: the plugin is stdlib Python (`python3` on PATH). The marketplace installs only
 the self-contained `plugin/` folder (commands, hooks, the script and the few `agentcap` modules it
@@ -326,7 +333,8 @@ quota is spent and only you can type them.
 
 | Type in Codex | Effect |
 | --- | --- |
-| `agentcap 10% 5h` | this session may use 10% of the 5-hour quota (`week` for the weekly quota) |
+| `agentcap 10% 5h` | this session may use 10 more points of the 5-hour quota (`week` for the weekly quota) |
+| `agentcap until 70% 5h` | stop when the 5-hour quota reaches 70% |
 | `agentcap status` | current share of the limit |
 | `agentcap off` | clear this session's limit |
 | `agentcap approve` | raise the limit by 50% after a stop (Pro, at most twice) |

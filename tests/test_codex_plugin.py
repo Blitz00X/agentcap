@@ -95,7 +95,7 @@ def denied(out):
 def test_agentcap_prompt_sets_the_limit_and_never_reaches_the_model(env):
     out = prompt("agentcap 2% 5h")
     assert out["decision"] == "block"
-    assert "may use 2% of the 5-hour quota" in out["reason"] and "baseline 10%" in out["reason"]
+    assert "may use 2 more points of the 5-hour quota" in out["reason"] and "at 10% now → stops at 12%" in out["reason"]
     st = json.loads(cx.session_path(SID).read_text())
     assert st["quota"] == 2.0 and st["window"] == "5h" and st["tracker"]["baseline"] == 10.0
 
@@ -115,7 +115,7 @@ def test_bad_command_explains_itself(env):
 def test_status_off_and_help(env):
     assert "no limit" in prompt("agentcap status")["reason"]
     prompt("agentcap 5% week")
-    assert "session 0.0% / 5% (weekly)" in prompt("agentcap status")["reason"]
+    assert "weekly quota at 40% now → stops at 45%" in prompt("agentcap status")["reason"]
     assert "cleared" in prompt("agentcap off")["reason"]
     assert pre() is None
     assert "agentcap default 10% 5h" in prompt("agentcap help")["reason"]
@@ -128,7 +128,7 @@ def test_pro_denies_at_the_limit_from_the_live_reading(env):
     assert pre() is None
     cx._atomic_write(cx.live_path(SID), {"ts": 9e12, "readings": {"5h": {"used": 12.0, "resets_at": R5}}})
     out = pre("ls")
-    assert denied(out) and "used 2.0% of the 5-hour quota (limit 2%)" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert denied(out) and "used 2.0 of its 2 points" in out["hookSpecificOutput"]["permissionDecisionReason"]
     assert "agentcap approve" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
 
@@ -158,7 +158,7 @@ def test_warns_once_at_80_percent(env):
     pro(env)
     prompt("agentcap 5% 5h")
     cx._atomic_write(cx.live_path(SID), {"ts": 9e12, "readings": {"5h": {"used": 14.0, "resets_at": R5}}})
-    assert "session at 4.0%" in pre("ls")["systemMessage"]
+    assert "used 4.0 of 5 points" in pre("ls")["systemMessage"]
     assert pre("ls -a") is None
 
 
@@ -176,7 +176,7 @@ def test_background_probe_is_throttled(env):
 def test_no_live_answer_takes_the_baseline_from_the_next_reading(env):
     pro(env)
     cx._live["value"] = None
-    assert "not available yet" in prompt("agentcap 2% 5h")["reason"]
+    assert "has not reported the current % yet" in prompt("agentcap 2% 5h")["reason"]
     assert pre() is None
     cx._atomic_write(cx.live_path(SID), {"ts": 9e12, "readings": {"5h": {"used": 20.0, "resets_at": R5}}})
     assert pre("ls") is None        # baseline 20 now
@@ -233,8 +233,8 @@ def test_tool_failure_shapes(resp, failed):
 def test_approve_raises_50_percent_at_most_twice(env):
     pro(env)
     prompt("agentcap 2% 5h")
-    assert "raised to 3%" in prompt("agentcap approve")["reason"]
-    assert "raised to 4.5%" in prompt("agentcap approve")["reason"]
+    assert "raised to 3 points" in prompt("agentcap approve")["reason"]
+    assert "raised to 4.5 points" in prompt("agentcap approve")["reason"]
     assert "already approved twice" in prompt("agentcap approve")["reason"]
 
 
@@ -243,7 +243,7 @@ def test_approve_warns_when_the_session_is_already_past_the_new_limit(env):
     prompt("agentcap 2% 5h")
     cx._atomic_write(cx.live_path(SID), {"ts": 9e12, "readings": {"5h": {"used": 14.0, "resets_at": R5}}})
     pre("ls")
-    assert "already at 4.0%" in prompt("agentcap approve")["reason"]
+    assert "already used 4.0 points" in prompt("agentcap approve")["reason"]
 
 
 def test_free_approve_is_refused(env):
@@ -255,10 +255,10 @@ def test_free_approve_is_refused(env):
 def test_default_applies_to_new_sessions(env):
     pro(env)
     assert "every new Codex session" in prompt("agentcap default 3% 5h")["reason"]
-    assert "default for new sessions: 3% 5h" in prompt("agentcap status")["reason"]
+    assert "new sessions start with a limit of 3 more points of the 5-hour quota" in prompt("agentcap status")["reason"]
     out = hook("SessionStart", {"session_id": "new-1", "cwd": "/w", "hook_event_name": "SessionStart",
                                 "source": "startup", "transcript_path": None})
-    assert "default limit 3% of the 5-hour quota" in out["systemMessage"]
+    assert "(default limit): this session may use 3 more points of the 5-hour quota" in out["systemMessage"]
     st = json.loads(cx.session_path("new-1").read_text())
     assert st["quota"] == 3.0 and st["source"] == "default" and st["tracker"]["baseline"] == 10.0
     prompt("agentcap 9% week", sid="new-1")
@@ -289,7 +289,7 @@ def test_stop_reads_live_writes_a_receipt_and_shows_the_share(env):
     prompt("agentcap 5% 5h")
     set_live(five=12.0)
     out = stop()
-    assert out["systemMessage"] == "agentcap: session 2.0% / 5% (5-hour)"
+    assert out["systemMessage"] == "agentcap: 5-hour quota at 12% now → stops at 15% (this session used 2.0 of 5 points)"
     rec = json.loads((cx.state_dir() / "receipts.jsonl").read_text().splitlines()[-1])
     assert rec["share"] == 2.0 and rec["agent"] == "codex" and rec["measured_by"] == "app-server"
     stop()
@@ -382,3 +382,55 @@ def test_reads_and_developing_agentcap_are_allowed(env, command):
 def test_writes_to_state_are_still_denied(env, command):
     out = pre(command)
     assert denied(out) and "not a quota stop" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+# ---------------------------------------------------------------- until N% (absolute stop point)
+def test_until_sets_an_absolute_stop_point(env):
+    pro(env)
+    out = prompt("agentcap until 15% 5h")           # live 5h is at 10%
+    assert "stops at 15% of the 5-hour quota" in out["reason"] and "at 10% now → stops at 15%" in out["reason"]
+    st = json.loads(cx.session_path(SID).read_text())
+    assert st["quota"] == 5.0 and st["until"] == 15.0
+    assert "stops at 15%" in prompt("agentcap status")["reason"]
+    cx._atomic_write(cx.live_path(SID), {"ts": 9e12, "readings": {"5h": {"used": 14.0, "resets_at": R5}}})
+    assert not denied(pre("ls"))
+    cx._atomic_write(cx.live_path(SID), {"ts": 9e12 + 1, "readings": {"5h": {"used": 15.0, "resets_at": R5}}})
+    out = pre("ls -a")
+    assert denied(out) and "quota is at 15%" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_until_already_reached_says_so_and_denies(env):
+    pro(env)
+    out = prompt("agentcap until 8% 5h")             # already at 10%
+    assert "already at 10%, at or above your target 8%" in out["reason"]
+    assert denied(pre("ls"))
+
+
+def test_until_without_a_live_answer_resolves_at_the_next_reading(env):
+    pro(env)
+    cx._live["value"] = None
+    assert "stops when the 5-hour quota reaches 30%" in prompt("agentcap until 30% 5h")["reason"]
+    cx._atomic_write(cx.live_path(SID), {"ts": 9e12, "readings": {"5h": {"used": 20.0, "resets_at": R5}}})
+    assert pre("ls") is None
+    st = json.loads(cx.session_path(SID).read_text())
+    assert st["quota"] == 10.0
+    cx._atomic_write(cx.live_path(SID), {"ts": 9e12 + 1, "readings": {"5h": {"used": 30.0, "resets_at": R5}}})
+    assert denied(pre("ls -a"))
+
+
+def test_default_until_applies_per_session(env):
+    pro(env)
+    assert "a stop at 25% of the 5-hour quota" in prompt("agentcap default until 25% 5h")["reason"]
+    out = hook("SessionStart", {"session_id": "new-session", "cwd": "/w", "hook_event_name": "SessionStart",
+                                "source": "startup", "transcript_path": None})
+    assert "stops at 25% of the 5-hour quota" in out["systemMessage"] and "stops at 25%" in out["systemMessage"]
+    assert json.loads(cx.session_path("new-session").read_text())["quota"] == 15.0
+
+
+def test_approve_after_until_shows_the_new_stop_point(env):
+    pro(env)
+    prompt("agentcap until 14% 5h")                  # 4 points from 10%
+    cx._atomic_write(cx.live_path(SID), {"ts": 9e12, "readings": {"5h": {"used": 14.0, "resets_at": R5}}})
+    assert denied(pre("ls"))
+    out = prompt("agentcap approve")["reason"]
+    assert "raised to 6 points" in out and "stops at 16%" in out

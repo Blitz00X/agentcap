@@ -1,6 +1,6 @@
 ---
-description: Cap this session's share of your subscription quota, e.g. 5% or 2% 5h
-argument-hint: <N%> [week|5h]
+description: Limit this session: 5% 5h = 5 more points of the 5-hour quota; until 70% 5h = stop when it reaches 70%
+argument-hint: <N%> | until <N%>  [week|5h]
 allowed-tools: Bash(python3:*)
 disable-model-invocation: true
 ---

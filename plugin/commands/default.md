@@ -1,6 +1,6 @@
 ---
-description: Give every new Claude Code session (also claude -p) a quota limit, e.g. 10% 5h, or off
-argument-hint: <N%> [week|5h] | off
+description: Give every new Claude Code session (also claude -p) a limit: 10% 5h, until 70% 5h, or off
+argument-hint: <N%> | until <N%>  [week|5h] | off
 allowed-tools: Bash(python3:*)
 disable-model-invocation: true
 ---

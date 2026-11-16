@@ -74,7 +74,7 @@ def test_pro_denies_at_limit_with_exact_baseline(env):
     assert "4.2%" in warn["systemMessage"] and warn["hookSpecificOutput"]["additionalContext"]
     assert hook("pre", dict(PRE, tool_input={"command": "step3"})) is None  # warn once
     line = statusline(sl_payload(45.1))
-    assert "session 5.1% / 5%" in line
+    assert "used 5.1 of 5 points" in line and "stop point was 45%" in line
     deny = hook("pre", dict(PRE, tool_input={"command": "step4"}))
     assert deny["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "/agentcap:off" in deny["hookSpecificOutput"]["permissionDecisionReason"]
@@ -106,7 +106,7 @@ def test_no_quota_or_no_readings_is_silent(env):
     assert hook("pre", PRE) is None
     cmd("quota", "5%")  # no reading yet
     assert hook("pre", PRE) is None
-    assert "waiting" in cmd("status")
+    assert "after the first reading" in cmd("status")
 
 
 def test_off_clears(env):
@@ -120,7 +120,7 @@ def test_stop_receipt(env):
     pro(env)
     statusline(sl_payload(1.0)); cmd("quota", "5%"); statusline(sl_payload(2.0))
     stop = {"session_id": SID, "hook_event_name": "Stop", "stop_hook_active": False, "cwd": "/w"}
-    assert "1.0% / 5%" in hook("stop", stop)["systemMessage"]
+    assert "used 1.0 of 5 points" in hook("stop", stop)["systemMessage"]
     assert hook("stop", stop) is None
     rec = (cc.cc_dir() / "receipts.jsonl").read_text().splitlines()
     assert json.loads(rec[0])["share"] == 1.0
@@ -289,7 +289,7 @@ def test_approve_at_full_quota_says_quota_no_longer_stops(env):
     pro(env)
     statusline(sl_payload(1.0)); cmd("quota", "100%")
     out = cmd("approve")
-    assert "150%" in out and "no longer stops" in out
+    assert "150 points" in out and "no longer stops" in out
 
 
 def test_stop_receipt_has_last_tool(env):
@@ -492,7 +492,7 @@ def test_quota_baseline_comes_from_usage(env, monkeypatch):
     pro(env)
     _live(monkeypatch, 40.0)
     out = cmd("quota", "2%")
-    assert "baseline 40% (exact, from /usage)" in out
+    assert "baseline 40%, exact, from /usage" in out and "stops at 42%" in out
     statusline(sl_payload(39.0))          # stale, lower statusline value: ignored
     assert json.loads(cc.session_path(SID).read_text())["share"] == 0.0
     assert hook("pre", dict(PRE, tool_input={"command": "a"})) is None
@@ -507,8 +507,9 @@ def test_usage_share_denies_when_the_statusline_lags(env, monkeypatch):
     cc._atomic_write(cc.usage_path(SID), {"ts": 0, "readings": {"week": {"used": 42.0, "resets_at": RESETS}}})
     monkeypatch.setattr(cc, "maybe_probe_usage", lambda *a, **k: False)
     deny = hook("pre", dict(PRE, tool_input={"command": "b"}))
-    assert deny["hookSpecificOutput"]["permissionDecision"] == "deny" and "2.0%" in deny["stopReason"]
-    assert "session 2.0% / 2%" in statusline(sl_payload(40.0))
+    assert deny["hookSpecificOutput"]["permissionDecision"] == "deny" and "used 2.0 of its 2" in deny["stopReason"]
+    assert "quota is at 42%" in deny["stopReason"]  # the fresher /usage %, not the lagging statusline
+    assert "used 2.0 of 2 points" in statusline(sl_payload(40.0))
     stop = {"session_id": SID, "hook_event_name": "Stop", "stop_hook_active": False, "cwd": "/w"}
     hook("stop", stop)
     rec = json.loads((cc.cc_dir() / "receipts.jsonl").read_text().splitlines()[-1])
@@ -520,7 +521,7 @@ def test_without_usage_another_sessions_reading_is_not_the_baseline(env):
     cc._atomic_write(cc.state_root() / "claude_last.json",
                      {"ts": __import__("time").time() - 60, "readings": {"week": {"used": 4.0, "resets_at": RESETS}}})
     out = cmd("quota", "2%")
-    assert "taken at the next statusline refresh" in out
+    assert "after the first reading" in out
 
 
 def test_probe_starts_at_most_once_a_minute(env, monkeypatch):
@@ -639,7 +640,7 @@ def test_unrelated_agentcap_glob_is_allowed_but_plugin_glob_is_not(env):
 def test_default_command_set_show_off(env):
     assert "no default" in cmd("default")
     assert "every new Claude Code session" in cmd("default", "3%", "5h")
-    assert "3% of the 5-hour" in cmd("default")
+    assert "3 more points of the 5-hour" in cmd("default")
     assert "removed" in cmd("default", "off")
     assert "no default" in cmd("default")
 
@@ -652,7 +653,7 @@ def test_session_start_applies_the_default_and_adopts_the_first_usage_read(env, 
     monkeypatch.setattr(cc.subprocess, "Popen", lambda argv, **kw: started.append(argv))
     cmd("default", "2%", "5h")
     out = hook("start", {"session_id": SID, "hook_event_name": "SessionStart", "source": "startup", "cwd": "/w"})
-    assert "default limit 2% of the 5-hour quota" in out["systemMessage"]
+    assert "default limit, a limit of 2 more points of the 5-hour quota" in out["systemMessage"]
     assert started and started[0][-3:] == ["usage-probe", "--session", SID]
     st = json.loads(cc.session_path(SID).read_text())
     assert st["quota"] == 2.0 and st["source"] == "default" and st.get("used") is None
@@ -719,7 +720,7 @@ def test_packaged_headless_hooks_write_a_receipt_without_stop(env):
 
     invoke("default", "2%", "5h")
     started = {"session_id": SID, "hook_event_name": "SessionStart", "source": "startup", "cwd": str(env)}
-    assert "default limit 2%" in invoke("hook", "start", payload=started)
+    assert "a limit of 2 more points" in invoke("hook", "start", payload=started)
 
     def reading(value):
         cc._atomic_write(cc.usage_path(SID), {
@@ -739,3 +740,34 @@ def test_packaged_headless_hooks_write_a_receipt_without_stop(env):
     assert len(recs) == 1
     assert recs[0]["reason"] == "quota_exceeded" and recs[0]["share"] == 3.0
     assert recs[0]["source"] == "default" and recs[0]["measured_by"] == "usage"
+
+
+# ---------------------------------------------------------------- until N% (absolute stop point)
+def test_until_sets_an_absolute_stop_point(env):
+    pro(env)
+    statusline(sl_payload(40.0))
+    out = cmd("quota", "until", "45%")
+    assert "stops at 45% of the weekly quota" in out and "at 40% now → stops at 45%" in out
+    st = json.loads(cc.session_path(SID).read_text())
+    assert st["quota"] == 5.0 and st["until"] == 45.0
+    statusline(sl_payload(44.0))
+    warn = hook("pre", dict(PRE, tool_input={"command": "a"}))       # 4 of 5 points: a warning, no deny
+    assert "permissionDecision" not in (warn or {}).get("hookSpecificOutput", {})
+    statusline(sl_payload(45.0))
+    deny = hook("pre", dict(PRE, tool_input={"command": "b"}))
+    assert deny["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "quota is at 45%" in deny["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_until_resolves_when_the_first_reading_arrives(env):
+    pro(env)
+    assert "stops when the weekly quota reaches 50%" in cmd("quota", "until", "50%")
+    statusline(sl_payload(42.0))                     # first reading: 8 points left
+    st = json.loads(cc.session_path(SID).read_text())
+    assert st["quota"] == 8.0
+    assert "stops at 50%" in cmd("status")
+
+
+def test_until_parse_errors_are_plain(env):
+    assert "until 70%" in cmd("quota", "until")
+    assert "unknown window" in cmd("quota", "5%", "fortnight")
