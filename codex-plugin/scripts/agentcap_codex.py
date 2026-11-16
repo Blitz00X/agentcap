@@ -52,8 +52,10 @@ from agentcap.quota import (  # noqa: E402
     _atomic_write,
     _read_json,
     codex_readings,
+    agent_set_refusal,
     approve_quota,
     is_self_approve_command,
+    parse_agent_set,
     parse_limit_words,
     resolve_until,
     stop_text,
@@ -238,8 +240,10 @@ def refresh(state: dict[str, Any], sid: str, payload: Mapping[str, Any], now: fl
 
 
 def start_quota(state: dict[str, Any], sid: str, quota: float, window: str, now: float,
-                *, source: str, until: bool = False) -> str:
-    """Set the limit and return the sentence that says where this session stops."""
+                *, source: str, until: bool = False, seed: Reading | None = None, live: bool = True) -> str:
+    """Set the limit and return the sentence that says where this session stops.
+
+    ``live=False`` (inside a short hook) uses ``seed`` instead of an app-server read."""
 
     for key in ("tracker", "share", "warned", "nudged", "denies", "approvals", "receipt_share",
                 "until", "until_done"):
@@ -247,8 +251,7 @@ def start_quota(state: dict[str, Any], sid: str, quota: float, window: str, now:
     state.update({"quota": quota, "window": window, "set_at": now, "source": source})
     if until:
         state["until"] = quota
-    live = read_live(sid, now)
-    reading = (live or {}).get(window)
+    reading = (read_live(sid, now) or {}).get(window) if live else seed
     if reading is None:
         state["tracker"] = ShareTracker().to_dict()
     else:
@@ -297,6 +300,17 @@ def ensure_baseline(state: dict[str, Any], sid: str, payload: Mapping[str, Any])
         resolve_until(state)
 
 
+def latest_reading(sid: str, payload: Mapping[str, Any], window: str, now: float) -> Reading | None:
+    """Newest reading without a network call: a live read under a minute old, else the rollout."""
+
+    live = _read_json(live_path(sid)) or {}
+    if now - float(live.get("ts") or 0) <= 60:
+        got = _reading((live.get("readings") or {}).get(window))
+        if got is not None:
+            return got
+    return rollout_reading(payload.get("transcript_path"), window)
+
+
 def share_line(state: Mapping[str, Any]) -> str:
     quota = state.get("quota")
     if quota is None:
@@ -319,7 +333,9 @@ HELP = (
     "  agentcap off             clear this session's limit\n"
     "  agentcap approve         raise the limit by 50% after a stop (Pro, at most twice)\n"
     "  agentcap default 10% 5h  every new session, also `codex exec`, starts with this limit (`until` too)\n"
-    "  agentcap default off     no default"
+    "  agentcap default off     no default\n"
+    "Or ask the agent in plain words (\"use at most half of the 5-hour quota\"): it proposes the\n"
+    "limit and you approve it with one button. The agent can only set or tighten a limit."
 )
 
 
@@ -372,7 +388,7 @@ def run_command(text: str, sid: str, now: float) -> str:
         if n >= APPROVE_MAX:
             save(sid, state)
             return (f"agentcap: already approved twice (limit {float(state['quota']):g}%). "
-                    "Use `agentcap <N%>` to set a new limit on purpose.")
+                    "Set a new limit with `agentcap <N%>`, or remove it with `agentcap off`.")
         new = approve_quota(float(state["quota"]), APPROVE_FACTOR)
         state.update({"quota": new, "approvals": n + 1, "nudged": False, "warned": False})
         state.pop("until", None)  # from here on the limit is points; the stop point is shown below
@@ -411,6 +427,101 @@ def run_command(text: str, sid: str, now: float) -> str:
     tier = "" if is_pro() else (" Free: you get the meter and one notice at the limit; stopping is Pro "
                                 f"({PRICING_URL}).")
     return f"agentcap: {detail}. Tool calls are denied at the limit.{tier}"
+
+
+# ----------------------------------------------------------------- agent-set limit
+# The user asks in plain words ("use at most half of the 5-hour quota"); the agent runs
+# `echo agentcap set 50% 5h` with sandbox_permissions "require_escalated" (the skill says so),
+# Codex shows its approval prompt (the user's one button), and PostToolUse sets the limit after
+# the command ran (a declined command never runs).
+# The agent may only set or tighten a limit: raising, clearing and approving stay the user's.
+AGENT_SET_HELP = ("the command is `echo agentcap set 50% 5h` (50 more points of the 5-hour quota) or "
+                  "`echo agentcap set until 70% 5h` (stop when the 5-hour quota reaches 70%)")
+
+
+def _agent_set(payload: Mapping[str, Any]) -> tuple[float, str, bool] | None:
+    """The agent-set command in this tool call (ValueError: it is one, with bad arguments)."""
+
+    if payload.get("tool_name") not in _SHELL_TOOLS:
+        return None
+    return parse_agent_set(command_text(payload.get("tool_input")))
+
+
+def _current(state: dict[str, Any], sid: str, payload: Mapping[str, Any], now: float) -> tuple[float | None, float]:
+    """(window % now, share) of the limit in force, after the newest readings."""
+
+    if state.get("quota") is None:
+        return None, 0.0
+    ensure_baseline(state, sid, payload)
+    refresh(state, sid, payload, now)
+    resolve_until(state)
+    tracker = ShareTracker.from_dict(state.get("tracker"))
+    used = tracker.last_used if tracker.baseline is not None else None
+    return used, float(state.get("share") or 0)
+
+
+def preview_text(value: float, window: str, until: bool, reading: Reading | None) -> str:
+    """Where the proposed limit would stop, as the user sees it in the approval prompt."""
+
+    name = WINDOW_NAMES.get(window, window)
+    what = (f"stop this session when the {name} quota reaches {value:g}%" if until
+            else f"let this session use {value:g} more points of the {name} quota")
+    if reading is None:
+        return what
+    if until and value <= reading.used:
+        return f"{what} (it is at {reading.used:g}% already, so tools would stop right away)"
+    quota = max(value - reading.used, 0.0) if until else value
+    return f"{what}: {stop_text(quota, 0.0, reading.used, name)}"
+
+
+def agent_set_pre(payload: Mapping[str, Any], sid: str, now: float) -> tuple[bool, dict[str, Any] | None]:
+    """(is the agent-set command, deny output or None to let Codex ask the user)."""
+
+    try:
+        got = _agent_set(payload)
+    except ValueError as exc:
+        return True, _deny(f"agentcap: {exc}; {AGENT_SET_HELP}.")
+    if got is None:
+        return False, None
+    value, window, until = got
+    state = load(sid)
+    used, share = _current(state, sid, payload, now)
+    why = agent_set_refusal(state, used, share, value, window, until)
+    if why:
+        return True, _deny(f"agentcap guard (not a quota stop): {why}. Tell the user they can type "
+                           f"`agentcap {'until ' if until else ''}{value:g}% {window}` themselves.")
+    # Codex hands hooks only {"command": ...}, so the escalation the skill asks for (which makes
+    # Codex show its approval prompt) cannot be checked here; a call without it only sets a
+    # tighter limit, and the user sees it in the message after it ran.
+    return True, None
+
+
+def agent_set_post(payload: Mapping[str, Any], sid: str, now: float, failed: bool) -> Any:
+    """Set the limit once the approved command ran.  False: not the agent-set command."""
+
+    try:
+        got = _agent_set(payload)
+    except ValueError:
+        return None
+    if got is None:
+        return False
+    if failed:
+        return None
+    value, window, until = got
+    state = load(sid)
+    used, share = _current(state, sid, payload, now)
+    why = agent_set_refusal(state, used, share, value, window, until)
+    if why:
+        save(sid, state)
+        return {"systemMessage": f"agentcap: limit not changed: {why}."}
+    detail = start_quota(state, sid, value, window, now, source="agent", until=until, live=False,
+                         seed=latest_reading(sid, payload, window, now))
+    save(sid, state)
+    tier = ("" if is_pro() else
+            f" Free: you get the meter and one notice at the limit; stopping is Pro ({PRICING_URL}).")
+    return {"systemMessage": f"agentcap: limit set (you approved the agent's command): {detail}. "
+                             "Only you can raise it (`agentcap approve`, `agentcap <N%>`) or clear it "
+                             f"(`agentcap off`).{tier}"}
 
 
 # ----------------------------------------------------------------- self-guard
@@ -523,6 +634,9 @@ def hook_pre(payload: Mapping[str, Any], *, now: float, pro: bool) -> dict[str, 
     guard = self_guard(payload)
     if guard:
         return _deny(guard)
+    is_set, out = agent_set_pre(payload, sid, now)
+    if is_set:
+        return out
     state = load(sid)
     loop = state.setdefault("loop", {})
     changed = False
@@ -589,9 +703,12 @@ def hook_post(payload: Mapping[str, Any], *, now: float) -> dict[str, Any] | Non
         return None
     if is_wait_call(name, payload.get("tool_input")):
         return None
+    failed = tool_failed(payload.get("tool_response"))
+    applied = agent_set_post(payload, sid, now, failed)
+    if applied is not False:
+        return applied
     state = load(sid)
     loop = state.setdefault("loop", {})
-    failed = tool_failed(payload.get("tool_response"))
     loop["errors"] = int(loop.get("errors", 0)) + 1 if failed else 0
     out: dict[str, Any] | None = None
     if loop["errors"] >= LOOP_ERRORS and not loop.get("tripped"):

@@ -263,6 +263,14 @@ you type it: at 20% it stops at 25%. `until 70% 5h` means *stop when the 5-hour 
 → stops at 25%`, so you never have to work it out. The same two forms work in Codex
 (`agentcap 5% 5h`, `agentcap until 70% 5h`) and for defaults (`default until 70% 5h`).
 
+**Or just ask the agent.** Say it in your own words, e.g. *"this session may use at most half
+of the 5-hour quota"* or *"stop at 70% of the 5-hour quota"*. The agent turns it into
+`echo agentcap set 50% 5h` (or `... set until 70% 5h`) and Claude Code asks you to approve it,
+with the stop point in the prompt: one button. AgentCap sets the limit only after you approve.
+The agent may only set or tighten a limit; raising it (`/agentcap:approve`, a higher
+`/agentcap:quota`) and clearing it (`/agentcap:off`) stay yours. `approve` raises by 50% at most
+twice; after that, set any new limit with `/agentcap:quota` or remove it with `/agentcap:off`.
+
 No pip install: the plugin is stdlib Python (`python3` on PATH). The marketplace installs only
 the self-contained `plugin/` folder (commands, hooks, the script and the few `agentcap` modules it
 imports), not the whole repo. Contributors: `plugin/` is generated, edit the sources and run
@@ -340,6 +348,12 @@ quota is spent and only you can type them.
 | `agentcap approve` | raise the limit by 50% after a stop (Pro, at most twice) |
 | `agentcap default 10% 5h` | every new session, `codex exec` included, starts with this limit |
 | `agentcap default off` | no default limit |
+
+Or ask Codex in your own words (*"use at most half of the 5-hour quota"*): it runs
+`echo agentcap set 50% 5h` with escalated permissions, Codex shows its approval prompt (*Would you
+like to run the following command? … Yes, proceed*), and AgentCap sets the limit after you approve.
+The agent may only set or tighten a limit; raising and clearing stay yours (`agentcap approve`,
+`agentcap <N%>`, `agentcap off`).
 
 `PreToolUse` denies a tool call at the limit, on the 4th identical call in a row and after 8
 failing calls in a row; `sleep N` waits count for neither. Quota comes from `codex app-server`

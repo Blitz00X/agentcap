@@ -44,7 +44,9 @@ from agentcap.quota import (  # noqa: E402
     _read_json,
     baseline_from_last,
     claude_readings,
+    agent_set_refusal,
     approve_quota,
+    parse_agent_set,
     parse_limit_words,
     parse_quota,
     resolve_until,
@@ -512,6 +514,8 @@ def hook_post(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
     if got is None:
         return 0
     sid, allst, st = got
+    if agent_set_post(payload, stdout, now=now, failed=failed, pro=pro):
+        return 0
     if is_wait_call(str(payload.get("tool_name") or ""), payload.get("tool_input")):
         return 0  # a wait (sleep ...) that has not seen its file yet
     if failed and "agentcap" in json.dumps(payload.get("error") or payload.get("tool_response") or "").lower():
@@ -664,6 +668,8 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
         _emit(stdout, {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                               "permissionDecisionReason": SELF_GUARD_REASON}})
         return 0
+    if agent_set_pre(payload, stdout, now=now):
+        return 0
     if loop_pre(payload, stdout, now=now, pro=pro):
         return 0
     sid = payload.get("session_id")
@@ -781,33 +787,7 @@ def cmd_quota(args: list[str], sid: str | None, *, now: float) -> str:
     except ValueError as exc:
         return f"agentcap: {exc}"
     state = load(sid)
-    for k in ("tracker", "share", "used", "resets_at", "warned", "nudged", "denies", "receipt_share",
-              "usage_base", "until", "until_done"):
-        state.pop(k, None)
-    state.update({"quota": quota, "window": window, "set_at": now})
-    if until:
-        state["until"] = quota
-    tracker = ShareTracker()
-    source = "statusline"
-    live = live_readings("claude") if live_enabled() else None
-    seed = live.get(window) if live else None
-    if seed is not None:
-        source = "/usage"
-        state["usage_base"] = {"used": seed.used, "resets_at": seed.resets_at, "ts": now}
-        _atomic_write(usage_path(sid), {"ts": now, "readings": {
-            w: {"used": r.used, "resets_at": r.resets_at} for w, r in live.items()}})
-    else:
-        # only this session's own reading: another session's (claude_last.json) can be
-        # minutes old while the account kept spending (live C1, 12 Nov 2026)
-        seed = baseline_from_last(
-            {"ts": state.get("readings_ts"), "readings": state.get("last_readings")}
-            if state.get("last_readings") else None, window, now=now)
-    if seed is not None:
-        tracker.seed(seed)
-        state.update({"share": 0.0, "used": seed.used, "resets_at": seed.resets_at})
-    state["tracker"] = tracker.to_dict()
-    resolve_until(state)
-    save(sid, state)
+    seed, source = set_limit(state, sid, quota, window, until, now, origin="command", live=True)
     lines = [f"agentcap: {limit_sentence(state)}."]
     if seed:
         lines.append(f"(baseline {seed.used:g}%, exact, from {source})")
@@ -818,6 +798,156 @@ def cmd_quota(args: list[str], sid: str | None, *, now: float) -> str:
                      "meter to the statusline." if source == "/usage" else
                      "Not active yet: /usage did not answer; run /agentcap:setup (statusline) or try again.")
     return "\n".join(lines)
+
+
+def set_limit(state: dict[str, Any], sid: str, quota: float, window: str, until: bool, now: float,
+              *, origin: str, live: bool) -> tuple[Reading | None, str]:
+    """Start a limit in ``state`` (saved).  ``live=False`` (inside a hook) uses only readings
+    already on disk and starts a background /usage read when there is none."""
+
+    for k in ("tracker", "share", "used", "resets_at", "warned", "nudged", "denies", "receipt_share",
+              "usage_base", "until", "until_done", "approvals"):
+        state.pop(k, None)
+    state.update({"quota": quota, "window": window, "set_at": now, "source": origin})
+    if until:
+        state["until"] = quota
+    tracker = ShareTracker()
+    source = "statusline"
+    got = live_readings("claude") if live and live_enabled() else None
+    seed = got.get(window) if got else None
+    if seed is not None:
+        source = "/usage"
+        state["usage_base"] = {"used": seed.used, "resets_at": seed.resets_at, "ts": now}
+        _atomic_write(usage_path(sid), {"ts": now, "readings": {
+            w: {"used": r.used, "resets_at": r.resets_at} for w, r in got.items()}})
+    else:
+        # only this session's own reading: another session's (claude_last.json) can be
+        # minutes old while the account kept spending (live C1, 12 Nov 2026)
+        seed = baseline_from_last(
+            {"ts": state.get("readings_ts"), "readings": state.get("last_readings")}
+            if state.get("last_readings") else None, window, now=now)
+        if seed is None and not live:
+            cur = _read_json(usage_path(sid)) or {}
+            block = (cur.get("readings") or {}).get(window)
+            if now - float(cur.get("ts") or 0) <= USAGE_POLL_S * 2 and isinstance(block, Mapping) \
+                    and _num(block.get("used")) is not None:
+                seed = Reading(float(block["used"]), _num(block.get("resets_at")))
+                source = "/usage"
+                state["usage_base"] = {"used": seed.used, "resets_at": seed.resets_at, "ts": cur.get("ts")}
+    if seed is not None:
+        tracker.seed(seed)
+        state.update({"share": 0.0, "used": seed.used, "resets_at": seed.resets_at})
+    state["tracker"] = tracker.to_dict()
+    resolve_until(state)
+    save(sid, state)
+    if seed is None and not live:
+        maybe_probe_usage(sid, state, now, force=True)   # adopt_usage_baseline takes it from there
+    return seed, source
+
+
+# ------------------------------------------------------------ agent-set limit
+# The user asks in plain words ("use at most half of the 5-hour quota"); the agent runs
+# `echo agentcap set 50% 5h`; PreToolUse answers "ask", so Claude Code shows its permission
+# prompt (the user's one button) with the stop point; PostToolUse sets the limit after it ran.
+# The agent may only set or tighten a limit: raising, clearing and approving stay the user's.
+AGENT_SET_HELP = ("the command is `echo agentcap set 50% 5h` (50 more points of the 5-hour quota) or "
+                  "`echo agentcap set until 70% 5h` (stop when the 5-hour quota reaches 70%)")
+
+
+def _agent_set(payload: Mapping[str, Any]) -> tuple[float, str, bool] | None:
+    tool_input = payload.get("tool_input")
+    if payload.get("tool_name") != "Bash" or not isinstance(tool_input, Mapping):
+        return None
+    return parse_agent_set(tool_input.get("command"))
+
+
+def _current(state: Mapping[str, Any], sid: str) -> tuple[float | None, float]:
+    if state.get("quota") is None or state.get("used") is None:
+        return None, 0.0
+    return current_used(state, sid), effective_share(state, sid)
+
+
+def _known_used(state: Mapping[str, Any], sid: str, window: str, now: float) -> float | None:
+    """The window % from readings already on disk (for the approval prompt), else None."""
+
+    seed = baseline_from_last({"ts": state.get("readings_ts"), "readings": state.get("last_readings")}
+                              if state.get("last_readings") else None, window, now=now)
+    if seed is not None:
+        return seed.used
+    cur = _read_json(usage_path(sid)) or {}
+    block = (cur.get("readings") or {}).get(window)
+    if now - float(cur.get("ts") or 0) <= 300 and isinstance(block, Mapping):
+        return _num(block.get("used"))
+    return None
+
+
+def preview_text(value: float, window: str, until: bool, used: float | None) -> str:
+    name = WINDOW_NAMES.get(window, window)
+    what = (f"stop this session when the {name} quota reaches {value:g}%" if until
+            else f"let this session use {value:g} more points of the {name} quota")
+    if used is None:
+        return what
+    if until and value <= used:
+        return f"{what} (it is at {used:g}% already, so tools would stop right away)"
+    return f"{what}: {stop_text(max(value - used, 0.0) if until else value, 0.0, used, name)}"
+
+
+def agent_set_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float) -> bool:
+    """The agent proposes a limit: deny it if it would loosen the current one, else make Claude
+    Code ask the user (True when this tool call was the agent-set command)."""
+
+    def decide(decision: str, reason: str) -> bool:
+        _emit(stdout, {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision,
+                                              "permissionDecisionReason": reason}})
+        return True
+
+    try:
+        got = _agent_set(payload)
+    except ValueError as exc:
+        return decide("deny", f"agentcap: {exc}; {AGENT_SET_HELP}.")
+    if got is None:
+        return False
+    sid = payload.get("session_id")
+    if not isinstance(sid, str) or not sid:
+        return decide("deny", "agentcap: no session id; ask the user to run /agentcap:quota.")
+    value, window, until = got
+    state = load(sid)
+    used, share = _current(state, sid)
+    why = agent_set_refusal(state, used, share, value, window, until)
+    if why:
+        return decide("deny", f"agentcap: {why}. Tell the user they can run "
+                              f"/agentcap:quota {'until ' if until else ''}{value:g}% {window} themselves.")
+    preview = preview_text(value, window, until, _known_used(state, sid, window, now))
+    return decide("ask", f"AgentCap: the agent asks to {preview}. Approve to set this limit; "
+                         "only you can raise or remove it later (/agentcap:approve, /agentcap:off).")
+
+
+def agent_set_post(payload: Mapping[str, Any], stdout: TextIO, *, now: float, failed: bool, pro: bool) -> bool:
+    """Set the limit once the approved command ran (True when it was the agent-set command)."""
+
+    try:
+        got = _agent_set(payload)
+    except ValueError:
+        return True
+    if got is None:
+        return False
+    sid = payload.get("session_id")
+    if failed or not isinstance(sid, str) or not sid:
+        return True
+    value, window, until = got
+    state = load(sid)
+    used, share = _current(state, sid)
+    why = agent_set_refusal(state, used, share, value, window, until)
+    if why:
+        msg = f"agentcap: limit not changed: {why}."
+    else:
+        set_limit(state, sid, value, window, until, now, origin="agent", live=False)
+        tier = "" if pro else " Free: you get the meter and a notice at the limit; stopping is Pro."
+        msg = (f"agentcap: limit set (you approved the agent's command): {limit_sentence(state)}. "
+               f"Only the user can raise it (/agentcap:approve, /agentcap:quota) or clear it (/agentcap:off).{tier}")
+    _emit(stdout, {"systemMessage": msg,
+                   "hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": msg}})
+    return True
 
 
 APPROVE_FACTOR, APPROVE_MAX = 1.5, 2
@@ -844,7 +974,7 @@ def cmd_approve(sid: str | None) -> str:
     n = int(state.get("approvals", 0))
     if n >= APPROVE_MAX:
         return (f"agentcap: already approved twice (limit {float(state['quota']):g}%). "
-                "Use /agentcap:quota to set a new limit on purpose.")
+                "Set a new limit with /agentcap:quota, or remove it with /agentcap:off.")
     new = approve_quota(float(state["quota"]), APPROVE_FACTOR)
     state.update({"quota": new, "approvals": n + 1, "nudged": False})
     state.pop("until", None)  # from here on the limit is points; the stop point is shown below

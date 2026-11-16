@@ -365,6 +365,62 @@ def approve_quota(quota: float, factor: float) -> float:
     return round(float(quota) * factor, 4) if float(quota) > 0 else 1.0
 
 
+# The agent proposes a limit by running this harmless shell command; the host's own approval
+# prompt is the user's one button, and the hook sets the limit only after the command ran.
+# The agent may set or tighten a limit, never raise, clear or approve it.
+AGENT_SET_RE = re.compile(
+    r"""^\s*echo\s+(['"]?)agentcap\s+set\s+([A-Za-z0-9%.\- ]+?)\1\s*$""", re.IGNORECASE)
+
+
+def parse_agent_set(command: Any) -> tuple[float, str, bool] | None:
+    """``echo agentcap set 50% 5h`` / ``echo agentcap set until 70% 5h`` -> (value, window, until).
+
+    None when ``command`` is not that command; ValueError when it is, with bad arguments."""
+
+    if not isinstance(command, str):
+        return None
+    m = AGENT_SET_RE.match(command)
+    if not m:
+        return None
+    return parse_limit_words(m.group(2).split())
+
+
+def stop_point(quota: Any, share: Any, used_now: Any) -> float | None:
+    """The window % at which the current limit stops (None while it is unknown)."""
+
+    if quota is None or used_now is None:
+        return None
+    return float(used_now) + float(quota) - float(share or 0)
+
+
+def agent_set_refusal(current: Mapping[str, Any], used_now: float | None, share: float,
+                      value: float, window: str, until: bool) -> str | None:
+    """Why the agent may not set this limit (it would loosen the current one), else None.
+
+    ``current`` is the session state: ``quota``/``window``/``until`` of the limit in force."""
+
+    if current.get("quota") is None:
+        return None
+    names = {"week": "weekly", "5h": "5-hour"}
+    cur_window = current.get("window", "week")
+    if window != cur_window:
+        return (f"this session already has a {names.get(cur_window, cur_window)} limit; replacing it with "
+                f"a {names.get(window, window)} limit would remove it, so only the user can do that")
+    cur_until = current.get("until") if not current.get("until_done") else None
+    cur_stop = stop_point(current.get("quota"), share, used_now)
+    if cur_stop is not None:
+        new_stop = float(value) if until else float(used_now) + float(value)
+        if new_stop > cur_stop + 1e-6:
+            return (f"the current limit stops at {_pct(cur_stop)} and this one would stop at {_pct(new_stop)}; "
+                    "the agent may only lower the stop point, raising it is the user's")
+        return None
+    if cur_until is not None and until:
+        return None if float(value) <= float(cur_until) else "the agent may only lower the stop point"
+    if cur_until is None and not until:
+        return None if float(value) <= float(current["quota"]) else "the agent may only lower the limit"
+    return "the current stop point is not known yet, so it cannot be compared; ask the user to set it"
+
+
 def parse_duration(raw: str) -> float | None:
     """'5m', '90s', '1h', '300' (seconds) or 'off' -> seconds (None = off)."""
 

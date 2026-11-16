@@ -7,6 +7,7 @@ sources of truth stay where they are; this script copies them in:
 
   .claude-plugin/plugin.json      -> plugin/.claude-plugin/plugin.json
   commands/*.md                   -> plugin/commands/
+  skills/                         -> plugin/skills/
   hooks/hooks.json                -> plugin/hooks/hooks.json
   scripts/agentcap_cc.py          -> plugin/scripts/agentcap_cc.py
   src/agentcap/<import closure>   -> plugin/src/agentcap/
@@ -113,6 +114,9 @@ def manifest() -> dict[Path, Path]:
     }
     for md in sorted((ROOT / "commands").glob("*.md")):
         files[Path("commands") / md.name] = md
+    for f in sorted((ROOT / "skills").rglob("*")):
+        if f.is_file():
+            files[Path("skills") / f.relative_to(ROOT / "skills")] = f
     modules = import_closure()
     pkg_files = ["__init__.py", *(f"{m}.py" for m in modules), *path_loaded_files(modules)]
     for rel in pkg_files:
