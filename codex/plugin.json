@@ -1,6 +1,6 @@
 {
   "name": "agentcap",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Cap one Codex session's share of your ChatGPT plan quota and stop tool loops, inside Codex. Read-only: uses Codex's own app-server and rollout; never touches tokens or traffic.",
   "author": {
     "name": "Blitz00X",
