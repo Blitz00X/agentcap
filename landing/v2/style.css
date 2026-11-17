@@ -1662,3 +1662,6 @@ h2 {
     transition: none !important;
   }
 }
+
+.amount .was { color: var(--muted, #888); font-weight: 400; margin-right: .2em; text-decoration-thickness: 2px; }
+.beta-tag { margin-left: .5rem; }

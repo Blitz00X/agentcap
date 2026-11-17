@@ -825,7 +825,7 @@ steps are noisy. No team aggregation: everything stays on your machine.
 When the Pro detectors below would have fired on a Free run, AgentCap does not stop it.
 It prints one line: `Pro's loop breaker would have stopped this at $X.XX`.
 
-**Pro, $12 one-time (launch week; $19 after): stop runs that loop or eat your quota.**
+**Pro, $7 one-time during the beta ($12 after): stop runs that loop or eat your quota.**
 
 **Get Pro:** buy at https://agentcap.launchbench.studio/#pricing (Polar checkout). Polar then
 emails you an **Access purchase** link; the key is in the Polar customer portal (not in the
@@ -850,11 +850,11 @@ The VS Code/Cursor extension and the Claude Code plugin use the same CLI licence
   `AGENTCAP_RECEIPT_DIR`) with requests, spend, caps, the stop reason and the exit code. It contains
   numbers only, never prompts. The same one-line receipt is sent to Telegram and the webhook.
 
-[Buy AgentCap Pro — $12 launch week](https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi)
+[Buy AgentCap Pro — $7 beta price](https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi)
 
 ### Purchase terms
 
-- Pro is $12 one-time (launch week; $19 after), no subscription. The current launch-week end date is on the pricing page.
+- Pro is $7 one-time during the beta ($12 after), no subscription.
 - 14-day no-questions refund — email
   [kutaykarahan6@gmail.com](mailto:kutaykarahan6@gmail.com).
 - One licence key activates on up to 3 machines.
@@ -882,7 +882,7 @@ Polar customer portal.
 | LoopGuard | [tryloopguard.com](https://tryloopguard.com): free MIT CLI that integrates with Claude Code, Codex CLI and Cursor (no proxy, works with subscriptions) with per-session/daily caps and a no-progress loop killer; paid tier ($9/month) adds phone/Slack alerts and remote pause. A good fit if you use subscriptions or Claude Code. |
 | LiteLLM budgets | Budgets per key, user or team in the LiteLLM proxy; budgets need its database. A good fit if you already run a LiteLLM gateway; it is a server you deploy and configure. |
 | OpenRouter credit limits / provider spend caps | Account- or key-level and typically monthly (OpenRouter credit limits, OpenAI and Google spend caps). Provider caps are evaluated with a delay — Google has described about 10 minutes for the Gemini API cap — so a fast loop can overshoot. |
-| AgentCap | Local proxy for API-key traffic from Claude Code, Codex CLI, Gemini CLI or your own script: run cap (Free) with conservative reservation and output clamping, kills the process group at the cap and prints why. Pro (unattended pack): hour/day caps, loop/burn breaker, Telegram/webhook alerts, spend receipt, $19 one-time. |
+| AgentCap | Local proxy for API-key traffic from Claude Code, Codex CLI, Gemini CLI or your own script: run cap (Free) with conservative reservation and output clamping, kills the process group at the cap and prints why. Pro (unattended pack): hour/day caps, loop/burn breaker, Telegram/webhook alerts, spend receipt, $7 one-time during the beta ($12 after). |
 
 The comparison above is from public pages; see the RelayPlane detail below.
 
@@ -923,7 +923,7 @@ prices and reported usage; when usage is missing it charges the full reservation
 **Is the day cap shared across machines?** No. Hour/day caps are per machine
 (local SQLite ledger). A license covers 3 machines, each with its own budget.
 
-**What does one-time purchase include?** $12 once in launch week ($19 after), all 0.x updates; not a
+**What does one-time purchase include?** $7 once during the beta ($12 after), all 0.x updates; not a
 promise of future major versions. 14-day refund window per purchase terms.
 
 ## License

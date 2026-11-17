@@ -7,7 +7,7 @@
   <title>AgentCap — leave Claude Code and Codex unattended; they stop at the limit</title>
   <meta name="description" content="Set a limit from inside Claude Code or Codex. AgentCap stops the session when it repeats the same tool call, keeps failing, or uses up its share of your quota, and leaves a receipt. Free agentcap waste shows where your tokens already went.">
   <meta property="og:title" content="AgentCap — leave Claude Code and Codex unattended; they stop at the limit">
-  <meta property="og:description" content="A local spend cap for coding agents. Loop breaker, per-job quota, dollar cap, evidence receipt. Free waste report. Pro $12 one-time, early price.">
+  <meta property="og:description" content="A local spend cap for coding agents. Loop breaker, per-job quota, dollar cap, evidence receipt. Free waste report. Beta: Pro $7 one-time (list $12).">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#f4f1e7">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2317170f'/%3E%3Cpath d='M9 23v-4M16 23V9M23 23v-7' stroke='%23f4f1e7' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
@@ -37,6 +37,7 @@
         </svg>
         <span class="brand-name">AgentCap</span>
         <span class="brand-by">by Launchbench</span>
+        <span class="tag beta-tag">Beta</span>
       </a>
       <nav class="nav" aria-label="Main">
         <a href="#how">How it stops</a>
@@ -55,7 +56,7 @@
     <section class="hero" id="top">
       <div class="wrap hero-grid">
         <div class="hero-copy">
-          <p class="kicker"><span class="kicker-square" aria-hidden="true"></span>Inside Claude Code and Codex</p>
+          <p class="kicker"><span class="kicker-square" aria-hidden="true"></span>Inside Claude Code &middot; Codex experimental &middot; Beta</p>
           <h1>Leave your agent unattended. <em>It stops at the limit</em><span class="period">.</span></h1>
           <p class="standfirst">Type <code>/agentcap:quota 5% 5h</code> in Claude Code or <code>agentcap 5% 5h</code> in Codex. AgentCap stops the session when it repeats the same tool call, keeps failing, or uses up its share of your quota, and leaves a receipt with the reason and the numbers.</p>
           <p class="sub">Free, it also reads your local Claude Code and Codex logs and shows where the tokens already went: subagents, Opus, cache misses, loops.</p>
@@ -362,8 +363,8 @@ agentcap 5% 5h</code></pre>
               <p>No pip install. <code>/plugin marketplace add Blitz00X/agentcap</code>, <code>/plugin install agentcap@agentcap</code>. Then, inside Claude Code, <code>/agentcap:quota 5% 5h</code> caps this session; <code>/agentcap:default 5% 5h</code> caps every new one, <code>claude -p</code> included. Optional: <code>/agentcap:setup</code> adds a live statusline meter; <code>/agentcap:unsetup</code> removes it.</p>
             </div>
             <div>
-              <h3>Codex plugin</h3>
-              <p>No pip install, Codex 0.167+. <code>codex plugin marketplace add Blitz00X/agentcap</code>, <code>codex plugin add agentcap@agentcap</code>, then trust AgentCap&rsquo;s 5 hooks when Codex asks (once per version). Inside Codex, type <code>agentcap 10% 5h</code>; <code>agentcap default 10% 5h</code> covers every new session, <code>codex exec</code> included. These lines never reach the model.</p>
+              <h3>Codex plugin <span class="tag">Experimental</span></h3>
+              <p>Experimental, not fully tested yet: Claude Code is the main target. No pip install, Codex 0.167+. <code>codex plugin marketplace add Blitz00X/agentcap</code>, <code>codex plugin add agentcap@agentcap</code>, then trust AgentCap&rsquo;s 5 hooks when Codex asks (once per version). Inside Codex, type <code>agentcap 10% 5h</code>; <code>agentcap default 10% 5h</code> covers every new session, <code>codex exec</code> included. These lines never reach the model.</p>
             </div>
             <div>
               <h3>Command line</h3>
@@ -431,9 +432,9 @@ agentcap 5% 5h</code></pre>
               <a class="btn btn-outline" href="#install">Install free</a>
             </div>
             <div class="price-col price-pro">
-              <p class="tier">Pro <span class="tag">Early price</span></p>
-              <p class="amount">$12 <small>one-time</small></p>
-              <p class="price-note">Early price for the first users. Licences already bought keep every 0.x update.</p>
+              <p class="tier">Pro <span class="tag">Beta price</span></p>
+              <p class="amount"><s class="was">$12</s> $7 <small>one-time</small></p>
+              <p class="price-note">Beta price while AgentCap is in beta; it goes to $12 after. A licence bought now keeps the price and every 0.x update.</p>
               <ul class="price-list">
                 <li>Loop breaker on Claude Code and Codex, subscriptions included</li>
                 <li>Per-job quota: stop at 5% of your weekly or 5-hour limit</li>
@@ -443,7 +444,7 @@ agentcap 5% 5h</code></pre>
                 <li>Quota forecast and receipt export</li>
                 <li>One licence key for up to three machines</li>
               </ul>
-              <a class="btn" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $12</a>
+              <a class="btn" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $7 beta</a>
             </div>
           </div>
           <p class="note"><strong>Running agents unattended?</strong> We are giving 10 free Pro licences to design partners: run AgentCap on one real overnight or long job, share the receipt, and give us 20 minutes of feedback. Email <a href="mailto:kutaykarahan6@gmail.com?subject=AgentCap%20design%20partner">kutaykarahan6@gmail.com</a>.</p>
@@ -452,7 +453,7 @@ agentcap 5% 5h</code></pre>
           <details class="fold" id="terms">
             <summary>Purchase terms, refunds and licence</summary>
             <ul class="terms">
-              <li><strong>Price:</strong> Pro is $12 one-time at the early price. The price may rise later; a licence you already bought is not affected. There is no subscription.</li>
+              <li><strong>Price:</strong> Pro is $7 one-time at the beta price (list price $12). The price will rise after the beta; a licence you already bought is not affected. There is no subscription.</li>
               <li><strong>Refunds:</strong> 14 days, no questions asked. Email <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>.</li>
               <li><strong>Machines:</strong> one licence key activates on up to three machines.</li>
               <li><strong>Licence check:</strong> the key is checked with Polar about once a week.</li>
@@ -558,7 +559,7 @@ agentcap 5% 5h</code></pre>
             </details>
             <details>
               <summary>Is Pro a subscription?</summary>
-              <p>No. It is a one-time purchase: $12 at the early price. See the <a href="#terms">purchase terms</a> for refunds, licence checks and fail-open behavior.</p>
+              <p>No. It is a one-time purchase: $7 at the beta price ($12 after the beta). See the <a href="#terms">purchase terms</a> for refunds, licence checks and fail-open behavior.</p>
             </details>
             <details>
               <summary>Refunds?</summary>
@@ -586,7 +587,7 @@ agentcap 5% 5h</code></pre>
             </details>
             <details>
               <summary>What does the one-time purchase include?</summary>
-              <p>$12 once at the early price, all 0.x updates. Not a promise of future major versions. 14-day refund window per the purchase terms.</p>
+              <p>$7 once at the beta price ($12 after), all 0.x updates. Not a promise of future major versions. 14-day refund window per the purchase terms.</p>
             </details>
           </div>
         </div>
