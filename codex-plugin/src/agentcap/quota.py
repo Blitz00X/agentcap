@@ -290,7 +290,11 @@ def codex_home() -> Path:
 
 
 def parse_quota(raw: str) -> float:
-    text = str(raw).strip().rstrip("%").strip()
+    # Turkish users write the sign first: `%1` means the same as `1%`.
+    text = str(raw).strip()
+    if text.startswith("%"):
+        text = text[1:].strip()
+    text = text.rstrip("%").strip()
     try:
         value = float(text)
     except ValueError:

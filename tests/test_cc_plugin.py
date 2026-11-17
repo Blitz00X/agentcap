@@ -163,7 +163,8 @@ def test_manifests_valid_json():
     market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
     assert plugin["name"] == market["plugins"][0]["name"] == "agentcap"
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]
-    assert set(hooks) == {"SessionStart", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"}
+    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                          "PostToolUseFailure", "Stop"}
 
 
 # ------------------------------------------------------------- loop breaker

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2 (unreleased)
+A quota stop is now enforced end to end, not only on tool calls, and Turkish `%N` limits parse.
+- **The session stops answering after the limit.** The `PreToolUse` deny only ends one turn; a new prompt let the model answer in text and spend quota. Both plugins now block any prompt while a Pro session is at/over its stop point, using the same over-limit computation `PreToolUse` enforces (no new network call). Claude Code gets a `UserPromptSubmit` hook; Codex's existing `UserPromptSubmit` handler is extended the same way. `/agentcap:` commands (Claude) and typed `agentcap ...` commands (Codex) always pass, so `/agentcap:approve`, `/agentcap:quota`, `/agentcap:off` and their Codex equivalents keep working; free tier, no quota and under-limit prompts are untouched.
+- **`%1` / `%50` / `until %70` parse.** A limit with the percent sign first (`%1 5h`, `until %70 week`) now means the same as the trailing form, everywhere a limit is typed: `/agentcap:quota`, `/agentcap:default`, Codex `agentcap <..>` and `echo agentcap set ...`.
+
 ## 0.5.1
 The limit is easy to read now (user feedback, 16 Nov 2026: "50% 5h" read as both "up to 50%" and "50% more").
 - **Every message says where the session stops:** `5-hour quota at 20% now → stops at 70% (this session used 12 of 50 points)` — on set, `status`, the 80% warning, the deny, `approve` and the turn-end line, in Claude Code and Codex. In Claude the % is the fresher of the statusline and `/usage`.

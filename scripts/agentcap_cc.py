@@ -9,7 +9,7 @@ OAuth token, credential file or API traffic is ever touched.
 
 Subcommands
   statusline              statusLine command (records readings, chains the user's line)
-  hook pre|start|stop     hook entry points (JSON on stdin)
+  hook pre|prompt|start|stop  hook entry points (JSON on stdin)
   quota <N%> [5h|week]    set this session's quota      (slash command)
   status | off            show / clear it                (slash commands)
   setup | unsetup         add / remove the statusLine in ~/.claude/settings.json
@@ -50,6 +50,7 @@ from agentcap.quota import (  # noqa: E402
     parse_limit_words,
     parse_quota,
     resolve_until,
+    stop_point,
     stop_text,
     state_root as _quota_state_root,
 )
@@ -663,6 +664,29 @@ def self_guard(payload: Mapping[str, Any]) -> bool:
                for k in PATH_KEYS)
 
 
+def quota_reading(sid: str, state: dict[str, Any], now: float) -> tuple[float, float, float | None] | None:
+    """(share, quota, window % now) after the reading updates both prompt hooks use.
+
+    PreToolUse and UserPromptSubmit share this one computation: the same baseline
+    adoption, the same background /usage cadence and the same effective share
+    decide both, and neither creates a network call of its own.
+    """
+
+    quota = state.get("quota")
+    if quota is not None and state.get("used") is None:
+        if adopt_usage_baseline(state, sid):
+            save(sid, state)
+        else:
+            maybe_probe_usage(sid, state, now, force=True)
+    if resolve_until(state):
+        save(sid, state)
+    quota = state.get("quota")
+    if quota is None or state.get("used") is None:
+        return None
+    maybe_probe_usage(sid, state, now)
+    return effective_share(state, sid), float(quota), current_used(state, sid)
+
+
 def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bool) -> int:
     if self_guard(payload):  # every tier: these settings are the user's, never the agent's
         _emit(stdout, {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -676,23 +700,13 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
     if not isinstance(sid, str) or not sid or not session_path(sid).exists():
         return 0
     state = load(sid)
-    quota = state.get("quota")
-    if quota is not None and state.get("used") is None:
-        if adopt_usage_baseline(state, sid):
-            save(sid, state)
-        else:
-            maybe_probe_usage(sid, state, now, force=True)
-    if resolve_until(state):
-        save(sid, state)
-    quota = state.get("quota")
-    if quota is None or state.get("used") is None:
+    reading = quota_reading(sid, state, now)
+    if reading is None:
         return 0
-    maybe_probe_usage(sid, state, now)
-    share = effective_share(state, sid)
+    share, quota, used_now = reading
     window = WINDOW_NAMES.get(state.get("window", "week"), "weekly")
-    if share >= float(quota):
+    if share >= quota:
         if pro:
-            used_now = current_used(state, sid)
             at = f"the {window} quota is at {used_now:g}%; " if used_now is not None else ""
             reason = (
                 f"agentcap: {at}this session used {share:.1f} of its {float(quota):g} points and reached "
@@ -726,7 +740,7 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
                 "https://agentcap.launchbench.studio/#pricing"
             )})
         return 0
-    if share >= float(quota) * WARN_FRACTION and not state.get("warned"):
+    if share >= quota * WARN_FRACTION and not state.get("warned"):
         state["warned"] = True
         save(sid, state)
         msg = f"{share_line(state, sid)}."
@@ -737,6 +751,38 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
                 "additionalContext": msg + " Wrap up soon; tool calls will be denied at the limit.",
             }
         _emit(stdout, out)
+    return 0
+
+
+def hook_prompt(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bool) -> int:
+    """UserPromptSubmit: block a new prompt while a Pro session is at/over its stop point.
+
+    PreToolUse only ends the turn; without this the user could send another prompt
+    and the model would answer in text, spending quota.  ``/agentcap:`` commands
+    always pass: they are how the user raises or clears the limit (0.5.2).
+    """
+
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, str) or prompt.lstrip().startswith("/agentcap:"):
+        return 0
+    sid = payload.get("session_id")
+    if not pro or not isinstance(sid, str) or not sid or not session_path(sid).exists():
+        return 0
+    state = load(sid)
+    reading = quota_reading(sid, state, now)
+    if reading is None:
+        return 0
+    share, quota, used_now = reading
+    if share < quota:
+        return 0
+    window = WINDOW_NAMES.get(state.get("window", "week"), "weekly")
+    stop = stop_point(quota, share, used_now)
+    at = "unknown" if used_now is None else f"{used_now:g}"
+    point = "unknown" if stop is None else f"{stop:g}"
+    _emit(stdout, {"decision": "block", "reason": (
+        f"agentcap: limit reached — {window} quota at {at}%, stop point {point}%. "
+        "Run /agentcap:approve (+50%), /agentcap:quota <N%> 5h or /agentcap:off."
+    )})
     return 0
 
 
@@ -1101,6 +1147,8 @@ def main(argv: list[str] | None = None, stdin: TextIO = sys.stdin, stdout: TextI
             event = rest[0] if rest else ""
             if event == "start":
                 return hook_start(payload, stdout, now=now)
+            if event == "prompt":
+                return hook_prompt(payload, stdout, now=now, pro=is_pro())
             if event == "pre":
                 return hook_pre(payload, stdout, now=now, pro=is_pro())
             if event in ("post", "postfail"):
