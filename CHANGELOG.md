@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.3
+Ready for Anthropic's plugin directory: the Claude Code plugin ships its own README, keeps less on disk, and the settings backup no longer outlives the setup.
+- **Plugin README (`plugin/README.md`).** The directory shows it as the listing: install, commands, Free vs Pro, and exactly what the plugin runs, changes, stores and sends. Source: `docs/plugin-README.md`, copied by `scripts/build_plugin.py`.
+- **`/agentcap:unsetup` deletes `settings.json.agentcap-backup`.** The backup is a full copy of `~/.claude/settings.json` (it can hold `env` API keys); once the previous statusLine is restored it is removed. A foreign statusLine is still left untouched, backup included.
+- **Local retention.** SessionStart now also deletes session, `/usage` and per-folder files untouched for 30 days and drops receipt lines older than 90 days (loop counters: 7 days, unchanged). Unreadable receipt lines are kept.
+- `SECURITY.md` (private vulnerability reporting) and a privacy page on the site (`/privacy/`).
+- Plugin description now names the loop breaker too. README: the Free tier line no longer says "forever"; the licence is unchanged (MIT).
+
 ## 0.5.2
 A quota stop is now enforced end to end, not only on tool calls, and Turkish `%N` limits parse.
 - **The session stops answering after the limit.** The `PreToolUse` deny only ends one turn; a new prompt let the model answer in text and spend quota. Both plugins now block any prompt while a Pro session is at/over its stop point, using the same over-limit computation `PreToolUse` enforces (no new network call). Claude Code gets a `UserPromptSubmit` hook; Codex's existing `UserPromptSubmit` handler is extended the same way. `/agentcap:` commands (Claude) and typed `agentcap ...` commands (Codex) always pass, so `/agentcap:approve`, `/agentcap:quota`, `/agentcap:off` and their Codex equivalents keep working; free tier, no quota and under-limit prompts are untouched.

@@ -401,20 +401,64 @@ def _emit(stdout: TextIO, obj: Mapping[str, Any]) -> None:
 
 
 LOOP_STATE_TTL_S = 7 * 86400
+SESSION_STATE_TTL_S = 30 * 86400   # sessions/, usage/, by_cwd/: untouched for 30 days
+RECEIPT_TTL_S = 90 * 86400         # receipts.jsonl lines older than 90 days
+
+
+def _prune_dir(path: Path, patterns: tuple[str, ...], ttl: float, now: float) -> None:
+    try:
+        for pattern in patterns:
+            for f in path.glob(pattern):
+                try:
+                    if f.is_file() and not f.is_symlink() and now - f.stat().st_mtime > ttl:
+                        f.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 def prune_loop_state(now: float) -> None:
     """Delete per-session loop counters older than 7 days (only our *.json files)."""
 
+    _prune_dir(cc_dir() / "loops", ("*.json",), LOOP_STATE_TTL_S, now)
+
+
+def prune_receipts(now: float) -> None:
+    """Keep receipts.jsonl to the last 90 days (rewritten only when a line is dropped)."""
+
+    path = cc_dir() / "receipts.jsonl"
     try:
-        for f in (cc_dir() / "loops").glob("*.json"):
-            try:
-                if now - f.stat().st_mtime > LOOP_STATE_TTL_S:
-                    f.unlink()
-            except OSError:
-                pass
+        if path.is_symlink() or not path.is_file():
+            return
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return
+    keep = []
+    for line in lines:
+        try:
+            ts = float(json.loads(line).get("ts") or 0)
+        except (ValueError, TypeError, AttributeError):
+            ts = now  # an unreadable line is kept, not guessed old
+        if now - ts <= RECEIPT_TTL_S:
+            keep.append(line)
+    if len(keep) == len(lines):
+        return
+    tmp = path.with_suffix(".jsonl.tmp")
+    try:
+        tmp.write_text("".join(f"{line}\n" for line in keep), encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
         pass
+
+
+def prune_state(now: float) -> None:
+    """Local retention: loop counters 7 days, session files 30 days, receipts 90 days."""
+
+    prune_loop_state(now)
+    for sub in ("sessions", "usage", "by_cwd"):
+        _prune_dir(cc_dir() / sub, ("*.json", "*.probe"), SESSION_STATE_TTL_S, now)
+    prune_receipts(now)
 
 
 def hook_start(payload: Mapping[str, Any], stdout: TextIO, *, now: float) -> int:
@@ -426,7 +470,7 @@ def hook_start(payload: Mapping[str, Any], stdout: TextIO, *, now: float) -> int
         return 0
     _atomic_write(cc_dir() / "by_cwd" / f"{cwd_key(cwd)}.json", {"session_id": sid, "ts": now})
     _atomic_write(cc_dir() / "plugin_root.json", {"root": str(ROOT), "ts": now})
-    prune_loop_state(now)
+    prune_state(now)
     messages = []
     d = _read_json(defaults_path())
     state = load(sid)
@@ -1104,8 +1148,9 @@ def cmd_setup(*, now: float) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, data)
     prev = "your previous statusLine is still shown above it" if current else "no previous statusLine"
-    return (f"agentcap: statusLine set in {path} ({prev}). Backup: {backup.name}. "
-            "Undo any time with /agentcap:unsetup. It only reads the rate_limits % Claude Code passes to statusLine.")
+    return (f"agentcap: statusLine set in {path} ({prev}). Backup: {backup.name} (owner-only; "
+            "/agentcap:unsetup restores your statusLine and deletes it). "
+            "It only reads the rate_limits % Claude Code passes to statusLine.")
 
 
 def cmd_unsetup() -> str:
@@ -1125,7 +1170,18 @@ def cmd_unsetup() -> str:
         data.pop("statusLine", None)
     _atomic_write(path, data)
     _atomic_write(cc_dir() / "statusline.json", {"installed": False})
-    return "agentcap: statusLine restored." if prev else "agentcap: statusLine removed."
+    # The backup is a full copy of settings.json (it can hold env API keys): once the
+    # statusLine is restored it has no job left, so it does not outlive the setup.
+    backup = path.with_name(path.name + ".agentcap-backup")
+    removed = False
+    try:
+        if backup.is_file() and not backup.is_symlink():
+            backup.unlink()
+            removed = True
+    except OSError:
+        pass
+    tail = f" Deleted {backup.name}." if removed else ""
+    return ("agentcap: statusLine restored." if prev else "agentcap: statusLine removed.") + tail
 
 
 # ----------------------------------------------------------------- main

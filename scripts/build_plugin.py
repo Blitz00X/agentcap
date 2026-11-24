@@ -12,6 +12,7 @@ sources of truth stay where they are; this script copies them in:
   scripts/agentcap_cc.py          -> plugin/scripts/agentcap_cc.py
   src/agentcap/<import closure>   -> plugin/src/agentcap/
   LICENSE                         -> plugin/LICENSE
+  docs/plugin-README.md           -> plugin/README.md (Anthropic directory listing)
 
 The import closure is computed from the ``agentcap`` imports of
 ``scripts/agentcap_cc.py`` (module level and function level), plus files a
@@ -111,6 +112,7 @@ def manifest() -> dict[Path, Path]:
         Path("hooks/hooks.json"): ROOT / "hooks" / "hooks.json",
         Path("scripts/agentcap_cc.py"): ENTRY,
         Path("LICENSE"): ROOT / "LICENSE",
+        Path("README.md"): ROOT / "docs" / "plugin-README.md",   # the directory listing text
     }
     for md in sorted((ROOT / "commands").glob("*.md")):
         files[Path("commands") / md.name] = md

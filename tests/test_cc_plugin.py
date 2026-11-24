@@ -618,6 +618,67 @@ def test_setup_backup_is_private(env, monkeypatch):
     assert stat.S_IMODE(backup.stat().st_mode) == 0o600
 
 
+def test_unsetup_restores_statusline_and_deletes_backup(env):
+    """0.5.3: the full-settings backup (may hold env keys) does not outlive /agentcap:unsetup."""
+
+    settings = cc.claude_settings_path()
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({
+        "statusLine": {"type": "command", "command": "echo old"},
+        "env": {"ANTHROPIC_API_KEY": "synthetic-not-a-real-key"},
+    }))
+    cc.cmd_setup(now=1.0)
+    backup = settings.with_name(settings.name + ".agentcap-backup")
+    assert backup.exists()
+    out = cc.cmd_unsetup()
+    assert "restored" in out and backup.name in out
+    assert not backup.exists()
+    data = json.loads(settings.read_text())
+    assert data["statusLine"] == {"type": "command", "command": "echo old"}
+    assert data["env"] == {"ANTHROPIC_API_KEY": "synthetic-not-a-real-key"}
+
+
+def test_unsetup_of_a_foreign_statusline_keeps_the_backup(env):
+    settings = cc.claude_settings_path()
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "echo mine"}}))
+    backup = settings.with_name(settings.name + ".agentcap-backup")
+    backup.write_text("{}")
+    assert "left unchanged" in cc.cmd_unsetup()
+    assert backup.exists()
+
+
+def test_session_start_prunes_old_session_files_and_receipts(env):
+    import os as _os
+    import time as _t
+
+    now = _t.time()
+    month = 31 * 86400
+    files = {}
+    for sub in ("sessions", "usage", "by_cwd"):
+        d = cc.cc_dir() / sub
+        d.mkdir(parents=True, exist_ok=True)
+        files[sub] = (d / "old.json", d / "fresh.json")
+        for f in files[sub]:
+            f.write_text("{}")
+        _os.utime(files[sub][0], (now - month, now - month))
+    keep_txt = cc.cc_dir() / "sessions" / "notes.txt"
+    keep_txt.write_text("x")
+    _os.utime(keep_txt, (now - month, now - month))
+    receipts = cc.cc_dir() / "receipts.jsonl"
+    receipts.write_text(
+        json.dumps({"ts": now - 100 * 86400, "reason": "old"}) + "\n"
+        + json.dumps({"ts": now - 86400, "reason": "recent"}) + "\n"
+        + "not json\n")
+    hook("start", {"session_id": SID, "cwd": "/w", "hook_event_name": "SessionStart"})
+    for old, fresh in files.values():
+        assert not old.exists() and fresh.exists()
+    assert keep_txt.exists()
+    lines = receipts.read_text().splitlines()
+    assert [json.loads(line)["reason"] for line in lines[:1]] == ["recent"]
+    assert lines[1:] == ["not json"]
+
+
 def test_git_output_is_not_treated_as_a_plain_read(env):
     """L-3: --output writes state/plugin files even though git looks read-only."""
 

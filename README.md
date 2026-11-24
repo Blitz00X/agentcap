@@ -816,7 +816,7 @@ steps are noisy. No team aggregation: everything stays on your machine.
 
 ## Free vs Pro (0.2)
 
-**Free (MIT License, forever):** the per-run spend cap.
+**Free (MIT License):** the per-run spend cap.
 - Per-run `--cap` (`--hour-cap` / `--day-cap` exit 2 on Free with a clear message)
 - Output clamping, fail-closed metering, terminal alerts
 - Claude Code, Codex, any SDK script (and Gemini CLI)

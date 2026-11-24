@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Privacy — AgentCap</title>
+  <meta name="description" content="What AgentCap's CLI and Claude Code / Codex plugins read, store and send.">
+  <meta name="theme-color" content="#f4f1e7">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2317170f'/%3E%3Cpath d='M9 23v-4M16 23V9M23 23v-7' stroke='%23f4f1e7' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../fonts.css">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <main id="main" class="wrap" style="max-width: 46rem; padding: 3rem 1.25rem 4rem;">
+    <p><a href="../">← AgentCap</a></p>
+    <h1>Privacy</h1>
+    <p>Last updated 24 November 2026. This page covers the <code>agentcap</code> CLI (PyPI
+      <code>agentcap-cli</code>), the AgentCap Claude Code plugin, the AgentCap Codex plugin and this
+      website. AgentCap is made by Kutay Karahan (Launchbench). Contact:
+      <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>.</p>
+
+    <h2>The short version</h2>
+    <ul>
+      <li>AgentCap runs on your machine. It has no account, no analytics and no telemetry.</li>
+      <li>It never stores or uploads prompts, responses, tool inputs, tool output, API keys or OAuth tokens.</li>
+      <li>Free makes no network requests of its own. Pro contacts only Polar, to check your licence key.</li>
+    </ul>
+
+    <h2>What stays on your machine</h2>
+    <ul>
+      <li><strong>Claude Code and Codex plugins</strong> (<code>~/.local/state/agentcap/quota/</code>):
+        session ids, quota percentages and reset times, counters, tool names, a 16-character hash of each
+        tool call, and stop receipts (numbers and the last tool name). Loop counters are deleted after
+        7 days, session files after 30 days, receipts after 90 days.</li>
+      <li><strong><code>/agentcap:setup</code></strong> sets the <code>statusLine</code> key in
+        <code>~/.claude/settings.json</code> and keeps an owner-only backup of that file until
+        <code>/agentcap:unsetup</code> deletes it.</li>
+      <li><strong>CLI</strong>: a local ledger (<code>~/.local/share/agentcap/</code>) with token counts,
+        costs, model names, timestamps and request hashes; <code>agentcap import</code> reads your local
+        Claude Code and Codex session logs and stores only usage numbers from them. Prompts and API keys
+        pass through the local proxy in memory and are never written to disk.</li>
+    </ul>
+    <p>You can delete all of it at any time by removing those folders.</p>
+
+    <h2>What leaves your machine</h2>
+    <ul>
+      <li><strong>Pro licence checks.</strong> Activating a Pro key, and a re-check about once a week, sends
+        the licence key, the Polar organization id and an anonymous machine fingerprint hash (SHA-256, no
+        hostname or username) to Polar's licence API (<code>api.polar.sh</code>). The plugins never make
+        this request; only the CLI does. Free users make no licence requests.</li>
+      <li><strong>Alerts you configure (Pro).</strong> If you set a Telegram bot or a webhook, AgentCap
+        sends alert metadata to it: run id, spend or quota %, stop reason. Nothing is sent unless you set
+        these up.</li>
+      <li><strong>Your agent's own traffic.</strong> With an API key, <code>agentcap run</code> forwards
+        your agent's requests to the provider you use (Anthropic, OpenAI, Google) unchanged except for
+        the output limit. Subscription logins are never proxied.</li>
+    </ul>
+
+    <h2>Buying Pro</h2>
+    <p>Checkout, payment and the licence key are handled by <a href="https://polar.sh">Polar</a>, our
+      merchant of record. Polar receives your email address and payment details under its own
+      <a href="https://polar.sh/legal/privacy-policy">privacy policy</a>. We receive your email address and order
+      from Polar to deliver the key and to handle refunds and support.</p>
+
+    <h2>This website</h2>
+    <p>No cookies, no trackers, no analytics, self-hosted fonts. Like any web server, ours may keep
+      standard access logs (IP address, time, requested page) for security and operations.</p>
+
+    <h2>Children</h2>
+    <p>AgentCap is a developer tool and is not directed at people under 18.</p>
+
+    <h2>Changes and questions</h2>
+    <p>Changes to this page are made in the public repository
+      (<a href="https://github.com/Blitz00X/agentcap">github.com/Blitz00X/agentcap</a>). Questions or data
+      requests: <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>.</p>
+  </main>
+</body>
+</html>
