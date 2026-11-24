@@ -1,7 +1,6 @@
 ---
-description: Add AgentCap's read-only statusLine to ~/.claude/settings.json (keeps and chains your current one)
-argument-hint: 
-allowed-tools: Bash(python3:*)
+description: "Add AgentCap's read-only statusLine to ~/.claude/settings.json (keeps and chains your current one)"
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/agentcap_cc.py" setup *)
 disable-model-invocation: true
 ---
 !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/agentcap_cc.py" setup $ARGUMENTS --session "${CLAUDE_SESSION_ID}"`

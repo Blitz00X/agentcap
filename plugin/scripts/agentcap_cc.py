@@ -493,7 +493,7 @@ def hook_start(payload: Mapping[str, Any], stdout: TextIO, *, now: float) -> int
 LOOP_REPEATS = 4   # same tool call (name + input) 4x in a row, like the CLI/proxy breaker
 LOOP_ERRORS = 8    # 8 failing tool calls in a row
 POLL_TOOLS = frozenset({"wait", "sleep", "write_stdin", "list_agents", "TaskOutput", "BashOutput"})
-PRICING_URL = "https://agentcap.launchbench.studio/#pricing"
+PRO_HINT = "see the Pro section of the plugin README"   # no URL in hook code (directory policy)
 
 
 def _digest(name: str, payload: Any) -> str:
@@ -549,7 +549,7 @@ def loop_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
               "tools; summarise what is done and what is left.", deny=True)
         return True
     if nudge:
-        _emit(stdout, {"systemMessage": f"agentcap: {detail}. AgentCap Pro would stop the agent here: {PRICING_URL}"})
+        _emit(stdout, {"systemMessage": f"agentcap: {detail}. AgentCap Pro would stop the agent here; {PRO_HINT}."})
         return True
     return False
 
@@ -581,7 +581,7 @@ def hook_post(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: bo
         _stop(stdout, "PostToolUseFailure", f"agentcap loop breaker: {detail}. Stop now and summarise "
               "what is done and what is left.", deny=False)
     elif nudge:
-        _emit(stdout, {"systemMessage": f"agentcap: {detail}. AgentCap Pro would stop the agent here: {PRICING_URL}"})
+        _emit(stdout, {"systemMessage": f"agentcap: {detail}. AgentCap Pro would stop the agent here; {PRO_HINT}."})
     return 0
 
 
@@ -780,8 +780,7 @@ def hook_pre(payload: Mapping[str, Any], stdout: TextIO, *, now: float, pro: boo
             save(sid, state)
             _emit(stdout, {"systemMessage": (
                 f"agentcap: this session passed its stop point ({share:.1f} of {float(quota):g} points of "
-                f"the {window} quota). AgentCap Pro would stop the agent here: "
-                "https://agentcap.launchbench.studio/#pricing"
+                f"the {window} quota). AgentCap Pro would stop the agent here; {PRO_HINT}."
             )})
         return 0
     if share >= quota * WARN_FRACTION and not state.get("warned"):
@@ -1049,7 +1048,7 @@ def cmd_approve(sid: str | None) -> str:
     if not sid:
         return "agentcap: no session found."
     if not is_pro():
-        return f"agentcap: approve is a Pro feature (Free never blocks, so there is nothing to approve). {PRICING_URL}"
+        return f"agentcap: approve is a Pro feature (Free never blocks, so there is nothing to approve); {PRO_HINT}."
     state = load(sid)
     loop = _loop_path(sid)
     loop_cleared = loop.exists()

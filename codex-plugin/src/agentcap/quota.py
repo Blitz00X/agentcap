@@ -1964,7 +1964,7 @@ class QuotaRunner:
                 code = EXIT_GUARD_FAILED
             if loop_detail and not self.enforce:
                 self._say(f"agentcap: Pro's loop breaker would have stopped this job at {LOOP_REPEATS} repeats"
-                          f" ({loop_detail}). https://agentcap.launchbench.studio/#pricing")
+                          f" ({loop_detail}). See the Pro section of the AgentCap README.")
             self.summary = QuotaSummary(
                 self.agent, self.window, self.quota, share, code, reason,
                 tracker.baseline_exact, tracker.resets_seen, parallel, observed,
@@ -2131,7 +2131,7 @@ class QuotaRunner:
         if not self.enforce and s.observed and s.share >= s.quota:
             self._say(
                 f"agentcap: Pro's quota mode would have stopped this job at {s.quota:g}%. "
-                "https://agentcap.launchbench.studio/#pricing"
+                "See the Pro section of the AgentCap README."
             )
         if self.enforce:
             self._event("quota_receipt", s.share, reason=s.reason, exit_code=s.exit_code)

@@ -1,6 +1,6 @@
 ---
-description: Raise this session's AgentCap limit by 50% (Pro, at most twice) after a stop
-allowed-tools: Bash(python3:*)
+description: "Raise this session's AgentCap limit by 50% (Pro, at most twice) after a stop"
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/agentcap_cc.py" approve *)
 disable-model-invocation: true
 ---
 !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/agentcap_cc.py" approve --session "${CLAUDE_SESSION_ID}"`

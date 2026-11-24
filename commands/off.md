@@ -1,7 +1,6 @@
 ---
-description: Clear this session's quota
-argument-hint: 
-allowed-tools: Bash(python3:*)
+description: "Clear this session's quota"
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/agentcap_cc.py" off *)
 disable-model-invocation: true
 ---
 !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/agentcap_cc.py" off $ARGUMENTS --session "${CLAUDE_SESSION_ID}"`

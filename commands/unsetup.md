@@ -1,7 +1,6 @@
 ---
-description: Remove AgentCap's statusLine and restore your previous one
-argument-hint: 
-allowed-tools: Bash(python3:*)
+description: "Remove AgentCap's statusLine and restore your previous one"
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/agentcap_cc.py" unsetup *)
 disable-model-invocation: true
 ---
 !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/agentcap_cc.py" unsetup $ARGUMENTS --session "${CLAUDE_SESSION_ID}"`

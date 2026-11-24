@@ -7,6 +7,7 @@ Ready for Anthropic's plugin directory: the Claude Code plugin ships its own REA
 - **Local retention.** SessionStart now also deletes session, `/usage` and per-folder files untouched for 30 days and drops receipt lines older than 90 days (loop counters: 7 days, unchanged). Unreadable receipt lines are kept.
 - `SECURITY.md` (private vulnerability reporting) and a privacy page on the site (`/privacy/`).
 - Plugin description now names the loop breaker too. README: the Free tier line no longer says "forever"; the licence is unchanged (MIT).
+- **Directory validator fixes.** Code the plugin runs no longer contains a website URL: Free-tier "Pro would stop here" messages point to the README's Pro section instead (the URL stays in the README). Each slash command's `allowed-tools` is narrowed from `Bash(python3:*)` to the single AgentCap command it runs. Command descriptions are quoted YAML and empty `argument-hint` lines are gone.
 
 ## 0.5.2
 A quota stop is now enforced end to end, not only on tool calls, and Turkish `%N` limits parse.
