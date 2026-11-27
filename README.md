@@ -31,6 +31,26 @@ uvx --from agentcap-cli agentcap waste --since 7d
 The hooks, the statusline and the Pro licence come later, only if you install the plugin or the
 command (see "Install").
 
+**Where do you keep correcting your agent?** `agentcap fixes` reads the same logs and counts your
+corrections, interrupts, rejected tool calls, churning files and "done" claims with no test run,
+then says which ones to turn into a check (a hook, a permission rule, a test) instead of one more
+line in CLAUDE.md:
+
+```bash
+uvx --from agentcap-cli agentcap fixes --since 30d
+```
+
+```text
+CORRECTIONS           47  5.3 per 100 of your messages (wrong / undo / stop / still broken)
+   right after done    7  the agent said it was finished, your next message corrected it
+INTERRUPTS            67  you stopped a turn
+DONE, NO TEST         14  "done" after editing, no test/lint/build run since the edit
+EDIT CHURN            38  files edited >= 5x in one session
+TURN THESE INTO CHECKS (a check runs every time; a line in CLAUDE.md is only a request)
+ 1. 14x "done" after editing with no test/lint/build since -> a Stop hook that runs your test command ...
+```
+*(our own 30 days; your words appear on your screen only, `--json` has counts and no text)*
+
 ## Stop loops and quota burn (Pro)
 
 ```bash
@@ -773,10 +793,11 @@ fingerprint hash (SHA-256; it contains no hostname and no username) to Polar's
 public licence API at `api.polar.sh`. Free users make no licence requests at
 all.
 
-## `agentcap waste` and usage history (Free, new in 0.2)
+## `agentcap waste`, `agentcap fixes` and usage history (Free)
 
 ```bash
-agentcap waste                       # subagent + Opus share, cache misses, tool loops, error streaks ($ each)
+agentcap waste                       # where it went (new work / checks / rework / loops), subagents, cache misses, streaks
+agentcap fixes                       # your corrections, interrupts, rejections, churn -> checks to add (Claude Code)
 agentcap report --by agent           # session -> subagent tree with $ and Opus share
 agentcap import                      # read-only: ~/.claude/projects, ~/.codex/sessions, AgentCap's ledger
 agentcap report --by day             # Free: day | session | model | project, tokens + API-equivalent $

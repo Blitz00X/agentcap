@@ -47,6 +47,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     wst.add_argument("--top", type=int, default=3)
     wst.add_argument("--json", action="store_true")
 
+    fx = subparsers.add_parser(
+        "fixes", help="where you keep correcting your agent, and what to turn into a check (Free, read-only)"
+    )
+    fx.add_argument("--since", default="30d", help="all, 7d, 24h or YYYY-MM-DD (default 30d)")
+    fx.add_argument("--claude-dir", type=Path, help="default ~/.claude/projects")
+    fx.add_argument("--top", type=int, default=3)
+    fx.add_argument("--examples", type=int, default=5, help="latest corrections to show (0: none)")
+    fx.add_argument("--json", action="store_true", help="counts only; add --include-text for your words")
+    fx.add_argument("--include-text", action="store_true", help="with --json: include the first 70 characters")
+
     bud = subparsers.add_parser("budget", help="set task/hour/day $ caps and per-job quota %% in one place")
     bsub = bud.add_subparsers(dest="budget_action")
     bset = bsub.add_parser("set", help="set or change budget values (others are kept)")
@@ -182,6 +192,18 @@ def dispatch(args: argparse.Namespace) -> int | None:
         period = "all time" if since is None else f"since {args.since}"
         print(waste.render_json(rep) if args.json
               else waste.render(rep, period, args.top, color=waste.color_enabled(sys.stdout)))
+        return 0
+    if args.subcommand == "fixes":
+        from . import fixes
+        try:
+            since = report.parse_since(args.since)
+        except ValueError as exc:
+            print(f"agentcap: {exc}", file=sys.stderr)
+            return 2
+        rep = fixes.scan(since=since, claude_dir=args.claude_dir)
+        period = "all time" if since is None else f"since {args.since}"
+        print(fixes.render_json(rep, args.include_text) if args.json
+              else fixes.render(rep, period, args.top, max(args.examples, 0)))
         return 0
     if args.subcommand == "import":
         _do_import(args, history.HistoryStore(args.db))

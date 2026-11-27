@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.4
+Two new Free reports on your own local logs, and `agentcap waste` now counts what was really spent.
+- **`agentcap fixes` (new): where you keep correcting your agent.** Reads your Claude Code sessions and counts the corrections in your next message after an agent turn (wrong / undo / stop / still broken, English and Turkish), corrections right after the agent said it was done, interrupts, tool calls you rejected, files edited 5+ times in one session, and "done" after editing code with no test / lint / build run since. It ends with checks to add instead of another CLAUDE.md line: a Stop hook that runs your tests, a permission rule for a command you keep rejecting, a check after each edit of a churning file. Your words are shown on the terminal only (first 70 characters); `--json` holds counts and no text unless `--include-text`. No model call, no network. On our own 30 days (883 messages): 47 corrections, 67 interrupts, 14 rejected calls, 14 "done" with no test, in 2.4 s. The phrase match is about 5 in 6 right on our history. Claude Code only for now.
+- **`waste`: WHERE IT WENT (new).** Each source's spend split into new work, checks (test / lint / build), rework (an edit to a file that was edited before a failed check or before you corrected the agent, with no passing check since), loops and error streaks, and replies without a tool call. An estimate: one request's $ is shared by the tool calls it made.
+- **Resumed and forked sessions are counted once.** A resumed Claude Code session copies the earlier messages into its own file; the same request (message id + request id) is now counted only in the session that made it. A forked Codex thread replays its parent's tool calls; a call id already seen is skipped. On 30 days of our own logs the total fell from $826.67 to $720.06 (13% was counted twice), cache misses from $127.54 to $103.08, repeat streaks from 29 to 8.
+- **Codex code-mode polls are waits, not loops.** An `exec` script whose only tool calls are `tools.write_stdin` with empty input or `tools.wait` (Codex polling a running command) counts toward neither the repeat nor the error streak, in `waste` and in the live loop breaker. Typing into the process, or any other tool call in the script, still counts. Before, one run showed as `exec x57`.
+- `waste` skips waits before it builds streaks, so a `sleep N` check between identical calls no longer splits a repeat streak in the report.
+- **Opus is shown as a model choice**, dimmed, not in the red waste colour.
+- README: try `waste` first with `uvx`, nothing installed; the line "Claude tool-error streaks are only caught on API-key runs" was wrong (subscriptions use a `PostToolUseFailure` hook) and is fixed.
+
 ## 0.5.3
 Ready for Anthropic's plugin directory: the Claude Code plugin ships its own README, keeps less on disk, and the settings backup no longer outlives the setup.
 - **Plugin README (`plugin/README.md`).** The directory shows it as the listing: install, commands, Free vs Pro, and exactly what the plugin runs, changes, stores and sends. Source: `docs/plugin-README.md`, copied by `scripts/build_plugin.py`.

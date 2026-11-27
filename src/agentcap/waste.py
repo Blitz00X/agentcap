@@ -96,6 +96,39 @@ def is_wait_call(name: str, payload: Any) -> bool:
     if cmd and _WAIT_RE.match(cmd):
         return True
     return _code_mode_wait(payload)
+# A shell command that checks the work: tests, type checks, linters, builds.
+VERIFY_RE = re.compile(
+    r"(?<![\w-])(pytest|py\.test|unittest|tox|nox|(npm|pnpm|yarn|bun)( run)? (test|lint|build|check|typecheck)"
+    r"|vitest|jest|mocha|playwright test|cargo (test|check|clippy|build)|go (test|vet|build)|tsc|eslint|ruff"
+    r"|mypy|pyright|flake8|black --check|make (test|check|lint)|gradlew? (test|check|build)|mvn (test|verify)"
+    r"|dotnet (test|build)|rspec|phpunit|node --check|py_compile|shellcheck)(?![\w-])")
+_EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.M)
+
+
+def edited_files(name: str, payload: Any) -> list[str]:
+    """Files a tool call edits: Claude Edit/Write/MultiEdit/NotebookEdit, Codex apply_patch."""
+
+    if isinstance(payload, str) and name in _EDIT_TOOLS:
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            return []
+    if name in _EDIT_TOOLS and isinstance(payload, dict):
+        f = payload.get("file_path") or payload.get("notebook_path")
+        return [str(f)] if isinstance(f, str) and f else []
+    text = payload if isinstance(payload, str) else (
+        payload.get("input") or payload.get("patch") if isinstance(payload, dict) else None)
+    if isinstance(text, str) and "*** Begin Patch" in text:
+        return [m.strip() for m in _PATCH_FILE_RE.findall(text)]
+    return []
+
+
+def is_verify_call(name: str, payload: Any) -> bool:
+    cmd = command_text(payload)
+    return bool(cmd and VERIFY_RE.search(cmd))
+
+
 CODEX_MISS_MIN_TOKENS = 4096  # Codex has no cache writes; only flag big uncached prompts
 
 
@@ -136,6 +169,8 @@ class WasteReport:
     error_streaks: list[Streak] = field(default_factory=list)
     # per source ("claude" / "codex"): sessions, total_usd, subagent_usd, opus_usd, subagent_threads
     by_source: dict[str, dict[str, float]] = field(default_factory=dict)
+    # per source: $ by kind of work (estimate): new, verify, rework, loops, text
+    split: dict[str, dict[str, float]] = field(default_factory=dict)
 
     @property
     def subagent_share(self) -> float:
@@ -161,6 +196,9 @@ class _Call:      # one tool call
     error: bool = False
     run_usd: float = 0.0  # cumulative stream spend after this call's model request
     wait: bool = False    # a poll / sleep: counts toward neither streak
+    verify: bool = False  # a test / lint / build command
+    files: tuple[str, ...] = ()  # files this call edits
+    streak: bool = False  # part of a reported repeat or error streak
 
 
 @dataclass
@@ -173,6 +211,7 @@ class _Stream:    # one session or one subagent/forked thread
     first_seen: bool = False
     calls: list[_Call] = field(default_factory=list)
     by_id: dict[str, _Call] = field(default_factory=dict)
+    corrections: list[float] = field(default_factory=list)  # times you told the agent it was wrong
 
 
 def _digest(name: str, payload: Any) -> str:
@@ -215,6 +254,10 @@ def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRep
     msgs: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     results: list[tuple[str, bool]] = []
+    try:
+        from .fixes import _human_text, is_correction
+    except ImportError:  # the plugins ship waste.py without fixes.py
+        _human_text = None
     for obj in _lines(path):
         if obj is None:
             continue
@@ -230,6 +273,10 @@ def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRep
         skey = ("claude", sess, agent)
         if skey not in streams:
             streams[skey] = _Stream("claude", sess, agent, sess if side else None)
+        if _human_text is not None and not side and obj.get("type") == "user":
+            text, interrupted = _human_text(obj)
+            if text is not None and not interrupted and is_correction(text):
+                streams[skey].corrections.append(ts)
         if obj.get("type") == "user" and isinstance(msg.get("content"), list):
             for block in msg["content"]:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
@@ -293,7 +340,8 @@ def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRep
         tools = m["tools"]
         for tid, name, payload in tools:
             call = _Call(name, _digest(name, payload), m["ts"], usd / len(tools), run_usd=st.usd,
-                         wait=is_wait_call(name, payload))
+                         wait=is_wait_call(name, payload), verify=is_verify_call(name, payload),
+                         files=tuple(edited_files(name, payload)))
             st.calls.append(call)
             st.by_id[tid] = call
     for tid, err in results:
@@ -374,7 +422,8 @@ def _codex_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRepo
                 if f"codex:{cid}" in seen:  # a forked thread replays the parent's calls
                     continue
                 seen.add(f"codex:{cid}")
-            call = _Call(name, _digest(name, args), ts, run_usd=st.usd, wait=is_wait_call(name, args))
+            call = _Call(name, _digest(name, args), ts, run_usd=st.usd, wait=is_wait_call(name, args),
+                         verify=is_verify_call(name, args), files=tuple(edited_files(name, args)))
             st.calls.append(call)
             if payload.get("call_id"):
                 st.by_id[str(payload["call_id"])] = call
@@ -442,6 +491,48 @@ def _account(rep: WasteReport, st: _Stream, model: str, usd: float) -> None:
         src["opus_usd"] += usd
 
 
+# ----------------------------------------------------------------- work split
+SPLIT_KINDS = ("new", "verify", "rework", "loops", "text")
+
+
+def _split(rep: WasteReport, st: _Stream) -> None:
+    """Where a stream's $ went: new work, verification, rework, loops/errors, text replies.
+
+    Rework: an edit to a file that was edited before a failed test/lint/build or before
+    you corrected the agent (Claude Code), while no check has passed since. Every number is an estimate: one request's $ is shared by the
+    tool calls it made, and replies without a tool call are "text".
+    """
+
+    out = rep.split.setdefault(st.source, {k: 0.0 for k in SPLIT_KINDS})
+    suspect: set[str] = set()
+    edited: set[str] = set()
+    tool_usd = 0.0
+    corr = sorted(st.corrections)
+    ci = 0
+    for c in st.calls:
+        while ci < len(corr) and corr[ci] <= c.ts:
+            suspect |= edited
+            ci += 1
+        tool_usd += c.cost
+        if c.streak:
+            kind = "loops"
+        elif c.verify:
+            kind = "verify"
+        elif c.files and any(f in suspect for f in c.files):
+            kind = "rework"
+        else:
+            kind = "new"
+        out[kind] += c.cost
+        edited.update(c.files)
+        if c.verify:
+            if c.error:
+                suspect |= edited
+            else:
+                suspect.clear()
+                edited.clear()
+    out["text"] += max(st.usd - tool_usd, 0.0)
+
+
 # -------------------------------------------------------------------- streaks
 def _streaks(st: _Stream) -> Iterator[Streak]:
     calls = [c for c in st.calls if not c.wait]
@@ -457,6 +548,8 @@ def _streaks(st: _Stream) -> Iterator[Streak]:
 
     for run in runs(lambda a, b: a.digest == b.digest):
         if len(run) >= REPEAT_MIN:
+            for c in run:
+                c.streak = True
             s = Streak("repeat", st.source, st.session, st.agent, run[0].name, len(run),
                        sum(c.cost for c in run))
             if len(run) > PRO_REPEAT_STOP:
@@ -467,6 +560,8 @@ def _streaks(st: _Stream) -> Iterator[Streak]:
             yield s
     for run in runs(lambda a, b: a.error and b.error):
         if run[0].error and len(run) >= REPEAT_MIN:
+            for c in run:
+                c.streak = True
             names = sorted({c.name for c in run})
             s = Streak("error", st.source, st.session, st.agent, "/".join(names)[:40], len(run),
                        sum(c.cost for c in run))
@@ -518,6 +613,8 @@ def scan(home: Path | None = None, since: float | None = None,
     for st in live:
         for s in _streaks(st):
             (rep.repeat_streaks if s.kind == "repeat" else rep.error_streaks).append(s)
+    for st in live:
+        _split(rep, st)
     rep.repeat_streaks.sort(key=lambda s: (-s.count, -s.usd))
     rep.error_streaks.sort(key=lambda s: (-s.count, -s.usd))
     rep.cache_misses.sort(key=lambda m: -m.usd)
@@ -604,6 +701,14 @@ def _render_source(rep: WasteReport, source: str, top: int, st: _Style | None = 
     out = [st.banner(source, f"== {name} - {int(src['sessions'])} sessions - {cost} ==")]
     if not priced:
         out.append(st.dim("   (no list price known for these models, so $ show as 0; counts are still real)"))
+    split = rep.split.get(source)
+    if priced and split:
+        total = sum(split.values()) or 1.0
+        names = {"new": "new work", "verify": "checks (test/lint/build)", "rework": "rework after fail/correction",
+                 "loops": "loops & error streaks", "text": "replies without a tool call"}
+        out.append(st.bold("WHERE IT WENT") + st.dim("        (estimate: a request's $ is shared by its tool calls)"))
+        for k in SPLIT_KINDS:
+            out.append(f"   {names[k]:<30} {_m(split[k]):>10}  {split[k] / total * 100:4.0f}%")
     misses = [m for m in rep.cache_misses if m.source == source]
     main = [m for m in misses if m.agent is None]
     sub = [m for m in misses if m.agent is not None]
