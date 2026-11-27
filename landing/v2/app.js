@@ -22,7 +22,7 @@ const MODES = {
       {t:'<span class="g">agentcap: 5-hour quota at 22% now → stops at 27%</span>', v:"0.0%", sub:"cap: 5.0%", pct:5, kv:[["window","5-hour"],["stops at","27% (22% + 5%)"],["status","watching"]]},
       {t:'<span class="d">● Edit</span> refactoring 14 modules... <span class="d">(+2.6%)</span>', v:"2.6%", sub:"cap: 5.0%", pct:38, kv:[["window","5-hour"],["used","2.6% / 5.0%"],["status","running"]]},
       {t:'<span class="c">▲ 80% of job quota used (4.1% / 5.0%)</span>', v:"4.1%", sub:"cap: 5.0%", pct:58, kv:[["window","5-hour"],["used","4.1% / 5.0%"],["status","warning"]]},
-      {cut:'<span><b>■ LIMIT REACHED</b> · 5.0% / 5.0% · next tool denied</span><span class="js-ok">receipt saved</span>', v:'<span class="acc">5.0%</span>', sub:"95% quota intact", pct:72, trip:true, kv:[["why","Reached your limit","r"],["session","Held open","g"],["prompts","Never stored","g"]]}
+      {cut:'<span><b>■ LIMIT REACHED</b> · 5.0% / 5.0% · next tool denied</span><span class="js-ok">receipt saved</span>', v:'<span class="acc">5.0%</span>', sub:"73% quota left", pct:72, trip:true, kv:[["why","Reached your limit","r"],["session","Held open","g"],["prompts","Never stored","g"]]}
     ]
   },
   waste: {
@@ -199,7 +199,7 @@ playMode("quota");
   var still=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   function show(p){ f.style.width=p+"%"; n.textContent=Math.floor(p)+"%"; }
   if(still){ show(LIMIT); m.classList.add("hit"); return; }
-  function cycle(){
+  function cycle(first){
     m.classList.remove("hit"); var t0=null;
     function step(t){
       if(t0===null) t0=t;
@@ -209,7 +209,7 @@ playMode("quota");
       if(k<1) requestAnimationFrame(step);
       else { show(LIMIT); m.classList.add("hit"); setTimeout(cycle,HOLD); }
     }
-    show(0); setTimeout(function(){ requestAnimationFrame(step); },WAIT);
+    show(0); setTimeout(function(){ requestAnimationFrame(step); },first?150:WAIT);
   }
-  cycle();
+  cycle(true);
 })();
