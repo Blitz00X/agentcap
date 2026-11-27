@@ -52,8 +52,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     fx.add_argument("--since", default="30d", help="all, 7d, 24h or YYYY-MM-DD (default 30d)")
     fx.add_argument("--claude-dir", type=Path, help="default ~/.claude/projects")
-    fx.add_argument("--top", type=int, default=3)
-    fx.add_argument("--examples", type=int, default=5, help="latest corrections to show (0: none)")
+    fx.add_argument("--top", type=int, default=3, help="how many problems to show (default 3)")
+    fx.add_argument("--details", action="store_true", help="the full report: every count and your latest corrections")
+    fx.add_argument("--examples", type=int, default=5, help="with --details: latest corrections to show (0: none)")
     fx.add_argument("--json", action="store_true", help="counts only; add --include-text for your words")
     fx.add_argument("--include-text", action="store_true", help="with --json: include the first 70 characters")
 
@@ -202,8 +203,12 @@ def dispatch(args: argparse.Namespace) -> int | None:
             return 2
         rep = fixes.scan(since=since, claude_dir=args.claude_dir)
         period = "all time" if since is None else f"since {args.since}"
-        print(fixes.render_json(rep, args.include_text) if args.json
-              else fixes.render(rep, period, args.top, max(args.examples, 0)))
+        if args.json:
+            print(fixes.render_json(rep, args.include_text))
+        elif args.details:
+            print(fixes.render(rep, period, args.top, max(args.examples, 0)))
+        else:
+            print(fixes.summary(rep, "all" if since is None else args.since, args.top))
         return 0
     if args.subcommand == "import":
         _do_import(args, history.HistoryStore(args.db))

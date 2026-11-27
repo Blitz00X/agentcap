@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.5
+- **`agentcap fixes` is short now.** The default screen is one line on how often you corrected and stopped your agent, then the top 3 things to fix, each with the check that fixes it (a Stop hook that runs your tests, a check after each edit of a churning file, an "ask" rule for a command you keep rejecting). The full report with every count and your latest corrections moved to `agentcap fixes --details`; `--top N` shows more or fewer problems. `--json` is unchanged.
+
 ## 0.5.4
 Two new Free reports on your own local logs, and `agentcap waste` now counts what was really spent.
 - **`agentcap fixes` (new): where you keep correcting your agent.** Reads your Claude Code sessions and counts the corrections in your next message after an agent turn (wrong / undo / stop / still broken, English and Turkish), corrections right after the agent said it was done, interrupts, tool calls you rejected, files edited 5+ times in one session, and "done" after editing code with no test / lint / build run since. It ends with checks to add instead of another CLAUDE.md line: a Stop hook that runs your tests, a permission rule for a command you keep rejecting, a check after each edit of a churning file. Your words are shown on the terminal only (first 70 characters); `--json` holds counts and no text unless `--include-text`. No model call, no network. On our own 30 days (883 messages): 47 corrections, 67 interrupts, 14 rejected calls, 14 "done" with no test, in 2.4 s. The phrase match is about 5 in 6 right on our history. Claude Code only for now.

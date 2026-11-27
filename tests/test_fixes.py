@@ -99,6 +99,25 @@ def test_render_and_suggestions(session):
     assert "still doesn't work" in text
 
 
+def test_default_screen_is_short_and_says_what_to_do(session, capsys, monkeypatch):
+    monkeypatch.setenv("HOME", str(session))
+    assert cli.main(["fixes", "--since", "all"]) == 0
+    out = capsys.readouterr().out
+    assert len(out.splitlines()) <= 20
+    assert "You corrected your agent once and stopped it once" in out
+    assert out.count("Fix: ") == 3 and "Stop hook" in out and "Bash(git:*)" in out and "style.py" in out
+    assert "still doesn't work" not in out and "agentcap fixes --details" in out
+    assert out.index("style.py") < out.index("without running your tests") < out.index("git")  # 5 > 3+1 > 2
+    assert cli.main(["fixes", "--since", "all", "--details"]) == 0
+    assert "LATEST CORRECTIONS" in capsys.readouterr().out
+
+
+def test_summary_period_words_and_empty(tmp_path):
+    assert fixes._period_words("30d") == "last 30 days" and fixes._period_words("1w") == "last 1 week"
+    assert fixes._period_words("all") == "all history"
+    assert "No messages from you" in fixes.summary(fixes.FixesReport(), "7d")
+
+
 def test_json_has_no_text_unless_asked(session, capsys, monkeypatch):
     monkeypatch.setenv("HOME", str(session))
     assert cli.main(["fixes", "--since", "all", "--json"]) == 0

@@ -288,6 +288,72 @@ def suggestions(rep: FixesReport) -> list[str]:
     return [t for _, t in out[:4]]
 
 
+def _period_words(period: str) -> str:
+    m = re.fullmatch(r"(\d+)([hdw])", period.strip())
+    if m:
+        n, unit = int(m.group(1)), {"h": "hour", "d": "day", "w": "week"}[m.group(2)]
+        return f"last {n} {unit}{'s' if n != 1 else ''}"
+    return "all history" if period == "all" else f"since {period}"
+
+
+def _times(n: int) -> str:
+    return "once" if n == 1 else f"{n} times"
+
+
+def problems(rep: FixesReport) -> list[tuple[int, str, str, str]]:
+    """The few things worth fixing: (count, what happened, extra detail, the fix), biggest first."""
+    out: list[tuple[int, str, str, str]] = []
+    after_done = sum(1 for f in rep.fixes if f.kind == "correction" and f.after_done)
+    stop_fix = "a Stop hook that runs your tests before the agent may say it is finished"
+    if rep.done_untested:
+        right_after = {0: "", 1: "Once you had to correct it right after."}.get(
+            after_done, f"{after_done} times you had to correct it right after.")
+        out.append((rep.done_untested + after_done,
+                    f"The agent said \"done\" without running your tests ({rep.done_untested}x)", right_after, stop_fix))
+    elif after_done:
+        out.append((after_done, f"You corrected the agent right after it said \"done\" ({after_done}x)", "", stop_fix))
+    if rep.churn:
+        _, f, n = rep.churn[0]
+        more = len(rep.churn) - 1
+        out.append((n, f"{Path(f).name} was edited {n} times in one session",
+                    f"{more} more files were edited 5+ times in a session." if more > 0 else "",
+                    "run a check after each edit (test, lint, screenshot), so the agent sees the result, not you"))
+    for label, n in rep.rejected_tools.most_common(3):
+        cmd = label.split(" ", 1)[1] if label.startswith("Bash ") else ""
+        if n >= 2 and cmd and cmd not in _NOT_A_PROGRAM:
+            out.append((n, f"You said no to `{cmd}` {_times(n)}", "",
+                        f"add \"Bash({cmd}:*)\" to \"ask\" (or \"deny\") in .claude/settings.json"))
+        elif n >= 2 and label in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+            out.append((n, f"You said no to {label} {_times(n)}", "",
+                        f"an \"ask\" rule for {label} on the paths you protect, in .claude/settings.json"))
+    out.sort(key=lambda x: -x[0])
+    return out
+
+
+def summary(rep: FixesReport, period: str, top: int = 3) -> str:
+    """The default screen: one headline, the top problems, one fix each."""
+    head = (f"agentcap fixes - {_period_words(period)} - {rep.sessions} Claude Code sessions,"
+            f" {rep.messages} messages from you")
+    if not rep.messages:
+        return head + "\n\nNo messages from you in this period."
+    corr, stops = rep.count("correction"), rep.count("interrupt")
+    out = [head, "",
+           f"You corrected your agent {_times(corr)} and stopped it {_times(stops)}"
+           f" ({round(corr / rep.messages * 100)} corrections in every 100 messages).", ""]
+    found = problems(rep)[:max(top, 1)]
+    if not found:
+        out.append("Nothing repeats often enough to turn into a check.")
+    else:
+        out.append(f"Top {len(found)} to fix:" if len(found) > 1 else "One thing to fix:")
+        for i, (_, what, extra, fix) in enumerate(found, 1):
+            out += ["", f" {i}. {what}"]
+            if extra:
+                out.append(f"    {extra}")
+            out.append(f"    Fix: {fix}.")
+    out += ["", "Your words, every count and examples: agentcap fixes --details"]
+    return "\n".join(out)
+
+
 def render(rep: FixesReport, period: str, top: int = 3, examples: int = EXAMPLES) -> str:
     import datetime as _dt
 

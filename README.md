@@ -41,15 +41,18 @@ uvx --from agentcap-cli agentcap fixes --since 30d
 ```
 
 ```text
-CORRECTIONS           47  5.3 per 100 of your messages (wrong / undo / stop / still broken)
-   right after done    7  the agent said it was finished, your next message corrected it
-INTERRUPTS            67  you stopped a turn
-DONE, NO TEST         14  "done" after editing, no test/lint/build run since the edit
-EDIT CHURN            38  files edited >= 5x in one session
-TURN THESE INTO CHECKS (a check runs every time; a line in CLAUDE.md is only a request)
- 1. 14x "done" after editing with no test/lint/build since -> a Stop hook that runs your test command ...
+You corrected your agent 48 times and stopped it 67 times (5 corrections in every 100 messages).
+
+Top 3 to fix:
+
+ 1. The agent said "done" without running your tests (14x)
+    7 times you had to correct it right after.
+    Fix: a Stop hook that runs your tests before the agent may say it is finished.
+
+ 2. panel_theme.py was edited 19 times in one session
+    Fix: run a check after each edit (test, lint, screenshot), so the agent sees the result, not you.
 ```
-*(our own 30 days; your words appear on your screen only, `--json` has counts and no text)*
+*(our own 30 days; `--details` shows every count and your latest corrections on your screen only, `--json` has counts and no text)*
 
 ## Stop loops and quota burn (Pro)
 
@@ -797,7 +800,8 @@ all.
 
 ```bash
 agentcap waste                       # where it went (new work / checks / rework / loops), subagents, cache misses, streaks
-agentcap fixes                       # your corrections, interrupts, rejections, churn -> checks to add (Claude Code)
+agentcap fixes                       # the top 3 things you keep correcting, and the check for each (Claude Code)
+agentcap fixes --details             # every count: corrections, interrupts, rejections, churn, your words
 agentcap report --by agent           # session -> subagent tree with $ and Opus share
 agentcap import                      # read-only: ~/.claude/projects, ~/.codex/sessions, AgentCap's ledger
 agentcap report --by day             # Free: day | session | model | project, tokens + API-equivalent $
