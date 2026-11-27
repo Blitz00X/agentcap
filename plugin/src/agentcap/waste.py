@@ -109,6 +109,8 @@ class WasteReport:
     subagent_first: list[tuple] = field(default_factory=list)  # (source, session, agent, tokens)
     repeat_streaks: list[Streak] = field(default_factory=list)
     error_streaks: list[Streak] = field(default_factory=list)
+    # per source ("claude" / "codex"): sessions, total_usd, subagent_usd, opus_usd, subagent_threads
+    by_source: dict[str, dict[str, float]] = field(default_factory=dict)
 
     @property
     def subagent_share(self) -> float:
@@ -379,13 +381,22 @@ def _first(rep: WasteReport, st: _Stream, tokens: int) -> None:
         rep.subagent_first.append((st.source, st.session, st.agent, tokens))
 
 
+def _src(rep: WasteReport, source: str) -> dict[str, float]:
+    return rep.by_source.setdefault(source, {"sessions": 0, "total_usd": 0.0, "subagent_usd": 0.0,
+                                             "opus_usd": 0.0, "subagent_threads": 0})
+
+
 def _account(rep: WasteReport, st: _Stream, model: str, usd: float) -> None:
     st.usd += usd
     rep.total_usd += usd
+    src = _src(rep, st.source)
+    src["total_usd"] += usd
     if st.parent:
         rep.subagent_usd += usd
+        src["subagent_usd"] += usd
     if "opus" in model.lower():
         rep.opus_usd += usd
+        src["opus_usd"] += usd
 
 
 # -------------------------------------------------------------------- streaks
@@ -441,6 +452,12 @@ def scan(home: Path | None = None, since: float | None = None,
     live = [s for s in streams.values() if s.usd > 0 or s.calls]
     rep.sessions = len({(s.source, s.parent or s.session) for s in live})
     rep.subagent_threads = sum(1 for s in live if s.parent)
+    for source in ("claude", "codex"):
+        mine = [s for s in live if s.source == source]
+        if mine:
+            src = _src(rep, source)
+            src["sessions"] = len({s.parent or s.session for s in mine})
+            src["subagent_threads"] = sum(1 for s in mine if s.parent)
     for st in live:
         for s in _streaks(st):
             (rep.repeat_streaks if s.kind == "repeat" else rep.error_streaks).append(s)
@@ -463,49 +480,116 @@ def _who(s: Streak) -> str:
     return f"{_sid(s.session)}{'/' + s.agent[:12] if s.agent else ''}"
 
 
-def render(rep: WasteReport, period: str, top: int = 3) -> str:
-    out = [f"agentcap waste - {period} - {rep.sessions} sessions - ${rep.total_usd:,.2f} API-equivalent",
-           "(local Claude Code / Codex logs, read-only; $ are estimates at API list prices)", ""]
-    cm = sum(m.usd for m in rep.cache_misses)
-    main = [m for m in rep.cache_misses if m.agent is None]
-    sub = [m for m in rep.cache_misses if m.agent is not None]
-    mu, su = sum(m.usd for m in main), sum(m.usd for m in sub)
-    out.append(f"CACHE MISSES         {_m(cm):>10}  {len(rep.cache_misses)} cache re-writes after the TTL ran out"
-               " (5 min since the last request, or 1 h)")
-    out.append(f"   main session {_m(mu):>9}  {len(main)}x    subagents {_m(su):>9}  {len(sub)}x")
-    for m in rep.cache_misses[:top]:
-        who = _sid(m.session) + (f"/{m.agent[:8]}" if m.agent else "")
-        out.append(f"   {m.source:<6} {who:<17}  idle {m.gap_s / 60:5.0f} min  "
-                   f"{m.tokens / 1000:7.1f}k tok rewritten  ${m.usd:.2f}")
-    if main:
-        out.append(f"   Tip: you resumed {len(main)}x after the cache expired and paid ~{_m(mu)} to"
-                   " re-write it. Start a new session (or /clear) instead of resuming after a break.")
-    if any(m.source == "claude" for m in sub):
-        out.append(f"   Tip: idle subagents re-wrote their own context {len(sub)}x (~{_m(su)}). Set"
-                   ' subagentPromptCacheTtl: "1h" in Claude Code settings (1h writes cost 2x input'
-                   " instead of 1.25x, so it pays off when subagents sit idle > 5 min).")
-    out.append(f"SUBAGENTS            {_m(rep.subagent_usd):>10}  {rep.subagent_share * 100:4.0f}% of spend"
-               f"  in {rep.subagent_threads} subagent/forked threads")
-    if rep.subagent_first:
-        toks = sorted(t for *_, t in rep.subagent_first)
-        biggest = max(rep.subagent_first, key=lambda x: x[3])
-        out.append(f"STARTING CONTEXT     {len(toks)} subagents, first request median {toks[len(toks) // 2] / 1000:.1f}k tok,"
-                   f" largest {biggest[3] / 1000:.1f}k ({_sid(biggest[1])}/{str(biggest[2])[:8]})")
-    out.append(f"OPUS                 {_m(rep.opus_usd):>10}  {rep.opus_share * 100:4.0f}% of spend")
-    rp = sum(s.usd for s in rep.repeat_streaks)
-    out.append(f"REPEATED TOOL CALLS  {_m(rp):>10}  {len(rep.repeat_streaks)} streaks of >= {REPEAT_MIN}"
-               " identical calls in a row")
-    for s in rep.repeat_streaks[:top]:
-        out.append(f"   {s.source:<6} {_who(s):<21} {s.tool[:18]:<18} x{s.count:<4} ${s.usd:.2f}")
-    er = sum(s.usd for s in rep.error_streaks)
-    out.append(f"TOOL ERROR STREAKS   {_m(er):>10}  {len(rep.error_streaks)} streaks of >= {REPEAT_MIN}"
-               " failing calls in a row")
-    for s in rep.error_streaks[:top]:
-        out.append(f"   {s.source:<6} {_who(s):<21} {s.tool[:18]:<18} x{s.count:<4} ${s.usd:.2f}")
+SOURCE_NAMES = {"claude": "CLAUDE CODE", "codex": "CODEX"}
+
+
+class _Style:
+    """ANSI styling for a terminal; every method returns the text unchanged when off."""
+
+    def __init__(self, on: bool) -> None:
+        self.on = on
+
+    def _w(self, code: str, text: str) -> str:
+        return f"\x1b[{code}m{text}\x1b[0m" if self.on else text
+
+    def bold(self, t: str) -> str:
+        return self._w("1", t)
+
+    def dim(self, t: str) -> str:
+        return self._w("2", t)
+
+    def tip(self, t: str) -> str:
+        return self._w("32", t)
+
+    def banner(self, source: str, t: str) -> str:
+        return self._w("1;36" if source == "claude" else "1;35", t)
+
+    def money(self, usd: float, width: int = 10) -> str:
+        text = f"{_m(usd):>{width}}"
+        if usd >= 10:
+            return self._w("1;31", text)
+        if usd >= 1:
+            return self._w("33", text)
+        return self.dim(text)
+
+
+def color_enabled(stream: Any) -> bool:
+    """Colour only on a real terminal, and never when NO_COLOR is set or TERM=dumb."""
+
+    import os
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return False
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def render(rep: WasteReport, period: str, top: int = 3, color: bool = False) -> str:
+    st = _Style(color)
+    out = [st.bold(f"agentcap waste - {period} - {rep.sessions} sessions - ${rep.total_usd:,.2f} API-equivalent"),
+           st.dim("(local Claude Code / Codex logs, read-only; $ are estimates at API list prices)")]
+    for source in ("claude", "codex"):
+        out.append("")
+        out.extend(_render_source(rep, source, top, st))
     out.append("")
-    out.append("Not in local logs: agent_summary/title background calls, HTTP retries (need OTel or the proxy).")
-    out.append(pro_nudge(rep))
+    out.append(st.dim("Not in local logs: agent_summary/title background calls, HTTP retries (need OTel or the proxy)."))
+    out.append(st.bold(pro_nudge(rep)))
     return "\n".join(out)
+
+
+def _render_source(rep: WasteReport, source: str, top: int, st: _Style | None = None) -> list[str]:
+    st = st or _Style(False)
+    name = SOURCE_NAMES[source]
+    src = rep.by_source.get(source)
+    if not src or not src["sessions"]:
+        return [st.banner(source, f"== {name}: no sessions in this period ==")]
+    share = src["total_usd"] / rep.total_usd * 100 if rep.total_usd else 0.0
+    priced = src["total_usd"] > 0
+    cost = f"{_m(src['total_usd'])} ({share:.0f}% of spend)" if priced else "$ not priced"
+    out = [st.banner(source, f"== {name} - {int(src['sessions'])} sessions - {cost} ==")]
+    if not priced:
+        out.append(st.dim("   (no list price known for these models, so $ show as 0; counts are still real)"))
+    misses = [m for m in rep.cache_misses if m.source == source]
+    main = [m for m in misses if m.agent is None]
+    sub = [m for m in misses if m.agent is not None]
+    mu, su = sum(m.usd for m in main), sum(m.usd for m in sub)
+    what = ("cache re-writes after the TTL ran out (5 min since the last request, or 1 h)"
+            if source == "claude" else "large uncached prompts after a > 5 min pause")
+    out.append(f"{st.bold('CACHE MISSES       ')}  {st.money(mu + su)}  {len(misses)} {what}")
+    if misses:
+        out.append(st.dim(f"   main session {_m(mu):>9}  {len(main)}x    subagents {_m(su):>9}  {len(sub)}x"))
+    for m in misses[:top]:
+        who = _sid(m.session) + (f"/{m.agent[:8]}" if m.agent else "")
+        verb = "rewritten" if source == "claude" else "uncached"
+        out.append(st.dim(f"   {who:<17}  idle {m.gap_s / 60:5.0f} min  {m.tokens / 1000:7.1f}k tok {verb}  ${m.usd:.2f}"))
+    if main and mu >= 0.01:
+        fix = "Start a new session (or /clear)" if source == "claude" else "Start a new session"
+        out.append(st.tip(f"   Tip: you resumed {len(main)}x after the cache expired and paid ~{_m(mu)} to"
+                          f" re-write it. {fix} instead of resuming after a break."))
+    if source == "claude" and sub:
+        out.append(st.tip(f"   Tip: idle subagents re-wrote their own context {len(sub)}x (~{_m(su)}). Set"
+                          ' subagentPromptCacheTtl: "1h" in Claude Code settings (1h writes cost 2x input'
+                          " instead of 1.25x, so it pays off when subagents sit idle > 5 min)."))
+    sshare = src["subagent_usd"] / src["total_usd"] * 100 if src["total_usd"] else 0.0
+    label = "subagent" if source == "claude" else "forked"
+    out.append(f"{st.bold('SUBAGENTS          ')}  {st.money(src['subagent_usd'])}  {sshare:4.0f}% of spend"
+               f"  in {int(src['subagent_threads'])} {label} threads")
+    first = [x for x in rep.subagent_first if x[0] == source]
+    if first:
+        toks = sorted(t for *_, t in first)
+        biggest = max(first, key=lambda x: x[3])
+        out.append(f"{st.bold('STARTING CONTEXT')}     {len(toks)} subagents, first request median"
+                   f" {toks[len(toks) // 2] / 1000:.1f}k tok,"
+                   f" largest {biggest[3] / 1000:.1f}k ({_sid(biggest[1])}/{str(biggest[2])[:8]})")
+    if source == "claude":
+        oshare = src["opus_usd"] / src["total_usd"] * 100 if src["total_usd"] else 0.0
+        out.append(f"{st.bold('OPUS               ')}  {st.money(src['opus_usd'])}  {oshare:4.0f}% of spend")
+    for kind, title, desc in (("repeat", "REPEATED TOOL CALLS", "identical calls in a row"),
+                              ("error", "TOOL ERROR STREAKS ", "failing calls in a row")):
+        streaks = [x for x in (rep.repeat_streaks if kind == "repeat" else rep.error_streaks) if x.source == source]
+        out.append(f"{st.bold(title)}  {st.money(sum(x.usd for x in streaks))}  {len(streaks)} streaks of"
+                   f" >= {REPEAT_MIN} {desc}")
+        for x in streaks[:top]:
+            out.append(st.dim(f"   {_who(x):<21} {x.tool[:18]:<18} x{x.count:<4} ${x.usd:.2f}"))
+    return out
 
 
 def pro_nudge(rep: WasteReport) -> str:

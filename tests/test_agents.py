@@ -7,6 +7,7 @@ and ``forked_from_id``.
 """
 
 import json
+import re
 import shutil
 from decimal import Decimal
 from pathlib import Path
@@ -244,3 +245,55 @@ def test_pricer_bills_1h_writes_at_2x():
     five = Decimal(p.usd("claude-sonnet-4-5", 0, 0, 1_000_000, 0))
     hour = Decimal(p.usd("claude-sonnet-4-5", 0, 0, 1_000_000, 0, cwrite_1h=1_000_000))
     assert five == Decimal("3.75") and hour == Decimal("6")
+
+
+def test_waste_groups_findings_by_source(home, capsys):
+    assert cli.main(["waste", "--since", "all"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    claude = next(i for i, l in enumerate(lines) if l.startswith("== CLAUDE CODE"))
+    codex = next(i for i, l in enumerate(lines) if l.startswith("== CODEX"))
+    assert claude < codex
+    claude_part, codex_part = "\n".join(lines[claude:codex]), "\n".join(lines[codex:])
+    assert "OPUS" in claude_part and "OPUS" not in codex_part
+    assert "/clear" not in codex_part
+    w = waste.scan(home=home)
+    assert sum(v["total_usd"] for v in w.by_source.values()) == pytest.approx(w.total_usd)
+    assert sum(v["sessions"] for v in w.by_source.values()) == w.sessions
+
+
+def test_waste_source_without_sessions(tmp_path, capsys):
+    rep = waste.WasteReport()
+    text = waste.render(rep, "since 30d")
+    assert "== CLAUDE CODE: no sessions in this period ==" in text
+    assert "== CODEX: no sessions in this period ==" in text
+
+
+def test_waste_unpriced_source_says_so():
+    rep = waste.WasteReport(sessions=1)
+    rep.by_source["codex"] = {"sessions": 1, "total_usd": 0.0, "subagent_usd": 0.0,
+                              "opus_usd": 0.0, "subagent_threads": 0}
+    rep.cache_misses.append(waste.CacheMiss("codex", "s1", 0.0, 900.0, 50000, 0.0))
+    text = waste.render(rep, "since 30d")
+    assert "== CODEX - 1 sessions - $ not priced ==" in text
+    assert "Tip: you resumed" not in text
+
+
+def test_waste_color_only_on_a_terminal(home, monkeypatch):
+    w = waste.scan(home=home)
+    plain, colored = waste.render(w, "all"), waste.render(w, "all", color=True)
+    assert "\x1b[" not in plain and "\x1b[" in colored
+    assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == plain
+
+    class Tty:
+        def isatty(self):
+            return True
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    assert waste.color_enabled(Tty())
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert not waste.color_enabled(Tty())
+    monkeypatch.delenv("NO_COLOR")
+    monkeypatch.setenv("TERM", "dumb")
+    assert not waste.color_enabled(Tty())
+    assert not waste.color_enabled(object())

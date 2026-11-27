@@ -180,7 +180,8 @@ def dispatch(args: argparse.Namespace) -> int | None:
             return 2
         rep = waste.scan(since=since, claude_dir=args.claude_dir, codex_dir=args.codex_dir)
         period = "all time" if since is None else f"since {args.since}"
-        print(waste.render_json(rep) if args.json else waste.render(rep, period, args.top))
+        print(waste.render_json(rep) if args.json
+              else waste.render(rep, period, args.top, color=waste.color_enabled(sys.stdout)))
         return 0
     if args.subcommand == "import":
         _do_import(args, history.HistoryStore(args.db))
