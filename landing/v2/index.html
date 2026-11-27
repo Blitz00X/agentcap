@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AgentCap — Put a brake on Claude Code &amp; Codex</title>
-<meta name="description" content="Set a quota limit or stop looping agents on the 4th repeat. Free local log profiler shows where your tokens went. Zero AI inside, MIT open source.">
+<title>AgentCap — See where your quota goes. Stop your agent before it burns it.</title>
+<meta name="description" content="An add-on for Claude Code and Codex. A free usage report shows what used your quota; Pro stops a job at its share of the quota or when it loops. No AI inside, MIT open source.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2317170f'/%3E%3Cpath d='M9 23v-4M16 23V9M23 23v-7' stroke='%23f4f1e7' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="landing.css">
+<link rel="stylesheet" href="landing.css?v=2026112707">
 <meta name="referrer" content="no-referrer">
-<meta property="og:title" content="AgentCap — Set a quota limit. Your agent stops there.">
-<meta property="og:description" content="Stops runaway Claude Code and Codex loops on the 4th repeat or at your quota cap. Free local log profiler. No AI inside, MIT open source.">
+<meta property="og:title" content="AgentCap — See where your quota goes. Stop your agent before it burns it.">
+<meta property="og:description" content="An add-on for Claude Code and Codex: a free usage report, a per-job quota limit and a loop stop. No AI inside, MIT open source.">
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#f4f1e7">
 <link rel="canonical" href="https://agentcap.launchbench.studio/">
@@ -44,7 +44,7 @@
       <a href="#pricing">Pricing</a>
       <a href="#honest">Honest limits</a>
     </nav>
-    <a class="btn btn-out" href="#pricing">Pro · $7</a>
+    <a class="btn" href="#install">Install free</a>
   </div>
 </header>
 
@@ -52,9 +52,43 @@
   <!-- ACT 1: FOCAL HERO ON WARM PAPER -->
   <section class="hero">
     <div class="wrap">
-      <div class="kicker"><i></i>Claude Code &amp; Codex · No AI inside · Open source (MIT)</div>
-      <h1>Set a quota limit. <em>Your agent stops there</em><span class="dot">.</span></h1>
-      <p class="hero-sub">Stops runaway loops on the 4th repeat or at your session cap. Free log profiler shows where your tokens already went.</p>
+      <div class="hero-top">
+        <div class="kicker"><i></i>An add-on for Claude Code &amp; Codex</div>
+        <h1 class="h1-plain">See where your quota goes. <em>Stop your agent before it burns it<span class="dot">.</span></em></h1>
+        <div class="hm" id="heroMeter" aria-hidden="true">
+          <div class="hm-row"><span>Claude Code · 5-hour quota</span><span class="hm-n"><b id="hmNum">0%</b> used</span></div>
+          <div class="hm-track"><i class="hm-fill" id="hmFill"></i><span class="hm-lim"><em>Your limit · 30%</em></span></div>
+          <div class="hm-foot"><span class="hm-run">● Agent working…</span><span class="hm-stop">■ AgentCap stopped the job at 30%</span></div>
+        </div>
+      </div>
+
+      <div class="pillars">
+        <article class="pillar">
+          <div class="pillar-top"><span class="pillar-n">01</span><span class="pillar-tier free">Free</span></div>
+          <h2 class="pillar-h">Usage report</h2>
+          <p>Reads your local Claude Code and Codex logs and shows what used your quota: subagents, Opus, repeated calls, cache misses.</p>
+          <div class="pv" aria-hidden="true">
+            <div class="pvb"><span>Subagents</span><i class="w-72"></i></div>
+            <div class="pvb"><span>Opus</span><i class="w-54"></i></div>
+            <div class="pvb"><span>Repeats</span><i class="w-28"></i></div>
+          </div>
+        </article>
+        <article class="pillar">
+          <div class="pillar-top"><span class="pillar-n">02</span><span class="pillar-tier pro">Pro</span></div>
+          <h2 class="pillar-h">Quota limit</h2>
+          <p>Give a job a share, for example 10% of the 5-hour quota. When the job reaches it, AgentCap stops it.</p>
+          <div class="pv" aria-hidden="true">
+            <div class="pvq-track"><i class="pvq-pre"></i><i class="pvq-fill"></i><b class="pvq-pin"></b></div>
+            <div class="pvq-lbl"><span>5-hour quota</span><span>22% now → stops at <b class="acc">32%</b></span></div>
+          </div>
+        </article>
+        <article class="pillar">
+          <div class="pillar-top"><span class="pillar-n">03</span><span class="pillar-tier pro">Pro</span></div>
+          <h2 class="pillar-h">Loop stop</h2>
+          <p>If the agent repeats the same step 4 times in a row, or keeps failing, AgentCap stops it.</p>
+          <div class="pv pv-loop" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span class="cut">4</span><em>stopped</em></div>
+        </article>
+      </div>
 
       <div class="action-row">
         <div class="cmd-bar">
@@ -64,20 +98,22 @@
         <a class="btn btn-accent" href="#install">Install Free ↓</a>
       </div>
       <div class="hero-meta">
-        <span>In Claude Code, then <b>/plugin install agentcap@agentcap</b></span>
+        <span>Paste it in Claude Code, then <b>/plugin install agentcap@agentcap</b></span>
         <span class="sep">·</span>
-        <span><b>Free</b> warns &amp; audits logs</span>
+        <span>No AI inside</span>
         <span class="sep">·</span>
-        <span><a href="#pricing" class="is-1"><b>Pro ($7 once)</b> stops the run</a></span>
+        <span>Open source (MIT)</span>
+        <span class="sep">·</span>
+        <span><a href="#pricing" class="is-1"><b>Pro $7 once</b></a></span>
       </div>
 
       <!-- LIVING STAGE: OLIVE-BLACK TERMINAL + CREAM RECEIPT HUD -->
       <div class="stage" aria-label="Interactive AgentCap live preview">
         <div class="stage-bar">
           <div class="stage-tabs" role="tablist">
-            <button class="st-tab active" data-mode="loop">1. 4× Loop Stop</button>
-            <button class="st-tab" data-mode="quota">2. 5% Quota Cap</button>
-            <button class="st-tab" data-mode="waste">3. Free Waste Audit</button>
+            <button class="st-tab" data-mode="waste">1. Usage report</button>
+            <button class="st-tab active" data-mode="quota">2. Quota limit</button>
+            <button class="st-tab" data-mode="loop">3. Loop stop</button>
           </div>
           <div class="stage-ctl">
             <span class="led" id="stage-led"><i></i><span id="stage-led-txt">WATCHING</span></span>
@@ -89,7 +125,7 @@
           <div class="stage-term">
             <div class="stream" id="stage-stream"></div>
             <div class="is-2">
-              Interactive simulation · live tests (13 Nov): 4 of 4 looping runs stopped at call #4; 6 normal jobs ran untouched
+              Interactive simulation of the real hook. Quota and loop stops were tested live on Claude Pro and ChatGPT Plus, 13–14 Nov.
             </div>
           </div>
 
@@ -275,6 +311,6 @@
   </div>
 </footer>
 
-<script defer src="app.js"></script>
+<script defer src="app.js?v=2026112707"></script>
 </body>
 </html>

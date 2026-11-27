@@ -39,7 +39,7 @@ const MODES = {
   }
 };
 
-let curMode = "loop", timers = [];
+let curMode = "quota", timers = [];
 const streamEl = document.getElementById("stage-stream");
 const ledEl = document.getElementById("stage-led");
 const ledTxt = document.getElementById("stage-led-txt");
@@ -189,4 +189,27 @@ document.getElementById("install-copy").addEventListener("click", function(){
 })();
 
 setInstall("claude");
-playMode("loop");
+playMode("quota");
+
+/* hero quota meter: fill to 30%, AgentCap stops it, repeat */
+(function(){
+  var m=document.getElementById("heroMeter"); if(!m) return;
+  var f=document.getElementById("hmFill"), n=document.getElementById("hmNum");
+  var LIMIT=30, RUN=1400, HOLD=3800, WAIT=700;
+  var still=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function show(p){ f.style.width=p+"%"; n.textContent=Math.floor(p)+"%"; }
+  if(still){ show(LIMIT); m.classList.add("hit"); return; }
+  function cycle(){
+    m.classList.remove("hit"); var t0=null;
+    function step(t){
+      if(t0===null) t0=t;
+      var k=Math.min((t-t0)/RUN,1);
+      var p=LIMIT*k*k;
+      show(p);
+      if(k<1) requestAnimationFrame(step);
+      else { show(LIMIT); m.classList.add("hit"); setTimeout(cycle,HOLD); }
+    }
+    show(0); setTimeout(function(){ requestAnimationFrame(step); },WAIT);
+  }
+  cycle();
+})();
