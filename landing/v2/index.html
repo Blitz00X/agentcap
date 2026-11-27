@@ -1,635 +1,280 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="referrer" content="no-referrer">
-  <title>AgentCap — leave Claude Code and Codex unattended; they stop at the limit</title>
-  <meta name="description" content="Set a limit from inside Claude Code or Codex. AgentCap stops the session when it repeats the same tool call, keeps failing, or uses up its share of your quota, and leaves a receipt. Free agentcap waste shows where your tokens already went.">
-  <meta property="og:title" content="AgentCap — leave Claude Code and Codex unattended; they stop at the limit">
-  <meta property="og:description" content="A local spend cap for coding agents. Loop breaker, per-job quota, dollar cap, evidence receipt. Free waste report. Beta: Pro $7 one-time (list $12).">
-  <meta property="og:type" content="website">
-  <meta name="theme-color" content="#f4f1e7">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2317170f'/%3E%3Cpath d='M9 23v-4M16 23V9M23 23v-7' stroke='%23f4f1e7' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="fonts.css">
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentCap — Put a brake on Claude Code &amp; Codex</title>
+<meta name="description" content="Set a quota limit or stop looping agents on the 4th repeat. Free local log profiler shows where your tokens went. Zero AI inside, MIT open source.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2317170f'/%3E%3Cpath d='M9 23v-4M16 23V9M23 23v-7' stroke='%23f4f1e7' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="landing.css">
+<meta name="referrer" content="no-referrer">
+<meta property="og:title" content="AgentCap — Set a quota limit. Your agent stops there.">
+<meta property="og:description" content="Stops runaway Claude Code and Codex loops on the 4th repeat or at your quota cap. Free local log profiler. No AI inside, MIT open source.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#f4f1e7">
+<link rel="canonical" href="https://agentcap.launchbench.studio/">
+<script defer src="/u/script.js" data-website-id="768d708e-6057-4805-a9eb-65610e15f6f5" data-domains="agentcap.launchbench.studio" data-do-not-track="true"></script>
 </head>
 <body>
-  <a class="skip" href="#main">Skip to content</a>
 
-  <div class="topline">
-    <div class="wrap topline-inner">
-      <span>AgentCap 0.5.2 · beta</span>
-      <span class="topline-mid">Local spend control for coding agents</span>
-      <span class="topline-links">
-        <a href="https://pypi.org/project/agentcap-cli/">PyPI <span aria-hidden="true">↗</span></a>
-        <a href="https://github.com/Blitz00X/agentcap">GitHub <span aria-hidden="true">↗</span></a>
-      </span>
+<div class="topline">
+  <div class="wrap topline-in">
+    <span>AgentCap 0.5.3 · beta</span>
+    <span class="topline-mid">Local quota &amp; loop guard for coding agents</span>
+    <span class="topline-links">
+      <a href="https://pypi.org/project/agentcap-cli/">PyPI ↗</a>
+      <a href="https://github.com/Blitz00X/agentcap">GitHub ↗</a>
+    </span>
+  </div>
+</div>
+
+<header>
+  <div class="wrap mast">
+    <a class="brand" href="#top">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="1.25" y="1.25" width="21.5" height="21.5" rx="4.25" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M7 17v-3M12 17V7M17 17v-5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <span class="brand-name">AgentCap</span>
+      <span class="brand-by">by Launchbench</span>
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="#why">How it works</a>
+      <a href="#install">Install</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#honest">Honest limits</a>
+    </nav>
+    <a class="btn btn-out" href="#pricing">Pro · $7</a>
+  </div>
+</header>
+
+<main id="top">
+  <!-- ACT 1: FOCAL HERO ON WARM PAPER -->
+  <section class="hero">
+    <div class="wrap">
+      <div class="kicker"><i></i>Claude Code &amp; Codex · No AI inside · Open source (MIT)</div>
+      <h1>Set a quota limit. <em>Your agent stops there</em><span class="dot">.</span></h1>
+      <p class="hero-sub">Stops runaway loops on the 4th repeat or at your session cap. Free log profiler shows where your tokens already went.</p>
+
+      <div class="action-row">
+        <div class="cmd-bar">
+          <code><span class="p">&gt;</span>/plugin marketplace add Blitz00X/agentcap</code>
+          <button id="hero-copy" type="button">Copy</button>
+        </div>
+        <a class="btn btn-accent" href="#install">Install Free ↓</a>
+      </div>
+      <div class="hero-meta">
+        <span>In Claude Code, then <b>/plugin install agentcap@agentcap</b></span>
+        <span class="sep">·</span>
+        <span><b>Free</b> warns &amp; audits logs</span>
+        <span class="sep">·</span>
+        <span><a href="#pricing" class="is-1"><b>Pro ($7 once)</b> stops the run</a></span>
+      </div>
+
+      <!-- LIVING STAGE: OLIVE-BLACK TERMINAL + CREAM RECEIPT HUD -->
+      <div class="stage" aria-label="Interactive AgentCap live preview">
+        <div class="stage-bar">
+          <div class="stage-tabs" role="tablist">
+            <button class="st-tab active" data-mode="loop">1. 4× Loop Stop</button>
+            <button class="st-tab" data-mode="quota">2. 5% Quota Cap</button>
+            <button class="st-tab" data-mode="waste">3. Free Waste Audit</button>
+          </div>
+          <div class="stage-ctl">
+            <span class="led" id="stage-led"><i></i><span id="stage-led-txt">WATCHING</span></span>
+            <button class="replay-btn" id="stage-replay" type="button">↻ Replay</button>
+          </div>
+        </div>
+
+        <div class="stage-body">
+          <div class="stage-term">
+            <div class="stream" id="stage-stream"></div>
+            <div class="is-2">
+              Interactive simulation · live tests (13 Nov): 4 of 4 looping runs stopped at call #4; 6 normal jobs ran untouched
+            </div>
+          </div>
+
+          <div class="stage-hud">
+            <div>
+              <div class="hud-top"><span id="hud-k">Session receipt</span><span id="hud-tag">Live hook</span></div>
+              <div class="hud-readout">
+                <div class="hud-num" id="hud-val"><span class="acc">4th call</span></div>
+                <span class="hud-sub" id="hud-sub">blocked before run</span>
+              </div>
+              <div id="hud-viz"></div>
+            </div>
+
+            <div class="hud-dl" id="hud-dl"></div>
+
+            <button class="hud-act" id="hud-act" type="button">/agentcap:approve (+50%)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ACT 2: VISUAL BENTO ON WARM PAPER -->
+  <section class="section" id="why">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>See it in <em>one glance.</em></h2>
+        <span class="sec-note">Runs locally · Read-only on logins · No account</span>
+      </div>
+
+      <div class="bento">
+        <!-- Card 1: Editorial Burn Curve -->
+        <div class="ecard">
+          <div>
+            <span class="etag">01 · Unattended runs</span>
+            <h3>Wake up with quota left.</h3>
+            <p>Provider alerts arrive after the spend happened. AgentCap blocks the 4th identical call or stops at your session limit.</p>
+          </div>
+          <div class="chart-frame">
+            <div class="chart-leg">
+              <span><i class="sq is-3"></i>Unattended loop</span>
+              <span><i class="sq is-4"></i>With AgentCap</span>
+              <span class="is-5">Illustration</span>
+            </div>
+            <svg viewBox="0 0 520 154" width="100%" height="auto" role="img" aria-label="Illustrative quota burn comparison chart">
+              <defs>
+                <linearGradient id="paperRed" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#b23a1d" stop-opacity="0.22"/>
+                  <stop offset="100%" stop-color="#b23a1d" stop-opacity="0.02"/>
+                </linearGradient>
+              </defs>
+              <line x1="36" y1="22" x2="500" y2="22" stroke="#d6d0bf" stroke-dasharray="3 4"/>
+              <line x1="36" y1="74" x2="500" y2="74" stroke="#d6d0bf" stroke-dasharray="3 4"/>
+              <line x1="36" y1="126" x2="500" y2="126" stroke="#bdb6a2"/>
+              <text x="4" y="25" fill="#6b6855" font-family="IBM Plex Mono, monospace" font-size="10">100%</text>
+              <text x="10" y="77" fill="#6b6855" font-family="IBM Plex Mono, monospace" font-size="10">50%</text>
+              <text x="16" y="129" fill="#6b6855" font-family="IBM Plex Mono, monospace" font-size="10">0%</text>
+
+              <path d="M 40 124 C 120 120, 170 88, 250 50 C 310 25, 370 22, 496 22 L 496 126 L 40 126 Z" fill="url(#paperRed)"/>
+              <path d="M 40 124 C 120 120, 170 88, 250 50 C 310 25, 370 22, 496 22" fill="none" stroke="#b23a1d" stroke-width="2.4"/>
+              <circle cx="496" cy="22" r="4" fill="#b23a1d"/>
+              <text x="496" y="13" text-anchor="end" fill="#b23a1d" font-family="IBM Plex Mono, monospace" font-size="10" font-weight="500">QUOTA EXHAUSTED</text>
+
+              <path d="M 40 124 L 118 117 L 496 117" fill="none" stroke="#1f6142" stroke-width="2.6"/>
+              <circle cx="118" cy="117" r="4.5" fill="#fdfbf4" stroke="#1f6142" stroke-width="2.4"/>
+              <rect x="128" y="95" width="144" height="20" fill="#e4efe8" stroke="#1f6142" stroke-width="1"/>
+              <text x="136" y="108" fill="#1f6142" font-family="IBM Plex Mono, monospace" font-size="10" font-weight="500">STOPPED AT CAP</text>
+
+              <text x="40" y="144" fill="#6b6855" font-family="IBM Plex Mono, monospace" font-size="10">start</text>
+              <text x="108" y="144" fill="#1f6142" font-family="IBM Plex Mono, monospace" font-size="10">cap hit</text>
+              <text x="442" y="144" fill="#6b6855" font-family="IBM Plex Mono, monospace" font-size="10">hours later</text>
+            </svg>
+          </div>
+        </div>
+
+        <!-- Card 2: Zero AI Flow -->
+        <div class="ecard">
+          <div>
+            <span class="etag">02 · Zero magic</span>
+            <h3>Not an AI bot. Plain Python.</h3>
+            <p>Never proxies your subscription login. AgentCap never stores or uploads your prompts or keys.</p>
+          </div>
+          <div class="arch">
+            <div class="anode"><span>Claude Code / Codex</span><span class="is-6">official CLI</span></div>
+            <div class="aarr">↓ PreToolUse hook</div>
+            <div class="anode safe"><span>AgentCap (MIT Python)</span><span>0 LLM calls</span></div>
+            <div class="aarr">↓</div>
+            <div class="anode no"><span>Prompt / key storage</span><span>✕ NEVER</span></div>
+          </div>
+        </div>
+
+        <!-- Card 3: 4-Tab Install -->
+        <div class="ecard wide" id="install">
+          <div>
+            <span class="etag">03 · 20-second setup</span>
+            <h3>Pick your entry point.</h3>
+            <p class="is-7">Audit last week&rsquo;s logs with zero hooks, or arm the plugin directly inside your agent.</p>
+            <div class="mtabs">
+              <button class="mt active" data-t="claude">Claude Code</button>
+              <button class="mt" data-t="waste">Free Waste Audit</button>
+              <button class="mt" data-t="codex">Codex (Exp.)</button>
+              <button class="mt" data-t="api">API Key ($ Cap)</button>
+            </div>
+          </div>
+          <div class="code-dark">
+            <button class="c-copy" id="install-copy" type="button">Copy</button>
+            <pre id="install-pre"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ACT 3: PRICING & HONEST LIMITS -->
+  <section class="section" id="pricing">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>One price. <em>Not a subscription.</em></h2>
+        <span class="sec-note">3 machines · Fails open · 14-day refund</span>
+      </div>
+
+      <div class="price-frame">
+        <div class="pcol">
+          <div class="p-top">
+            <span class="p-tier">Free · MIT Licence</span>
+            <span class="p-amt">$0</span>
+          </div>
+          <ul class="p-ul">
+            <li><code>agentcap waste</code>: subagents, Opus share, cache misses, loops</li>
+            <li>Live quota meter &amp; observe-only warnings at the limit</li>
+            <li>Hard per-run dollar cap for API keys (local proxy)</li>
+            <li>No account, no key, zero network calls</li>
+          </ul>
+          <a class="btn btn-out is-8" href="#install">Install Free ↑</a>
+        </div>
+
+        <div class="pcol pro">
+          <div class="p-top">
+            <span class="p-tier is-9">Pro · Beta Price</span>
+            <span class="p-amt"><s>$12</s>$7 <small>one-time</small></span>
+          </div>
+          <ul class="p-ul">
+            <li>Active 4× loop &amp; 8× error breaker (Claude Code &amp; Codex)</li>
+            <li>Per-job 5-hour / weekly quota stops + headless <code>claude -p</code> defaults</li>
+            <li>Ask-the-agent natural language cap (agent can only tighten)</li>
+            <li>Telegram &amp; webhook receipts, hourly/daily API caps</li>
+          </ul>
+          <a class="btn btn-accent is-8" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $7 One-Time</a>
+        </div>
+      </div>
+
+      <div class="folds" id="honest">
+        <details class="q">
+          <summary>Honest limits: can a subscription quota stop overshoot slightly?</summary>
+          <p>Yes — by up to one in-flight model response, because Claude and Codex report subscription % once per response and account-wide. In a live 2% test on Claude Pro, one reply landed mid-check and stopped at 4%. The 4× loop breaker stops deterministically before the 4th tool call runs.</p>
+        </details>
+        <details class="q">
+          <summary>How does AgentCap compare to LoopGuard or RelayPlane?</summary>
+          <p>RelayPlane is a great API proxy (no subscription quota). LoopGuard charges $9/month for paid controls. AgentCap combines free local waste forensics (<code>agentcap waste</code>), native in-session <code>/agentcap</code> commands, and a $7 one-time Pro licence.</p>
+        </details>
+        <details class="q">
+          <summary>Supported CLIs, platforms &amp; 10 free Pro licences for design partners</summary>
+          <p>Primary: Claude Code plugin (2.1.323+, Claude Pro/Max). Experimental: Codex plugin (0.167+). API proxy: Anthropic, OpenAI/Codex, Gemini CLI. Linux live-tested; macOS supported; Windows via WSL2. Running overnight jobs? Email <a href="mailto:kutaykarahan6@gmail.com?subject=AgentCap%20design%20partner" class="is-10">kutaykarahan6@gmail.com</a> for a free design-partner Pro key.</p>
+        </details>
+        <details class="q" id="terms">
+          <summary>Purchase terms, 14-day refunds &amp; how to activate Pro</summary>
+          <p>Pro is $7 one-time during beta ($12 after; bought licences keep all 0.x updates, up to 3 machines). Payments via Polar (merchant of record); 14-day no-questions refunds. Licence check runs ~weekly and fails open if offline or discontinued. To activate: open the Polar email → <strong>Access purchase</strong> → copy your key → run <code>agentcap license activate</code>.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span>© 2026 Launchbench · AgentCap 0.5.3 (MIT) · No cookies · No third-party trackers</span>
+    <div class="foot-links">
+      <a href="https://github.com/Blitz00X/agentcap">GitHub</a>
+      <a href="https://pypi.org/project/agentcap-cli/">PyPI</a>
+      <a href="privacy/">Privacy</a>
+      <a href="mailto:kutaykarahan6@gmail.com">Contact</a>
     </div>
   </div>
+</footer>
 
-  <header class="masthead">
-    <div class="wrap masthead-inner">
-      <a class="brand" href="#top" aria-label="AgentCap home">
-        <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect x="1.25" y="1.25" width="21.5" height="21.5" rx="4.25" stroke="currentColor" stroke-width="1.5"/>
-          <path d="M7 17v-3M12 17V7M17 17v-5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-        </svg>
-        <span class="brand-name">AgentCap</span>
-        <span class="brand-by">by Launchbench</span>
-        <span class="tag beta-tag">Beta</span>
-      </a>
-      <nav class="nav" aria-label="Main">
-        <a href="#how">How it stops</a>
-        <a href="#ways">Three ways</a>
-        <a href="#proof">Proof</a>
-        <a href="#install">Install</a>
-        <a href="#pricing">Pricing</a>
-        <a href="#compare">Compare</a>
-        <a href="#faq">FAQ</a>
-      </nav>
-      <a class="nav-cta" href="#install">Install free <span aria-hidden="true">↓</span></a>
-    </div>
-  </header>
-
-  <main id="main">
-    <section class="hero" id="top">
-      <div class="wrap hero-grid">
-        <div class="hero-copy">
-          <p class="kicker"><span class="kicker-square" aria-hidden="true"></span>Inside Claude Code &middot; Codex experimental &middot; Beta</p>
-          <h1>Leave your agent unattended. <em>It stops at the limit</em><span class="period">.</span></h1>
-          <p class="standfirst">Type <code>/agentcap:quota 5% 5h</code> in Claude Code or <code>agentcap 5% 5h</code> in Codex. AgentCap stops the session when it repeats the same tool call, keeps failing, or uses up its share of your quota, and leaves a receipt with the reason and the numbers.</p>
-          <p class="sub">Free, it also reads your local Claude Code and Codex logs and shows where the tokens already went: subagents, Opus, cache misses, loops.</p>
-
-          <div class="hero-actions">
-            <a class="btn" href="#install">Install free</a>
-            <a class="arrow-link" href="#how">See how a run is stopped <span aria-hidden="true">↓</span></a>
-          </div>
-
-          <div class="install-line">
-            <code id="install-cmd">/plugin marketplace add Blitz00X/agentcap</code>
-            <button class="copy" type="button" data-copy="/plugin marketplace add Blitz00X/agentcap" aria-label="Copy Claude Code install command">Copy</button>
-          </div>
-          <p class="fineprint">In Claude Code, then <code>/plugin install agentcap@agentcap</code>. Codex: <code>codex plugin marketplace add Blitz00X/agentcap</code>. No account, no pip install. Read-only on subscription logins; prompts and keys are never stored or uploaded.</p>
-        </div>
-
-        <figure class="receipt-figure">
-          <div class="receipt">
-            <div class="receipt-head">
-              <span class="receipt-brand">AgentCap</span>
-              <span class="receipt-no">No. 435EAD</span>
-            </div>
-            <p class="receipt-title">Session receipt</p>
-
-            <dl class="receipt-meta">
-              <div><dt>agent</dt><dd>claude -p</dd></div>
-              <div><dt>plan</dt><dd>Claude Pro, live</dd></div>
-              <div><dt>rule</dt><dd>2% of the 5-hour quota</dd></div>
-            </dl>
-
-            <div class="perf" role="presentation"></div>
-
-            <dl class="receipt-lines">
-              <div><dt>set by</dt><dd>/agentcap:default</dd></div>
-              <div><dt>measured by</dt><dd>/usage</dd></div>
-              <div><dt>last tool</dt><dd>Read</dd></div>
-            </dl>
-
-            <div class="perf" role="presentation"></div>
-
-            <dl class="receipt-lines">
-              <div><dt>used</dt><dd>4.0%</dd></div>
-              <div><dt>limit</dt><dd>2.0%</dd></div>
-              <div><dt>reason</dt><dd class="warn">quota_exceeded</dd></div>
-              <div><dt>next tool</dt><dd>denied</dd></div>
-            </dl>
-
-            <p class="receipt-foot">Claude Code plugin · 14 Nov 2026</p>
-            <span class="stamp" aria-hidden="true">Stopped<br><span>at the limit</span></span>
-          </div>
-          <figcaption>Fig. 1 — a real receipt from a live test on a Claude Pro account. One response landed after the limit, so it stopped at 4% instead of 2%; Claude&rsquo;s own <code>/usage</code> went from 25% to 29%.</figcaption>
-        </figure>
-      </div>
-
-      <div class="wrap">
-        <dl class="rules">
-          <div>
-            <dt><span class="rule-n">4×</span><span class="rule-label">Loop</span></dt>
-            <dd>the same tool call in a row</dd>
-          </div>
-          <div>
-            <dt><span class="rule-n">8×</span><span class="rule-label">Errors</span></dt>
-            <dd>failing tool calls in a row</dd>
-          </div>
-          <div>
-            <dt><span class="rule-n">5%</span><span class="rule-label">Quota</span></dt>
-            <dd>of the 5-hour or weekly quota, per session</dd>
-          </div>
-          <div>
-            <dt><span class="rule-n">$</span><span class="rule-label">Spend</span></dt>
-            <dd>a hard cap for API keys</dd>
-          </div>
-        </dl>
-      </div>
-    </section>
-
-    <section class="chapter" id="problem">
-      <div class="wrap chapter-grid">
-        <div class="chapter-side">
-          <span class="num">01</span>
-          <span class="side-label">The problem</span>
-        </div>
-        <div class="chapter-body">
-          <h2>Agents do not stop themselves. Invoices do not arrive in time.</h2>
-          <p class="lead">A loop is cheap to start and expensive to notice.</p>
-          <p>A looping agent, or a long unattended run, can spend for hours while nobody is watching. Provider budget alerts are delayed, and most of them do not stop anything. By the time the email lands, the spend has already happened.</p>
-
-          <div class="quotes">
-            <blockquote>
-              <p>“Claude Code: 500+ dollars from repeated identical requests.”</p>
-              <cite>anthropics/claude-code · <a href="https://github.com/anthropics/claude-code/issues/35166">#35166</a></cite>
-            </blockquote>
-            <blockquote>
-              <p>“No self-serve loop circuit breaker.”</p>
-              <cite>anthropics/claude-code · <a href="https://github.com/anthropics/claude-code/issues/81078">#81078</a></cite>
-            </blockquote>
-          </div>
-          <p class="fineprint">Two open reports from the Claude Code issue tracker. Not our numbers.</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="chapter" id="how">
-      <div class="wrap chapter-grid">
-        <div class="chapter-side">
-          <span class="num">02</span>
-          <span class="side-label">The stop</span>
-        </div>
-        <div class="chapter-body">
-          <h2>Set a limit inside the agent. Three things happen.</h2>
-
-          <ol class="protocol">
-            <li>
-              <span class="step">01</span>
-              <div>
-                <h3>Set the limit</h3>
-                <p>Type it where you already work. The line never reaches the model, so it costs no quota, and only you can type it. A default limit covers every new session, headless runs included.</p>
-                <pre><code><span class="c"># Claude Code</span>
-/agentcap:quota 5% 5h
-<span class="c"># Codex</span>
-agentcap 5% 5h</code></pre>
-                <p>On an API key, wrap the command with a dollar cap instead: <code>agentcap run --cap 2 -- codex exec "fix the failing tests"</code>.</p>
-              </div>
-            </li>
-            <li>
-              <span class="step">02</span>
-              <div>
-                <h3>AgentCap watches the run</h3>
-                <p>For subscriptions it asks the agents themselves: Claude Code&rsquo;s statusline and its own <code>/usage</code>, Codex&rsquo;s session logs and its own <code>codex app-server</code>. No model call, no quota spent. For API keys, requests go through a proxy on <code>127.0.0.1</code>. Your login, tokens and settings are not touched.</p>
-              </div>
-            </li>
-            <li>
-              <span class="step">03</span>
-              <div>
-                <h3>At the limit, it stops</h3>
-                <p>With an API key, the next request is blocked and the process group is stopped: <code>SIGTERM</code> first, <code>SIGKILL</code> after five seconds. On a subscription, Claude Code&rsquo;s next tool call is denied and the session stays open for <code>agentcap approve</code>; With the Codex plugin, every tool call at the limit is denied with the reason until you type <code>agentcap approve</code> or <code>agentcap off</code>. Wrapped Codex and headless runs get <code>SIGINT</code>. The terminal says why, the receipt is saved, and the run exits with code 3. The loop breaker exits with 4.</p>
-              </div>
-            </li>
-          </ol>
-
-          <p class="note"><strong>Honest limit:</strong> this is a local spend cap, not a mathematical guarantee. Worst-case cost is reserved before each request, so overshoot is rare but possible when a provider counts more tokens than estimated, for example in server-side system prompts, tool schemas or images.</p>
-          <p class="note"><strong>Quota mode:</strong> the quota % comes from the agent itself and arrives once per model response, so one large response can take a job past its limit by a few points. Usage on the same account from anywhere else (claude.ai, the desktop or phone app, another terminal) counts toward the job too.</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="chapter" id="ways">
-      <div class="wrap chapter-grid">
-        <div class="chapter-side">
-          <span class="num">03</span>
-          <span class="side-label">Three ways in</span>
-        </div>
-        <div class="chapter-body">
-          <h2>Three ways to set the stop. The same stop.</h2>
-          <p class="lead">Stopping at the limit is what Pro pays for. Set it for scripts, type it in one line, or just ask the agent.</p>
-
-          <div class="ways">
-            <div class="ways-head" aria-hidden="true">
-              <span>Claude Code</span>
-              <span>Codex</span>
-            </div>
-
-            <div class="way">
-              <div class="way-label">
-                <span class="step">A</span>
-                <h3>Headless, from the terminal</h3>
-                <p>Set a default once. Every <code>claude -p</code> or <code>codex exec</code> run starts with it, so scripts and CI need no extra flag.</p>
-              </div>
-              <figure class="way-cell">
-                <figcaption><span class="terminal-dot" aria-hidden="true"></span>Claude Code · headless</figcaption>
-                <pre><code><span class="t-dim"># once, inside Claude Code</span>
-/agentcap:default until 70% 5h
-
-<span class="t-dim"># then, from any script</span>
-<span class="t-p">$</span> claude -p "fix the failing tests"
-<span class="t-stop">at 70%: next tool call denied, run ends, receipt saved with reason quota_exceeded</span></code></pre>
-              </figure>
-              <figure class="way-cell">
-                <figcaption><span class="terminal-dot" aria-hidden="true"></span>Codex · headless</figcaption>
-                <pre><code><span class="t-dim"># once, typed as a prompt in Codex</span>
-agentcap default until 70% 5h
-
-<span class="t-dim"># then, from any script</span>
-<span class="t-p">$</span> codex exec "fix the failing tests"
-<span class="t-stop">at 70%: every tool call is denied with the reason, receipt saved</span></code></pre>
-              </figure>
-            </div>
-
-            <div class="way">
-              <div class="way-label">
-                <span class="step">B</span>
-                <h3>In the session, type one line</h3>
-                <p>The line is handled by AgentCap and never reaches the model, so it costs no quota and only you can type it.</p>
-              </div>
-              <figure class="way-cell">
-                <figcaption><span class="terminal-dot" aria-hidden="true"></span>Claude Code · TUI</figcaption>
-                <pre><code><span class="t-p">&gt;</span> /agentcap:quota until 70% 5h
-<span class="t-dim">agentcap: this session stops at 70% of the 5-hour quota:</span> 5-hour quota at 20% now → stops at 70%</code></pre>
-              </figure>
-              <figure class="way-cell">
-                <figcaption><span class="terminal-dot" aria-hidden="true"></span>Codex · TUI</figcaption>
-                <pre><code><span class="t-p">›</span> agentcap until 70% 5h
-<span class="t-dim">agentcap: this session stops at 70% of the 5-hour quota:</span> 5-hour quota at 20% now → stops at 70%<span class="t-dim">. Tool calls are denied at the limit.</span></code></pre>
-              </figure>
-            </div>
-
-            <div class="way">
-              <div class="way-label">
-                <span class="step">C</span>
-                <h3>In the session, ask the agent <span class="badge">New</span></h3>
-                <p>Say it in your own words. The agent writes the command, the agent&rsquo;s own approval prompt shows where it would stop, and you press one button.</p>
-              </div>
-              <figure class="way-cell">
-                <figcaption><span class="terminal-dot" aria-hidden="true"></span>Claude Code · TUI</figcaption>
-                <pre><code><span class="t-p">&gt;</span> this session may use at most half of the 5-hour quota
-<span class="t-dim">● Bash</span> echo agentcap set 50% 5h
-<span class="t-dim">AgentCap: the agent asks to let this session use 50 more points of the 5-hour quota:</span> 5-hour quota at 20% now → stops at 70%
-<span class="t-dim">Do you want to proceed?</span>
-<span class="t-btn">❯ 1. Yes</span>  <span class="t-dim">2. No</span>
-<span class="t-ok">agentcap: limit set (you approved the agent's command)</span></code></pre>
-              </figure>
-              <figure class="way-cell">
-                <figcaption><span class="terminal-dot" aria-hidden="true"></span>Codex · TUI</figcaption>
-                <pre><code><span class="t-p">›</span> this session may use at most half of the 5-hour quota
-<span class="t-dim">Would you like to run the following command?
-Reason: AgentCap: let this session use 50 more points of the 5-hour quota</span>
-<span class="t-p">$</span> echo agentcap set 50% 5h
-<span class="t-btn">› 1. Yes, proceed (y)</span>
-<span class="t-ok">agentcap: limit set (you approved the agent's command):</span> 5-hour quota at 20% now → stops at 70%</code></pre>
-              </figure>
-            </div>
-          </div>
-
-          <p class="note"><strong>The agent can only tighten.</strong> Asked in plain words, the agent may set a limit or lower it, never raise or remove it, and nothing is set until you approve. <code>approve</code> (+50%, twice), a higher limit and <code>off</code> stay yours.</p>
-          <p class="fineprint">Stopping at the limit is Pro. Free shows the same messages, a live meter and one notice at the limit. Since 0.5.2 new prompts are blocked too once the limit is reached, not only tool calls. The ask-the-agent flow (0.5.1) was checked in the real Claude Code 2.1.325 and Codex 0.169 TUIs with a scripted local model; the typed and headless stops were verified live on Claude Pro and ChatGPT Plus accounts, 14 November 2026.</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="chapter" id="proof">
-      <div class="wrap chapter-grid">
-        <div class="chapter-side">
-          <span class="num">04</span>
-          <span class="side-label">The evidence</span>
-        </div>
-        <div class="chapter-body">
-          <h2>It already knows where the money went.</h2>
-          <p class="lead">Before you cap anything, look at what already leaked.</p>
-          <p>The free tier reads your local Claude Code and Codex logs and puts a dollar estimate on the waste that already happened. Read-only. No key, no account, nothing uploaded.</p>
-
-          <figure class="terminal">
-            <div class="terminal-bar">
-              <span class="terminal-dot" aria-hidden="true"></span>
-              <span class="terminal-cmd">agentcap waste --since 7d</span>
-              <span class="terminal-tag">read-only</span>
-            </div>
-            <pre><code><span class="t-dim">SUBAGENTS</span>              <span class="t-money">$41.20</span>    <span class="t-dim">25% of spend</span>
-<span class="t-dim">OPUS</span>                   <span class="t-money">$38.90</span>    <span class="t-dim">24% of spend</span>
-<span class="t-dim">CACHE MISSES</span>            <span class="t-money">$6.10</span>    <span class="t-dim">57 re-writes after TTL</span>
-<span class="t-dim">REPEATED TOOL CALLS</span>     <span class="t-money">$9.80</span>    <span class="t-dim">12 streaks of 3+ identical calls</span>
-<span class="t-dim">TOOL ERROR STREAKS</span>      <span class="t-money">$4.30</span>    <span class="t-dim">5 streaks of 3+ failing calls</span>
-
-<span class="t-stop">Pro would have stopped this run at $3.12.</span></code></pre>
-          </figure>
-          <p class="fineprint">Illustrative output from the README. Run it on your own logs; it is read-only.</p>
-
-          <div class="receipt-note">
-            <h3>Every stop leaves a receipt.</h3>
-            <p>The receipt names the reason, the limit and the spend, plus the last tool call&rsquo;s name. Numbers and tool names only, never prompts or tool inputs. The same receipt goes to Telegram or a webhook if you want it on Pro.</p>
-          </div>
-
-        </div>
-      </div>
-    </section>
-
-    <section class="chapter" id="install">
-      <div class="wrap chapter-grid">
-        <div class="chapter-side">
-          <span class="num">05</span>
-          <span class="side-label">Install</span>
-        </div>
-        <div class="chapter-body">
-          <h2>Add the plugin, then type a limit.</h2>
-
-          <pre class="examples"><code><span class="c"># Claude Code: add the plugin once</span>
-/plugin marketplace add Blitz00X/agentcap
-/plugin install agentcap@agentcap
-<span class="c"># then, in any session: 5 more points of the 5-hour quota</span>
-/agentcap:quota 5% 5h
-<span class="c"># or: stop when the 5-hour quota reaches 70%</span>
-/agentcap:quota until 70% 5h
-
-<span class="c"># Codex 0.167+: add the plugin once, trust its 5 hooks when Codex asks</span>
-codex plugin marketplace add Blitz00X/agentcap
-codex plugin add agentcap@agentcap
-<span class="c"># then type this as a prompt; it never reaches the model</span>
-agentcap 5% 5h</code></pre>
-          <p class="note"><strong>Two ways to say the limit.</strong> <code>5% 5h</code> means 5 more points from where the 5-hour quota is now: at 20% it stops at 25%. <code>until 70% 5h</code> means stop when the 5-hour quota reaches 70%. AgentCap always prints both numbers, for example <code>5-hour quota at 20% now → stops at 25%</code>.</p>
-          <p class="fineprint">Every new session, headless included, can start with a limit: <code>/agentcap:default 5% 5h</code> or <code>agentcap default until 70% 5h</code>. Use <code>week</code> instead of <code>5h</code> for the weekly quota.</p>
-
-          <div class="surfaces">
-            <div>
-              <h3>Claude Code plugin</h3>
-              <p>No pip install. <code>/plugin marketplace add Blitz00X/agentcap</code>, <code>/plugin install agentcap@agentcap</code>. Then, inside Claude Code, <code>/agentcap:quota 5% 5h</code> caps this session; <code>/agentcap:default 5% 5h</code> caps every new one, <code>claude -p</code> included. Optional: <code>/agentcap:setup</code> adds a live statusline meter; <code>/agentcap:unsetup</code> removes it.</p>
-            </div>
-            <div>
-              <h3>Codex plugin <span class="tag">Experimental</span></h3>
-              <p>Experimental, not fully tested yet: Claude Code is the main target. No pip install, Codex 0.167+. <code>codex plugin marketplace add Blitz00X/agentcap</code>, <code>codex plugin add agentcap@agentcap</code>, then trust AgentCap&rsquo;s 5 hooks when Codex asks (once per version). Inside Codex, type <code>agentcap 10% 5h</code>; <code>agentcap default 10% 5h</code> covers every new session, <code>codex exec</code> included. These lines never reach the model.</p>
-            </div>
-            <div>
-              <h3>Command line</h3>
-              <p><code>pipx install agentcap-cli</code>. Free <code>waste</code> and <code>report</code> on your logs, <code>quota</code>, <code>license</code>, and <code>agentcap run --cap 2 -- &lt;agent&gt;</code> for a dollar cap on API keys. Linux, tested live. macOS should work but is not tested yet. Windows via WSL2.</p>
-            </div>
-            <div>
-              <h3>VS Code / Cursor</h3>
-              <p>The 0.2.0 extension needs the CLI. <a href="agentcap-0.2.0.vsix" download>Download the .vsix</a> (11 KB), then <code>code --install-extension agentcap-0.2.0.vsix</code>. Shows live run spend; warns at 80% and 95%.</p>
-            </div>
-          </div>
-
-          <h3 class="subhead">Supported and tested</h3>
-          <div class="table-scroll">
-            <table class="ledger compact">
-              <thead>
-                <tr><th scope="col">Tool</th><th scope="col">Verified</th><th scope="col">Auth and routing</th></tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th scope="row">Codex CLI</th>
-                  <td>0.163–0.166</td>
-                  <td><code>OPENAI_API_KEY</code>. Routed automatically via an injected custom provider. ChatGPT sign-in is not metered.</td>
-                </tr>
-                <tr>
-                  <th scope="row">Gemini CLI</th>
-                  <td>0.58–0.66</td>
-                  <td><code>GEMINI_API_KEY</code>. Routed via a temporary <code>GEMINI_CLI_HOME</code> overlay; nothing in <code>~/.gemini</code> changes. Google sign-in is not metered.</td>
-                </tr>
-                <tr>
-                  <th scope="row">Your own script</th>
-                  <td>Any</td>
-                  <td>Uses the OpenAI, Anthropic or Gemini SDK. AgentCap sets <code>OPENAI_BASE_URL</code>, <code>ANTHROPIC_BASE_URL</code> or <code>GOOGLE_GEMINI_BASE_URL</code>.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="fineprint">Codex 0.165 was verified against real OpenAI-compatible upstreams (Ollama Cloud and OpenRouter, with matching ledger usage and a cap stop at exit 3). Gemini CLI 0.66 was verified with a real Gemini API key. Not yet against OpenAI billing. Quota stops were verified live on a real Claude Pro account (Claude Code 2.1.323: interactive, headless <code>claude -p</code> and the plugin) and a real ChatGPT Plus account (Codex 0.167, <code>exec</code> and the TUI), 11&ndash;13 November 2026.</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="chapter" id="pricing">
-      <div class="wrap chapter-grid">
-        <div class="chapter-side">
-          <span class="num">06</span>
-          <span class="side-label">Pricing</span>
-        </div>
-        <div class="chapter-body">
-          <h2>One price. Not a subscription.</h2>
-          <p class="lead">Free covers the waste report and a hard dollar cap. Pro adds the loop breaker and quota stops.</p>
-
-          <div class="price-frame">
-            <div class="price-col">
-              <p class="tier">Free</p>
-              <p class="amount">$0</p>
-              <p class="price-note">MIT licence. No account, no key.</p>
-              <ul class="price-list">
-                <li><code>agentcap waste</code>: subagent and Opus share, cache misses, tool loops, error streaks</li>
-                <li><code>agentcap report --by agent</code>: session → subagent tree with dollars</li>
-                <li>Per-run dollar cap for API keys, fail-closed metering</li>
-                <li><code>agentcap quota</code> and observe-only runs, without stopping anything</li>
-                <li><code>agentcap demo</code>: a simulated run against a fake local API</li>
-                <li>Tells you when Pro would have stopped a loop or a quota burn</li>
-              </ul>
-              <a class="btn btn-outline" href="#install">Install free</a>
-            </div>
-            <div class="price-col price-pro">
-              <p class="tier">Pro <span class="tag">Beta price</span></p>
-              <p class="amount"><s class="was">$12</s> $7 <small>one-time</small></p>
-              <p class="price-note">Beta price while AgentCap is in beta; it goes to $12 after. A licence bought now keeps the price and every 0.x update.</p>
-              <ul class="price-list">
-                <li>Loop breaker on Claude Code and Codex, subscriptions included</li>
-                <li>Per-job quota: stop at 5% of your weekly or 5-hour limit</li>
-                <li>Evidence receipt for every stop</li>
-                <li>API keys: burn breaker, hourly and daily caps</li>
-                <li>Telegram and webhook alerts</li>
-                <li>Quota forecast and receipt export</li>
-                <li>One licence key for up to three machines</li>
-              </ul>
-              <a class="btn" href="https://buy.polar.sh/polar_cl_qagsvUdwQ0dRvaW7X5ynEJg5md27pEctIRAr40MBeLi">Buy Pro — $7 beta</a>
-            </div>
-          </div>
-          <p class="note"><strong>Running agents unattended?</strong> We are giving 10 free Pro licences to design partners: run AgentCap on one real overnight or long job, share the receipt, and give us 20 minutes of feedback. Email <a href="mailto:kutaykarahan6@gmail.com?subject=AgentCap%20design%20partner">kutaykarahan6@gmail.com</a>.</p>
-          <p class="fineprint">Payments handled by Polar as merchant of record. Not a subscription. 14-day refunds, no questions asked. Activation: <code>agentcap license activate</code>, then check <code>agentcap license status</code> for <code>tier: pro</code>.</p>
-
-          <details class="fold" id="terms">
-            <summary>Purchase terms, refunds and licence</summary>
-            <ul class="terms">
-              <li><strong>Price:</strong> Pro is $7 one-time at the beta price (list price $12). The price will rise after the beta; a licence you already bought is not affected. There is no subscription.</li>
-              <li><strong>Refunds:</strong> 14 days, no questions asked. Email <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>.</li>
-              <li><strong>Machines:</strong> one licence key activates on up to three machines.</li>
-              <li><strong>Licence check:</strong> the key is checked with Polar about once a week.</li>
-              <li><strong>Fail-open:</strong> if the licence server is unreachable, Pro keeps working. Only an explicit Polar rejection — a refunded or revoked key — downgrades it.</li>
-              <li><strong>Discontinued product:</strong> if AgentCap is discontinued, Pro keeps working, and you can ask for a refund within 14 days of purchase.</li>
-              <li><strong>Free tier:</strong> the per-run cap needs no key and makes no network calls.</li>
-            </ul>
-          </details>
-
-          <details class="fold" id="thanks">
-            <summary>Already bought? Activate in two minutes</summary>
-            <ol class="terms">
-              <li><strong>Get your key.</strong> The key is not in the email itself. Open the Polar email, click <strong>Access purchase</strong>, then copy the key under <em>AgentCap Pro license key</em>.</li>
-              <li><strong>Activate.</strong> Run <code>agentcap license activate</code> and paste the key at the hidden prompt. Scripts can use <code>agentcap license activate -</code> or <code>AGENTCAP_LICENSE_KEY</code>.</li>
-              <li><strong>Check.</strong> <code>agentcap license status</code> should say <code>tier: pro</code>.</li>
-              <li><strong>VS Code and the Claude Code plugin</strong> use the same CLI licence. Activate once in a terminal, then restart the agent.</li>
-              <li><strong>Moving machines?</strong> <code>agentcap license deactivate</code> frees the slot. You can also manage activations in the Polar portal.</li>
-            </ol>
-          </details>
-        </div>
-      </div>
-    </section>
-
-    <section class="chapter" id="compare">
-      <div class="wrap chapter-grid">
-        <div class="chapter-side">
-          <span class="num">07</span>
-          <span class="side-label">Where it fits</span>
-        </div>
-        <div class="chapter-body">
-          <h2>Other tools solve parts of this.</h2>
-          <p class="lead">A cap, a loop breaker and a quota share are three different jobs.</p>
-          <p>Pick what matches your setup. None of these are bad tools; they enforce at different layers. They can also be combined.</p>
-
-          <div class="table-scroll">
-            <table class="ledger">
-              <thead>
-                <tr><th scope="col">Tool</th><th scope="col">What it does, and where it enforces</th></tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th scope="row">RelayPlane</th>
-                  <td><a href="https://relayplane.com">relayplane.com</a> — free, MIT-licensed local proxy with daily, hourly, per-request and per-run caps, routing and a kill switch. Enforces at the proxy, aimed at Anthropic/OpenAI chat routing. A good fit for gateway-style setups.</td>
-                </tr>
-                <tr>
-                  <th scope="row">LoopGuard</th>
-                  <td><a href="https://tryloopguard.com">tryloopguard.com</a> — free MIT CLI for Claude Code, Codex CLI and Cursor. No proxy, works with subscriptions, per-session and daily caps plus a no-progress loop killer. Paid tier ($9/month) adds phone/Slack alerts and remote pause.</td>
-                </tr>
-                <tr>
-                  <th scope="row">LiteLLM budgets</th>
-                  <td>Budgets per key, user or team in the LiteLLM proxy. Needs its database. A good fit if you already run a LiteLLM gateway; it is a server you deploy and configure.</td>
-                </tr>
-                <tr>
-                  <th scope="row">Provider caps</th>
-                  <td>OpenRouter credit limits and OpenAI or Google spend caps are account- or key-level and usually monthly. They are evaluated with a delay (Google has described about 10 minutes for the Gemini API cap), so a fast loop can overshoot.</td>
-                </tr>
-                <tr class="own">
-                  <th scope="row">AgentCap</th>
-                  <td>Local cap for API-key traffic from Codex CLI, Gemini CLI or your own script, plus quota and loop stops on subscriptions. Conservative reservation, output clamping, process-group kill, receipt with the reason. Pro adds hour/day caps, the loop and burn breaker, and Telegram/webhook alerts.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="fineprint">Descriptions checked against each project&rsquo;s public page. Pricing and features there can change.</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="chapter" id="faq">
-      <div class="wrap chapter-grid">
-        <div class="chapter-side">
-          <span class="num">08</span>
-          <span class="side-label">Questions</span>
-        </div>
-        <div class="chapter-body">
-          <h2>The honest answers.</h2>
-
-          <div class="faq-list">
-            <details>
-              <summary>Does it see my prompts or keys?</summary>
-              <p>Prompts and keys pass through the local proxy in memory. AgentCap never stores or uploads them. Free sends nothing anywhere. Pro sends alert metadata only (run id, spend, reason) to the webhook or Telegram destination you configure, and validates your licence key with Polar about once a week.</p>
-            </details>
-            <details>
-              <summary>Is it a mathematical guarantee?</summary>
-              <p>No. AgentCap applies a local spend cap with conservative reservation: it reserves worst-case cost before each request, so overshoot is rare but possible when providers count more tokens than estimated — for example server-side system prompts, tool schemas, images or tokenizer differences. You get an overshoot alert if a settlement exceeds its reservation.</p>
-            </details>
-            <details>
-              <summary>Which CLIs and versions are supported?</summary>
-              <p>Codex CLI 0.163 (<code>codex exec</code>, API key via <code>OPENAI_API_KEY</code>) and Gemini CLI 0.58–0.66 (<code>gemini -p</code>, <code>GEMINI_API_KEY</code>) are routed automatically. See <a href="#install">Install</a> for the verified versions.</p>
-            </details>
-            <details>
-              <summary>What is the loop and burn breaker?</summary>
-              <p>Pro stops a run (exit code 4) before the next request is sent when the agent repeats the same step four times in a row (last tool call and its result, ignoring the growing history), gets eight failing tool results in a row, or spends more than <code>--max-burn</code> (default $2/min) over a rolling two-minute window.</p>
-              <p>Tested on simulated growing-history transcripts for Claude Code and OpenAI tool loops; 50 simulated normal sessions did not trip it. It cannot catch every no-progress loop, which is why the run cap still applies.</p>
-            </details>
-            <details>
-              <summary>Does it work with subscription or OAuth logins?</summary>
-              <p>The proxy does not meter OAuth traffic. Quota mode is different: it reads the % from the agents themselves (Claude Code&rsquo;s statusline and <code>/usage</code>, Codex&rsquo;s logs and <code>codex app-server</code>), then stops the local job. It never touches the login or the traffic. ChatGPT and Google sign-in traffic is not metered by the dollar cap.</p>
-            </details>
-            <details>
-              <summary>Which providers does it support?</summary>
-              <p>OpenAI-compatible and Gemini APIs, plus Anthropic for Claude Code API-key runs. Prices come from a local table you can override.</p>
-            </details>
-            <details>
-              <summary>Is Pro a subscription?</summary>
-              <p>No. It is a one-time purchase: $7 at the beta price ($12 after the beta). See the <a href="#terms">purchase terms</a> for refunds, licence checks and fail-open behavior.</p>
-            </details>
-            <details>
-              <summary>Refunds?</summary>
-              <p>14 days, no questions asked. Email <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>.</p>
-            </details>
-            <details>
-              <summary>Does it need an account or a server?</summary>
-              <p>No. It runs locally on your machine. There is no dashboard and no service to deploy.</p>
-            </details>
-            <details>
-              <summary>Does clamping output hurt quality?</summary>
-              <p>Yes, it can. When the budget is tight, AgentCap lowers the max output tokens so the call fits; answers can be shorter or cut off. Use <code>--no-clamp</code> to refuse the request instead.</p>
-            </details>
-            <details>
-              <summary>Does stopping roll back what the agent did?</summary>
-              <p>No. At the cap AgentCap sends SIGTERM, then SIGKILL; files or remote changes already made stay. Use git and small steps.</p>
-            </details>
-            <details>
-              <summary>Is the ledger my provider bill?</summary>
-              <p>No. It is a local estimate from published prices and reported usage. When usage is missing it charges the full reservation, which is conservative. Your provider invoice is authoritative.</p>
-            </details>
-            <details>
-              <summary>Is the day cap shared across machines?</summary>
-              <p>No. Hour and day caps are per machine (local SQLite ledger). A licence covers three machines, each with its own budget.</p>
-            </details>
-            <details>
-              <summary>What does the one-time purchase include?</summary>
-              <p>$7 once at the beta price ($12 after), all 0.x updates. Not a promise of future major versions. 14-day refund window per the purchase terms.</p>
-            </details>
-          </div>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <footer class="footer">
-    <div class="wrap footer-grid">
-      <div class="footer-brand">
-        <span class="brand-name">AgentCap</span>
-        <p>Local spend control for coding agents. Built by Launchbench.</p>
-      </div>
-      <div>
-        <p class="footer-head">Product</p>
-        <a href="#how">How it stops</a>
-        <a href="#ways">Three ways</a>
-        <a href="#proof">Proof</a>
-        <a href="#install">Install</a>
-        <a href="#pricing">Pricing</a>
-      </div>
-      <div>
-        <p class="footer-head">Elsewhere</p>
-        <a href="https://github.com/Blitz00X/agentcap">GitHub</a>
-        <a href="https://pypi.org/project/agentcap-cli/">PyPI</a>
-        <a href="agentcap-0.2.0.vsix" download>VS Code extension</a>
-        <a href="#terms">Terms</a>
-        <a href="privacy/">Privacy</a>
-      </div>
-      <div>
-        <p class="footer-head">Contact</p>
-        <a href="mailto:kutaykarahan6@gmail.com">kutaykarahan6@gmail.com</a>
-        <p class="footer-note">No trackers. No cookie banner. No account.</p>
-      </div>
-    </div>
-    <div class="wrap footer-bottom">
-      <span>© 2026 Launchbench</span>
-      <span>Set in Instrument Serif and IBM Plex.</span>
-      <span>Checked against 0.5.2 · 17 Nov 2026.</span>
-    </div>
-  </footer>
-
-  <script src="script.js"></script>
+<script defer src="app.js"></script>
 </body>
 </html>

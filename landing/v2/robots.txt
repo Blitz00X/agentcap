@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /u/
+
+Sitemap: https://agentcap.launchbench.studio/sitemap.xml

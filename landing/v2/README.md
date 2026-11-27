@@ -13,9 +13,10 @@ python3 -m http.server 8787
 
 ## What is here
 
-- `index.html` — the page. No build step, no framework, no trackers.
-- `style.css` — the whole design.
-- `script.js` — the copy-to-clipboard button only.
+- `index.html` — the page (new design, 26 November 2026). No build step, no framework. Cookieless Umami from the same origin (`/u/script.js`).
+- `landing.css` — the page design. No inline styles: the live CSP is `style-src 'self'; script-src 'self'`.
+- `app.js` — the loop / quota / waste demo, tabs and copy buttons. Sets widths through CSSOM, never `style=""` attributes.
+- `style.css` / `script.js` — the previous design, still used by `privacy/`.
 - `fonts.css` / `fonts/` — self-hosted Instrument Serif and IBM Plex.
 - `agentcap-0.2.0.vsix` — served from the site root, not from this folder.
 
