@@ -297,3 +297,87 @@ def test_waste_color_only_on_a_terminal(home, monkeypatch):
     monkeypatch.setenv("TERM", "dumb")
     assert not waste.color_enabled(Tty())
     assert not waste.color_enabled(object())
+
+
+# --- 0.5.4 counting fixes (27 Nov 2026) ------------------------------------
+def _claude_msg(mid, ts, sess, tool_id=None, cmd="ls", cw=0, cr=0):
+    content = [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": cmd}}] if tool_id else []
+    return {"type": "assistant", "timestamp": ts, "sessionId": sess, "requestId": f"req-{mid}",
+            "message": {"id": mid, "model": "claude-sonnet-4-5", "content": content,
+                        "usage": {"input_tokens": 1000, "output_tokens": 100,
+                                  "cache_creation_input_tokens": cw, "cache_read_input_tokens": cr}}}
+
+
+def _jsonl(path, lines):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+
+
+def test_resumed_session_copies_are_counted_once(tmp_path):
+    import os
+    proj = tmp_path / ".claude" / "projects" / "p"
+    first = [_claude_msg(f"m{k}", f"2026-11-01T10:0{k}:00Z", "old", f"t{k}", cmd="make") for k in range(5)]
+    _jsonl(proj / "old.jsonl", first)
+    # the resumed session's file starts with a copy of the old messages, then goes on
+    _jsonl(proj / "new.jsonl", [dict(x, sessionId="new") for x in first]
+           + [_claude_msg("m9", "2026-11-01T11:00:00Z", "new")])
+    os.utime(proj / "old.jsonl", (1, 1))
+    once = waste.scan(home=tmp_path, codex_dir=tmp_path / "none")
+    alone = tmp_path / "alone" / ".claude" / "projects" / "p"
+    _jsonl(alone / "old.jsonl", first)
+    _jsonl(alone / "new.jsonl", [_claude_msg("m9", "2026-11-01T11:00:00Z", "new")])
+    expected = waste.scan(home=tmp_path / "alone", codex_dir=tmp_path / "none")
+    assert once.total_usd == pytest.approx(expected.total_usd)
+    rep = [s for s in once.repeat_streaks if s.tool == "Bash"]
+    assert len(rep) == 1 and rep[0].count == 5 and rep[0].session == "old"
+
+
+def test_forked_codex_thread_does_not_replay_parent_calls(tmp_path):
+    d = tmp_path / "sessions"
+    call = lambda k: {"timestamp": "2026-11-01T09:00:01Z", "type": "response_item",
+                      "payload": {"type": "function_call", "name": "shell", "call_id": f"c{k}",
+                                  "arguments": json.dumps({"command": ["bash", "-lc", "make"]})}}
+    parent = [{"timestamp": "2026-11-01T09:00:00Z", "type": "session_meta", "payload": {"id": "par"}}]
+    parent += [call(k) for k in range(3)]
+    _jsonl(d / "rollout-2026-11-01T09-00-00-par.jsonl", parent)
+    fork = [{"timestamp": "2026-11-01T09:05:00Z", "type": "session_meta",
+             "payload": {"id": "frk", "forked_from_id": "par"}}] + [call(k) for k in range(3)]
+    _jsonl(d / "rollout-2026-11-01T09-05-00-frk.jsonl", fork)
+    w = waste.scan(home=tmp_path, codex_dir=d, claude_dir=tmp_path / "none")
+    assert [(s.session, s.count) for s in w.repeat_streaks] == [("par", 3)]
+
+
+POLL = 'const r=await tools.write_stdin({session_id:57826,chars:"",yield_time_ms:1000,max_output_tokens:2500});text(JSON.stringify(r))\n'
+
+
+@pytest.mark.parametrize("script, wait", [
+    (POLL, True),
+    ('text(await tools.write_stdin({session_id:1,chars:"",yield_time_ms:5000}))\n', True),
+    ('// @exec: {"yield_time_ms": 30000}\nconst r=await tools.write_stdin({session_id:1,chars:"",yield_time_ms:30000});text(r);\n', True),
+    ('const a=await Promise.allSettled([tools.write_stdin({session_id:1,chars:""}),tools.write_stdin({session_id:2,chars:""})]);text(a)', True),
+    ('const r=await tools.write_stdin({session_id:1,chars:"y\\n"});text(r)', False),      # typing into it
+    ('const r=await tools.write_stdin({session_id:1});text(r)', False),                    # no chars: unknown
+    ('await Promise.allSettled([tools.write_stdin({session_id:1,chars:""}),tools.exec_command({cmd:"tail -5 x"})])', False),
+    ('const r=await tools.exec_command({cmd:"make"});text(r)', False),
+    ("text('tools.write_stdin is not called here')", False),
+])
+def test_code_mode_exec_poll_is_a_wait(script, wait):
+    assert waste.is_wait_call("exec", script) is wait
+    assert waste.is_wait_call("exec", {"input": script}) is wait
+
+
+def test_codex_exec_polls_are_not_loops(tmp_path):
+    d = tmp_path / "sessions"
+    lines = [{"timestamp": "2026-11-01T09:00:00Z", "type": "session_meta", "payload": {"id": "p"}}]
+    lines += [{"timestamp": "2026-11-01T09:00:01Z", "type": "response_item",
+               "payload": {"type": "custom_tool_call", "name": "exec", "input": POLL, "call_id": f"x{k}"}}
+              for k in range(12)]
+    _jsonl(d / "rollout-2026-11-01T09-00-00-p.jsonl", lines)
+    w = waste.scan(home=tmp_path, codex_dir=d, claude_dir=tmp_path / "none")
+    assert w.repeat_streaks == [] and w.error_streaks == []
+
+
+def test_opus_share_is_not_shown_as_waste(home):
+    text = waste.render(waste.scan(home=home), "all", color=True)
+    line = next(x for x in text.splitlines() if "OPUS" in x)
+    assert "not counted as waste" in line and "\x1b[1;31m" not in line

@@ -66,11 +66,36 @@ def command_text(payload: Any) -> str | None:
     return None
 
 
+# Codex code mode wraps a poll in its `exec` tool:
+# ``const r=await tools.write_stdin({session_id:1,chars:"",yield_time_ms:1000});text(r)``.
+# 676 such calls in 30 days of our own logs were counted as loops (x57 in one run).
+# Only a script whose every tool call is a poll, and whose every write_stdin sends
+# nothing, is a wait; typing into the process or running anything else is not.
+_CODE_TOOL_RE = re.compile(r"\btools\.(\w+)\s*\(")
+_STDIN_CHARS_RE = re.compile(r"""\bchars\s*:\s*(["'`])(.*?)(?<!\\)\1""", re.S)
+_CODE_POLL_TOOLS = frozenset({"write_stdin", "wait"})
+
+
+def _code_mode_wait(payload: Any) -> bool:
+    if isinstance(payload, dict):
+        payload = next((payload[k] for k in ("input", "code", "source") if isinstance(payload.get(k), str)), None)
+    if not isinstance(payload, str) or "tools." not in payload:
+        return False
+    names = _CODE_TOOL_RE.findall(payload)
+    if not names or any(n not in _CODE_POLL_TOOLS for n in names):
+        return False
+    if "write_stdin" in names and not _STDIN_CHARS_RE.search(payload):
+        return False
+    return all(m.group(2) == "" for m in _STDIN_CHARS_RE.finditer(payload))
+
+
 def is_wait_call(name: str, payload: Any) -> bool:
     if name in POLL_TOOLS:
         return True
     cmd = command_text(payload)
-    return bool(cmd and _WAIT_RE.match(cmd))
+    if cmd and _WAIT_RE.match(cmd):
+        return True
+    return _code_mode_wait(payload)
 CODEX_MISS_MIN_TOKENS = 4096  # Codex has no cache writes; only flag big uncached prompts
 
 
@@ -135,6 +160,7 @@ class _Call:      # one tool call
     cost: float = 0.0
     error: bool = False
     run_usd: float = 0.0  # cumulative stream spend after this call's model request
+    wait: bool = False    # a poll / sleep: counts toward neither streak
 
 
 @dataclass
@@ -182,7 +208,7 @@ def _f(value: str | None) -> float:
 
 # --------------------------------------------------------------------- claude
 def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteReport,
-                 streams: dict[tuple, _Stream]) -> None:
+                 streams: dict[tuple, _Stream], seen: set[str] | None = None) -> None:
     file_agent = file_parent = None
     if path.parent.name == "subagents" and path.stem.startswith("agent-"):
         file_agent, file_parent = path.stem[len("agent-"):], path.parent.parent.name
@@ -217,7 +243,8 @@ def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRep
         key = f"{msg.get('id') or obj.get('uuid')}:{obj.get('requestId') or ''}"
         m = msgs.get(key)
         if m is None:  # one message can span several lines (one content block each)
-            m = msgs[key] = {"ts": ts, "model": model, "skey": skey, "tools": [], "seen": set()}
+            m = msgs[key] = {"ts": ts, "model": model, "skey": skey, "tools": [], "seen": set(),
+                             "gkey": f"{msg['id']}:{obj.get('requestId') or ''}" if msg.get("id") else None}
             order.append(key)
         m["usage"] = msg["usage"]  # keep the final usage snapshot
         for block in msg.get("content") or []:
@@ -227,10 +254,19 @@ def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRep
                     m["seen"].add(tid)
                     m["tools"].append((tid, str(block.get("name") or "?"), block.get("input")))
     last: dict[tuple, dict[str, Any]] = {}
+    seen = seen if seen is not None else set()
     for key in order:
         m = msgs[key]
         st = streams[m["skey"]]
         u = m["usage"]
+        if m["gkey"] is not None and m["gkey"] in seen:
+            # A resumed or forked session copies the earlier messages into its own file:
+            # the request was paid once. Keep its time for the cache gap, count nothing.
+            cc = u.get("cache_creation") if isinstance(u.get("cache_creation"), dict) else {}
+            last[m["skey"]] = {"ts": m["ts"], "h1": _int(cc.get("ephemeral_1h_input_tokens")) > 0}
+            continue
+        if m["gkey"] is not None:
+            seen.add(m["gkey"])
         inp, cr = _int(u.get("input_tokens")), _int(u.get("cache_read_input_tokens"))
         cw, out = _int(u.get("cache_creation_input_tokens")), _int(u.get("output_tokens"))
         cc = u.get("cache_creation") if isinstance(u.get("cache_creation"), dict) else {}
@@ -256,7 +292,8 @@ def _claude_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRep
                            or (prev is not None and prev["h1"] and m["ts"] - prev["ts"] <= TTL_1H)}
         tools = m["tools"]
         for tid, name, payload in tools:
-            call = _Call(name, _digest(name, payload), m["ts"], usd / len(tools), run_usd=st.usd)
+            call = _Call(name, _digest(name, payload), m["ts"], usd / len(tools), run_usd=st.usd,
+                         wait=is_wait_call(name, payload))
             st.calls.append(call)
             st.by_id[tid] = call
     for tid, err in results:
@@ -303,7 +340,8 @@ def _codex_error(output: Any) -> bool:
 
 
 def _codex_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteReport,
-                streams: dict[tuple, _Stream]) -> None:
+                streams: dict[tuple, _Stream], seen: set[str] | None = None) -> None:
+    seen = seen if seen is not None else set()
     st: _Stream | None = None
     model = ""
     last_total = None
@@ -331,7 +369,12 @@ def _codex_file(path: Path, pricer: _Pricer, since: float | None, rep: WasteRepo
         if kind == "response_item" and ptype in ("function_call", "custom_tool_call", "local_shell_call"):
             name = str(payload.get("name") or ptype)
             args = payload.get("arguments", payload.get("input", payload.get("action")))
-            call = _Call(name, _digest(name, args), ts, run_usd=st.usd)
+            cid = payload.get("call_id")
+            if cid:
+                if f"codex:{cid}" in seen:  # a forked thread replays the parent's calls
+                    continue
+                seen.add(f"codex:{cid}")
+            call = _Call(name, _digest(name, args), ts, run_usd=st.usd, wait=is_wait_call(name, args))
             st.calls.append(call)
             if payload.get("call_id"):
                 st.by_id[str(payload["call_id"])] = call
@@ -401,7 +444,7 @@ def _account(rep: WasteReport, st: _Stream, model: str, usd: float) -> None:
 
 # -------------------------------------------------------------------- streaks
 def _streaks(st: _Stream) -> Iterator[Streak]:
-    calls = st.calls
+    calls = [c for c in st.calls if not c.wait]
 
     def runs(same) -> Iterator[list[_Call]]:
         i = 0
@@ -413,7 +456,7 @@ def _streaks(st: _Stream) -> Iterator[Streak]:
             i = j
 
     for run in runs(lambda a, b: a.digest == b.digest):
-        if len(run) >= REPEAT_MIN and run[0].name not in POLL_TOOLS:
+        if len(run) >= REPEAT_MIN:
             s = Streak("repeat", st.source, st.session, st.agent, run[0].name, len(run),
                        sum(c.cost for c in run))
             if len(run) > PRO_REPEAT_STOP:
@@ -433,6 +476,18 @@ def _streaks(st: _Stream) -> Iterator[Streak]:
             yield s
 
 
+def _oldest_first(paths: Iterator[Path]) -> list[Path]:
+    """Least recently written first: a resumed Claude session continues in a new file and
+    the old one stops changing, so a copied message is counted in the session that made it."""
+
+    def key(p: Path) -> tuple[float, str]:
+        try:
+            return (p.stat().st_mtime, str(p))
+        except OSError:
+            return (0.0, str(p))
+    return sorted(paths, key=key)
+
+
 def scan(home: Path | None = None, since: float | None = None,
          claude_dir: Path | None = None, codex_dir: Path | None = None) -> WasteReport:
     home = Path(home) if home is not None else Path.home()
@@ -441,14 +496,16 @@ def scan(home: Path | None = None, since: float | None = None,
     pricer = _Pricer()
     rep = WasteReport()
     streams: dict[tuple, _Stream] = {}
+    seen: set[str] = set()  # requests / calls already counted (resume and fork copy them)
     if claude_dir.is_dir():
-        for path in sorted(claude_dir.rglob("*.jsonl")):
+        for path in _oldest_first(claude_dir.rglob("*.jsonl")):
             if _safe_file(path):
-                _claude_file(path, pricer, since, rep, streams)
+                _claude_file(path, pricer, since, rep, streams, seen)
     if codex_dir.is_dir():
-        for path in sorted(codex_dir.rglob("rollout-*.jsonl")):
+        # rollout-<start time>-<id>.jsonl: by name is by start, so a parent precedes its forks
+        for path in sorted(codex_dir.rglob("rollout-*.jsonl"), key=lambda p: (p.name, str(p))):
             if _safe_file(path):
-                _codex_file(path, pricer, since, rep, streams)
+                _codex_file(path, pricer, since, rep, streams, seen)
     live = [s for s in streams.values() if s.usd > 0 or s.calls]
     rep.sessions = len({(s.source, s.parent or s.session) for s in live})
     rep.subagent_threads = sum(1 for s in live if s.parent)
@@ -581,7 +638,8 @@ def _render_source(rep: WasteReport, source: str, top: int, st: _Style | None = 
                    f" largest {biggest[3] / 1000:.1f}k ({_sid(biggest[1])}/{str(biggest[2])[:8]})")
     if source == "claude":
         oshare = src["opus_usd"] / src["total_usd"] * 100 if src["total_usd"] else 0.0
-        out.append(f"{st.bold('OPUS               ')}  {st.money(src['opus_usd'])}  {oshare:4.0f}% of spend")
+        out.append(st.dim(f"OPUS                 {_m(src['opus_usd']):>10}  {oshare:4.0f}% of spend"
+                          " (model choice, not counted as waste)"))
     for kind, title, desc in (("repeat", "REPEATED TOOL CALLS", "identical calls in a row"),
                               ("error", "TOOL ERROR STREAKS ", "failing calls in a row")):
         streaks = [x for x in (rep.repeat_streaks if kind == "repeat" else rep.error_streaks) if x.source == source]

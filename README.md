@@ -9,7 +9,7 @@ tool loops and error streaks.
 ```text
 $ agentcap waste --since 7d
 SUBAGENTS                $41.20    25% of spend  in 31 subagent/forked threads
-OPUS                     $38.90    24% of spend
+OPUS                     $38.90    24% of spend (model choice, not counted as waste)
 CACHE MISSES              $6.10  57 cache re-writes after the TTL ran out (5 min since the last request, or 1 h)
    main session     $2.30  21x    subagents     $3.80  36x
    Tip: idle subagents re-wrote their own context 36x (~$3.80). Set subagentPromptCacheTtl: "1h" ...
@@ -19,6 +19,17 @@ TOOL ERROR STREAKS        $4.30  5 streaks of >= 3 failing calls in a row
 Pro would have stopped this run at $3.12 / at 4 repeats (Bash x11 in 7f3a91c2, $2.40 after that).
 ```
 *(illustrative numbers; run it on your own logs, it is read-only)*
+
+**Try it first, nothing installed.** With [uv](https://docs.astral.sh/uv/), this downloads the
+package into a throwaway environment and reads your local Claude Code / Codex logs. It installs
+no hook, changes no settings, makes no model call and sends nothing anywhere:
+
+```bash
+uvx --from agentcap-cli agentcap waste --since 7d
+```
+
+The hooks, the statusline and the Pro licence come later, only if you install the plugin or the
+command (see "Install").
 
 ## Stop loops and quota burn (Pro)
 
@@ -55,10 +66,13 @@ your subscription quota % and Codex support.
   approve refused). With whole-percent quota steps a 1.5% limit stops at the next step, 2%.
 - **Free** runs the same detectors in observe-only mode and prints what Pro would have done.
 
-Honest limits: Claude tool-error streaks are only caught on API-key runs (the subscription hook sees
-the call, not its result); the stop can be one request late; quota % is account-level; verified on
-fixtures, fake CLIs and real Claude Code hooks; quota stops verified on real Claude Pro and ChatGPT
-Plus accounts (see "Supported & tested").
+Honest limits: the stop can be one request late (headless `claude -p` reads `/usage` every 30 s:
+in a live test a 2-point limit ended at 4 points, and a headless turn can exit 0 after a denial);
+quota % is account-level, so other sessions and devices count; macOS is not yet tested on a real
+Mac. Claude tool-error streaks are caught on subscriptions too: the plugin and
+`agentcap run --quota -- claude` both use a `PostToolUseFailure` hook (8 failing calls in a row). Verified on fixtures, fake CLIs and real
+Claude Code hooks; quota stops verified on real Claude Pro and ChatGPT Plus accounts (see
+"Supported & tested").
 
 ## The API-key cap
 
