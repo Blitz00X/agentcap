@@ -28,7 +28,7 @@ const MODES = {
   waste: {
     ledDone: ["","READ-ONLY · FREE"],
     hudK: "7-Day Waste Audit", tag: "Local logs",
-    btn: "Copy: pipx install agentcap-cli",
+    btn: "Copy: uvx (nothing installed)",
     steps: [
       {t:'<span class="c">$ agentcap waste --since 7d</span>', v:"...", sub:"scanning local logs", bars:[], kv:[["source","~/.claude + ~/.codex"],["uploaded","0 bytes","g"]]},
       {t:'<span class="d">SUBAGENTS</span>        <span class="c">$41.20</span>  <span class="d">25% in 31 forked threads</span>', v:"$41.20", sub:"subagents", bars:[["Subagents","$41.20",84,"#17170f"]], kv:[["source","local JSONL"],["uploaded","0 bytes","g"]]},
@@ -109,7 +109,7 @@ document.querySelectorAll(".st-tab").forEach(b => {
 document.getElementById("stage-replay").addEventListener("click", () => playMode(curMode));
 hudBtn.addEventListener("click", () => {
   if(curMode === "waste"){
-    navigator.clipboard?.writeText("pipx install agentcap-cli && agentcap waste --since 7d").catch(()=>{});
+    navigator.clipboard?.writeText("uvx --from agentcap-cli agentcap waste --since 7d").catch(()=>{});
     hudBtn.textContent = "Copied!";
     setTimeout(()=> hudBtn.textContent = MODES.waste.btn, 1400);
   } else {
@@ -141,10 +141,11 @@ const INSTALLS = {
     copy: "/plugin marketplace add Blitz00X/agentcap\n/plugin install agentcap@agentcap"
   },
   waste: {
-    code: `# Zero hooks · read-only scan of your local logs
-pipx install agentcap-cli
-agentcap waste --since 7d`,
-    copy: "pipx install agentcap-cli && agentcap waste --since 7d"
+    code: `# Nothing installed · no hooks · read-only scan of your local logs
+uvx --from agentcap-cli agentcap waste --since 7d
+
+# or keep the command: pipx install agentcap-cli`,
+    copy: "uvx --from agentcap-cli agentcap waste --since 7d"
   },
   codex: {
     code: `# Codex 0.167+ (Experimental)
